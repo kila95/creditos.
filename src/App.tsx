@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Building, 
   Bike, 
@@ -49,7 +49,7 @@ import { AdminLoginView } from './components/AdminLoginView';
 import { CollectorRouteGuard } from './components/CollectorRouteGuard';
 import { CollectorLoginView } from './components/CollectorLoginView';
 import { AuthProvider, useAuth } from './context/AuthContext';
-import { useOnlineStatus } from './utils/offlineSync';
+import { useOnlineStatus, syncOfflineQueueWithServer, enqueueOfflinePayment } from './utils/offlineSync';
 
 export type ActiveRole = 
   | 'admin_cfo' 
@@ -79,7 +79,49 @@ function MainAppContent() {
   const [ledger, setLedger] = useState<LedgerEntry[]>(INITIAL_LEDGER);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>(INITIAL_AUDIT_LOGS);
 
-  // Registro de pago en calle o billetera
+  // Estado de conexión y latencia con Cloud SQL
+  const [cloudSqlStatus, setCloudSqlStatus] = useState<'connected' | 'offline' | 'checking'>('checking');
+  const [cloudSqlLatency, setCloudSqlLatency] = useState<number | null>(null);
+
+  // Sincronización en tiempo real con Cloud SQL al montar o recuperar red
+  useEffect(() => {
+    let isMounted = true;
+
+    const checkHealthAndSync = async () => {
+      const startTime = performance.now();
+      try {
+        const res = await fetch('/api/health');
+        if (res.ok) {
+          const latency = Math.round(performance.now() - startTime);
+          if (isMounted) {
+            setCloudSqlStatus('connected');
+            setCloudSqlLatency(latency);
+          }
+
+          // Si hay conexión, sincronizar cola offline pendiente
+          syncOfflineQueueWithServer().then(({ syncedCount }) => {
+            if (syncedCount > 0 && isMounted) {
+              console.log(`✅ Sincronizados ${syncedCount} pagos encolados en calle.`);
+            }
+          });
+        } else {
+          if (isMounted) setCloudSqlStatus('offline');
+        }
+      } catch {
+        if (isMounted) setCloudSqlStatus('offline');
+      }
+    };
+
+    checkHealthAndSync();
+    const interval = setInterval(checkHealthAndSync, 20000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [isOnline]);
+
+  // Registro de pago en calle o billetera (persistencia en tiempo real a Cloud SQL)
   const handleRegisterPayment = (
     loanId: string, 
     amount: number, 
@@ -113,6 +155,7 @@ function MainAppContent() {
       hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2)
     };
 
+    // Actualización optimista inmediata en memoria (UI instantánea en calle)
     setLedger(prev => [newEntry, ...prev]);
 
     setLoans(prev => prev.map(l => {
@@ -138,6 +181,57 @@ function MainAppContent() {
       }
       return r;
     }));
+
+    // Enviar a la base de datos Cloud SQL en tiempo real vía backend
+    if (isOnline) {
+      fetch('/api/payments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newEntry)
+      })
+        .then(res => {
+          if (res.ok) {
+            console.log('✅ Cobro guardado en Cloud SQL en tiempo real:', newEntry.receiptNumber);
+          } else {
+            console.warn('⚠️ Falló respuesta de Cloud SQL, guardando en cola offline.');
+            enqueueOfflinePayment({
+              loanId: loan.id,
+              clientId: loan.clientId,
+              clientName: loan.clientName,
+              amount,
+              paymentMethod: method,
+              notes: notes || 'Cobro en calle encolado',
+              timestamp: newEntry.timestamp,
+              gpsLocation: newEntry.gpsLocation
+            });
+          }
+        })
+        .catch(err => {
+          console.warn('⚠️ Error de red al comunicar con Cloud SQL, guardando offline:', err);
+          enqueueOfflinePayment({
+            loanId: loan.id,
+            clientId: loan.clientId,
+            clientName: loan.clientName,
+            amount,
+            paymentMethod: method,
+            notes: notes || 'Cobro en calle encolado',
+            timestamp: newEntry.timestamp,
+            gpsLocation: newEntry.gpsLocation
+          });
+        });
+    } else {
+      // Dispositivo sin red en calle: encolar en localStorage
+      enqueueOfflinePayment({
+        loanId: loan.id,
+        clientId: loan.clientId,
+        clientName: loan.clientName,
+        amount,
+        paymentMethod: method,
+        notes: notes || 'Cobro en calle offline',
+        timestamp: newEntry.timestamp,
+        gpsLocation: newEntry.gpsLocation
+      });
+    }
   };
 
   // Registro de gasto operativo
@@ -310,6 +404,31 @@ function MainAppContent() {
       severity: discrepancy === 0 ? 'normal' : 'alerta_critica'
     };
     setAuditLogs(prev => [auditEvent, ...prev]);
+
+    // Persistir arqueo de cierre en Cloud SQL
+    fetch('/api/reconciliation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: `recon-${Date.now()}`,
+        routeId: route.id,
+        date: new Date().toISOString().split('T')[0],
+        collectorId: 'col-01',
+        collectorName: route.collectorName,
+        expectedCash: (route.baseFloatingCapital + route.dailyGrossCollected - route.dailyExpenses),
+        actualCashHanded: actualCash,
+        discrepancy,
+        status: discrepancy === 0 ? 'balanced' : discrepancy < 0 ? 'shortage' : 'surplus',
+        notes: notes || '',
+        verifiedByAdmin: false
+      })
+    })
+      .then(res => {
+        if (res.ok) console.log('✅ Arqueo de caja persistido exitosamente en Cloud SQL');
+      })
+      .catch(err => {
+        console.warn('⚠️ No se pudo enviar arqueo a Cloud SQL de inmediato:', err);
+      });
   };
 
   // Clases dinámicas de ancho según el modo de simulación o responsive natural
@@ -430,8 +549,13 @@ function MainAppContent() {
                 <h1 className="font-black text-sm tracking-tight text-white uppercase truncate">
                   RutaCapital OS
                 </h1>
-                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold border border-emerald-500/30">
-                  RBAC SUPABASE
+                <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold border flex items-center gap-1 ${
+                  cloudSqlStatus === 'connected'
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                    : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${cloudSqlStatus === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                  {cloudSqlStatus === 'connected' ? `CLOUD SQL (${cloudSqlLatency ?? 3}ms)` : 'OFFLINE'}
                 </span>
               </div>
               <p className="text-[10px] text-slate-400 hidden sm:block">

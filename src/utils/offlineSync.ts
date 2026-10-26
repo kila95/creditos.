@@ -79,7 +79,7 @@ export function getOfflineQueue(): OfflineQueueItem[] {
 }
 
 /**
- * Limpia la cola offline tras sincronización exitosa en Supabase
+ * Limpia la cola offline tras sincronización exitosa en base de datos
  */
 export function clearOfflineQueue() {
   try {
@@ -87,4 +87,62 @@ export function clearOfflineQueue() {
   } catch (e) {
     console.error('Error limpiando cola offline:', e);
   }
+}
+
+/**
+ * Sincroniza la cola local offline directamente con Cloud SQL (/api/payments)
+ */
+export async function syncOfflineQueueWithServer(): Promise<{ syncedCount: number; errors: number }> {
+  const queue = getOfflineQueue();
+  if (queue.length === 0) return { syncedCount: 0, errors: 0 };
+
+  let syncedCount = 0;
+  let errors = 0;
+  const remainingQueue: OfflineQueueItem[] = [];
+
+  for (const item of queue) {
+    try {
+      const payload = {
+        id: item.id.replace('off-', 'led-'),
+        receiptNumber: `REC-${Date.now().toString().slice(-6)}`,
+        loanId: item.loanId,
+        clientId: item.clientId,
+        clientName: item.clientName,
+        routeId: 'route-1',
+        amount: item.amount,
+        principalPortion: Math.round(item.amount * 0.8),
+        interestPortion: Math.round(item.amount * 0.2),
+        paymentMethod: item.paymentMethod,
+        preBalance: item.amount * 2, // Estimación local
+        postBalance: Math.max(0, item.amount * 2 - item.amount),
+        timestamp: item.timestamp,
+        gpsLocation: item.gpsLocation,
+        hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2),
+      };
+
+      const res = await fetch('/api/payments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      if (res.ok) {
+        syncedCount++;
+      } else {
+        remainingQueue.push(item);
+        errors++;
+      }
+    } catch {
+      remainingQueue.push(item);
+      errors++;
+    }
+  }
+
+  try {
+    localStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(remainingQueue));
+  } catch (err) {
+    console.error('Error actualizando cola offline:', err);
+  }
+
+  return { syncedCount, errors };
 }

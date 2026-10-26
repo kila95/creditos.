@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { WifiOff, Wifi, RefreshCw, AlertTriangle, Database } from 'lucide-react';
-import { useOnlineStatus, getOfflineQueue, clearOfflineQueue, OfflineQueueItem } from '../utils/offlineSync';
+import { useOnlineStatus, getOfflineQueue, clearOfflineQueue, syncOfflineQueueWithServer, OfflineQueueItem } from '../utils/offlineSync';
 
 interface OfflineNoticeBannerProps {
   onSyncComplete?: (syncedCount: number) => void;
@@ -40,20 +40,17 @@ export const OfflineNoticeBanner: React.FC<OfflineNoticeBannerProps> = ({ onSync
     setIsSyncing(true);
 
     try {
-      // Simula / ejecuta el flush a Supabase de los items en localStorage
-      const queue = getOfflineQueue();
-      // En producción: await supabase.from('daily_ledger').insert(queue.map(...))
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const result = await syncOfflineQueueWithServer();
+      const count = result.syncedCount;
 
-      const count = queue.length;
-      clearOfflineQueue();
-      setOfflineCount(0);
-      setSyncSuccessToast(true);
-      if (onSyncComplete) onSyncComplete(count);
-
-      setTimeout(() => setSyncSuccessToast(false), 4000);
+      checkQueue();
+      if (count > 0) {
+        setSyncSuccessToast(true);
+        if (onSyncComplete) onSyncComplete(count);
+        setTimeout(() => setSyncSuccessToast(false), 4000);
+      }
     } catch (err) {
-      console.error('Error sincronizando cola offline:', err);
+      console.error('Error sincronizando cola offline con Cloud SQL:', err);
     } finally {
       setIsSyncing(false);
     }
