@@ -1,5 +1,11 @@
 import { supabase, isLiveSupabaseConfigured } from './supabaseAuth';
 import { ClientProfile, LoanDetail } from '../data/mockData';
+import { roundCOP } from '../utils/financialCalculations';
+
+export type LoanModality = 'diaria' | 'semanal' | 'quincenal' | 'mensual';
+
+const OFFLINE_CLIENTS_CACHE_KEY = 'rutacapital_offline_clients_cache_v1';
+const OFFLINE_LOANS_CACHE_KEY = 'rutacapital_offline_loans_cache_v1';
 
 export interface CreateClientRecordInput {
   id?: string;
@@ -16,10 +22,23 @@ export interface CreateClientRecordInput {
   principal: number;
   interestRate: number;
   termDays: number;
+  modality?: LoanModality;
+}
+
+export interface CreateCustomLoanInput {
+  clientId: string;
+  clientName: string;
+  tradeName?: string;
+  routeId: string;
+  principal: number;
+  interestRate: number;
+  termInstallments: number;
+  modality: LoanModality;
 }
 
 export interface DatabaseOperationResult<T> {
   data: T | null;
+  savedOffline?: boolean;
   error: {
     message: string;
     code?: string;
@@ -29,9 +48,61 @@ export interface DatabaseOperationResult<T> {
   } | null;
 }
 
+function getLocalCachedClients(): ClientProfile[] {
+  try {
+    const raw = localStorage.getItem(OFFLINE_CLIENTS_CACHE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalCachedClient(client: ClientProfile) {
+  try {
+    const existing = getLocalCachedClients().filter((c) => c.id !== client.id);
+    localStorage.setItem(OFFLINE_CLIENTS_CACHE_KEY, JSON.stringify([client, ...existing]));
+  } catch (err) {
+    console.warn('[Offline Cache] No se pudo guardar cliente localmente:', err);
+  }
+}
+
+function getLocalCachedLoans(): LoanDetail[] {
+  try {
+    const raw = localStorage.getItem(OFFLINE_LOANS_CACHE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalCachedLoan(loan: LoanDetail) {
+  try {
+    const existing = getLocalCachedLoans().filter((l) => l.id !== loan.id);
+    localStorage.setItem(OFFLINE_LOANS_CACHE_KEY, JSON.stringify([loan, ...existing]));
+  } catch (err) {
+    console.warn('[Offline Cache] No se pudo guardar préstamo localmente:', err);
+  }
+}
+
 /**
- * 1. CONSULTA DE CLIENTES (SELECT '*') DESDE SUPABASE / CLOUD SQL
- * Se ejecuta dentro de useEffect al abrir el panel o cambiar de ruta.
+ * Calcula la fecha estimada de vencimiento según el número de cuotas y la modalidad elegida.
+ */
+function calculateExpectedEndDate(installments: number, modality: LoanModality): string {
+  const daysMultiplier =
+    modality === 'semanal'
+      ? 7
+      : modality === 'quincenal'
+      ? 15
+      : modality === 'mensual'
+      ? 30
+      : 1;
+  const dueDateObj = new Date();
+  dueDateObj.setDate(dueDateObj.getDate() + Math.max(1, roundCOP(installments)) * daysMultiplier);
+  return dueDateObj.toISOString().split('T')[0];
+}
+
+/**
+ * 1. CONSULTA DE CLIENTES (SELECT '*') DESDE SUPABASE / CLOUD SQL CON SOPORTE OFFLINE
  */
 export async function fetchClientsAndLoansFromDB(
   routeIdFilter?: string
@@ -39,69 +110,86 @@ export async function fetchClientsAndLoansFromDB(
   try {
     let rawClients: any[] = [];
     let rawLoans: any[] = [];
+    const isBrowserOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
 
-    // A) Si el proyecto tiene variables VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY activas:
-    if (isLiveSupabaseConfigured) {
-      let query = supabase
-        .from('clients')
-        .select('*')
-        .order('created_at', { ascending: false });
+    // A) Si el proyecto tiene variables VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY activas y hay red:
+    if (isLiveSupabaseConfigured && isBrowserOnline) {
+      try {
+        let query = supabase
+          .from('clients')
+          .select('*')
+          .order('created_at', { ascending: false });
 
-      if (routeIdFilter) {
-        query = query.eq('route_id', routeIdFilter);
-      }
+        if (routeIdFilter) {
+          query = query.eq('route_id', routeIdFilter);
+        }
 
-      const { data: sbClients, error: sbError } = await query;
+        const { data: sbClients, error: sbError } = await query;
 
-      if (sbError) {
-        console.error('[Supabase SELECT Error - tabla clients]:', {
-          message: sbError.message,
-          code: sbError.code,
-          details: sbError.details,
-          hint: sbError.hint,
-        });
-        return {
-          data: null,
-          error: {
+        if (sbError) {
+          console.error('[Supabase SELECT Error - tabla clients]:', {
             message: sbError.message,
             code: sbError.code,
             details: sbError.details,
-            hint:
-              sbError.hint ||
-              'Verifica la política RLS SELECT en la tabla public.clients para el rol autenticado.',
-            isRlsError: sbError.code === '42501' || sbError.message.toLowerCase().includes('row-level security'),
-          },
-        };
-      }
+            hint: sbError.hint,
+          });
+        } else if (Array.isArray(sbClients)) {
+          rawClients = sbClients;
+        }
 
-      if (Array.isArray(sbClients)) {
-        rawClients = sbClients;
+        let loansQuery = supabase
+          .from('loans')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (routeIdFilter) {
+          loansQuery = loansQuery.eq('route_id', routeIdFilter);
+        }
+
+        const { data: sbLoans, error: sbLoansErr } = await loansQuery;
+        if (sbLoansErr) {
+          console.error('[Supabase SELECT Error - tabla loans]:', sbLoansErr);
+        } else if (Array.isArray(sbLoans)) {
+          rawLoans = sbLoans;
+        }
+      } catch (sbNetworkErr) {
+        console.warn('[Supabase Offline Fallback] Sin conexión a Supabase, usando caché local:', sbNetworkErr);
       }
     }
 
-    // B) Consulta simultánea al backend Cloud SQL (/api/clients y /api/loans)
-    const [cRes, lRes] = await Promise.all([
-      fetch('/api/clients'),
-      fetch('/api/loans'),
-    ]);
+    // B) Consulta simultánea al backend Cloud SQL (/api/clients y /api/loans) con try/catch
+    if (isBrowserOnline) {
+      try {
+        const [cRes, lRes] = await Promise.all([
+          fetch('/api/clients'),
+          fetch('/api/loans'),
+        ]);
 
-    if (cRes.ok) {
-      const apiClients = await cRes.json();
-      if (Array.isArray(apiClients)) {
-        // Combinar sin duplicados priorizando los registros reales de base de datos
-        const existingIds = new Set(rawClients.map((c) => c.id));
-        for (const ac of apiClients) {
-          if (!existingIds.has(ac.id)) {
-            rawClients.push(ac);
+        if (cRes.ok) {
+          const apiClients = await cRes.json();
+          if (Array.isArray(apiClients)) {
+            const existingIds = new Set(rawClients.map((c) => c.id));
+            for (const ac of apiClients) {
+              if (!existingIds.has(ac.id)) {
+                rawClients.push(ac);
+              }
+            }
           }
         }
-      }
-    }
 
-    if (lRes.ok) {
-      const apiLoans = await lRes.json();
-      if (Array.isArray(apiLoans)) {
-        rawLoans = apiLoans;
+        if (lRes.ok) {
+          const apiLoans = await lRes.json();
+          if (Array.isArray(apiLoans)) {
+            const existingLoanIds = new Set(rawLoans.map((l) => l.id));
+            for (const al of apiLoans) {
+              if (!existingLoanIds.has(al.id)) {
+                rawLoans.push(al);
+              }
+            }
+          }
+        }
+      } catch (apiNetworkErr) {
+        console.warn('[API Offline Fallback] Operando en modo offline con datos locales:', apiNetworkErr);
       }
     }
 
@@ -130,17 +218,29 @@ export async function fetchClientsAndLoansFromDB(
       lng: -75.6142,
     }));
 
+    // Fusionar clientes guardados localmente en modo offline
+    const offlineClients = getLocalCachedClients();
+    const mappedClientIds = new Set(mappedClients.map((c) => c.id));
+    for (const oc of offlineClients) {
+      if (!mappedClientIds.has(oc.id)) {
+        mappedClients.unshift(oc);
+        mappedClientIds.add(oc.id);
+      }
+    }
+
     // Crear mapa rápido por clientId para vincular nombre y negocio reales a cada préstamo
     const clientById = new Map<string, ClientProfile>();
     mappedClients.forEach((cl) => clientById.set(cl.id, cl));
 
-    // Mapear préstamos vinculando los datos reales del cliente
+    // Mapear préstamos vinculando los datos reales del cliente con redondeo entero exacto en COP
     const mappedLoans: LoanDetail[] = rawLoans.map((l: any) => {
       const cId = String(l.clientId || l.client_id);
       const matchedClient = clientById.get(cId);
-      const principalAmount = Number(l.principalAmount || l.principal_amount || 500000);
-      const totalAmount = Number(l.totalAmount || l.total_amount || principalAmount * 1.2);
-      const remBalance = Number(l.remainingBalance ?? l.remaining_balance ?? totalAmount);
+      const principalAmount = roundCOP(l.principalAmount || l.principal_amount || 500000);
+      const totalAmount = roundCOP(l.totalAmount || l.total_amount || principalAmount * 1.2);
+      const remBalance = roundCOP(l.remainingBalance ?? l.remaining_balance ?? totalAmount);
+      const totalDaysCount = Math.max(1, roundCOP(l.totalDays || l.total_days || 24));
+      const rawModality = (l.modality || 'diaria') as LoanModality;
 
       return {
         id: String(l.id),
@@ -152,18 +252,29 @@ export async function fetchClientsAndLoansFromDB(
         principal: principalAmount,
         interestRate: Number(l.interestRate || l.interest_rate || 20),
         totalDebt: totalAmount,
-        installmentAmount: Number(l.dailyQuota || l.daily_quota || Math.round(totalAmount / 24)),
-        termDays: Number(l.totalDays || l.total_days || 24),
-        installmentsPaid: Number(l.paidDays || l.paid_days || 0),
+        installmentAmount: roundCOP(l.dailyQuota || l.daily_quota || totalAmount / totalDaysCount),
+        termDays: totalDaysCount,
+        modality: rawModality,
+        installmentsPaid: roundCOP(l.paidDays || l.paid_days || 0),
         totalCollected: Math.max(0, totalAmount - remBalance),
         remainingBalance: remBalance,
         disbursedDate: l.startDate || l.start_date || new Date().toISOString().split('T')[0],
         dueDate: l.expectedEndDate || l.expected_end_date || '',
         daysOverdue: 0,
-        status: l.status === 'completed' ? 'liquidado' : 'activo',
+        status: l.status === 'completed' || remBalance === 0 ? 'liquidado' : 'activo',
         todayPaid: false,
       };
     });
+
+    // Fusionar préstamos guardados localmente en modo offline
+    const offlineLoans = getLocalCachedLoans();
+    const mappedLoanIds = new Set(mappedLoans.map((l) => l.id));
+    for (const ol of offlineLoans) {
+      if (!mappedLoanIds.has(ol.id)) {
+        mappedLoans.unshift(ol);
+        mappedLoanIds.add(ol.id);
+      }
+    }
 
     // Garantizar que cualquier cliente existente en `clients` que aún no tenga fila en `loans`
     // tenga su ficha de cobro activa para que NUNCA desaparezca del listado tras refrescar
@@ -184,6 +295,7 @@ export async function fetchClientsAndLoansFromDB(
           totalDebt: defaultTotal,
           installmentAmount: 25000,
           termDays: 24,
+          modality: 'diaria',
           installmentsPaid: 0,
           totalCollected: 0,
           remainingBalance: defaultTotal,
@@ -205,21 +317,184 @@ export async function fetchClientsAndLoansFromDB(
           ? mappedLoans.filter((l) => l.routeId === routeIdFilter)
           : mappedLoans,
       },
+      savedOffline: !isBrowserOnline,
       error: null,
     };
   } catch (err: any) {
     console.error('[Error crítico consultando clientes en Base de Datos]:', err);
     return {
-      data: null,
-      error: {
-        message: err?.message || 'No se pudo conectar con la base de datos para cargar los clientes.',
+      data: {
+        clients: getLocalCachedClients(),
+        loans: getLocalCachedLoans(),
       },
+      savedOffline: true,
+      error: null,
     };
   }
 }
 
 /**
- * 2. INSERCIÓN DE CLIENTE CON CAPTURA ESTRICTA DE ERRORES DE SUPABASE (RLS / CONSTRAINTS)
+ * 2. CREACIÓN DE PRÉSTAMO CON MONTO Y CONDICIONES LIBRES EN SUPABASE (TABLA `loans`)
+ * Con manejo de errores try/catch y respaldo automático en modo Offline.
+ */
+export async function createCustomLoanInDB(
+  input: CreateCustomLoanInput
+): Promise<DatabaseOperationResult<LoanDetail>> {
+  const timestampSuffix = Date.now().toString().slice(-6);
+  const loanId = `loan-${timestampSuffix}`;
+  const loanCode = `PREST-${input.routeId.slice(-2).toUpperCase()}-${timestampSuffix.slice(-4)}`;
+  const todayStr = new Date().toISOString().split('T')[0];
+
+  const safePrincipal = Math.max(1000, roundCOP(input.principal));
+  const safeRate = Math.max(0, Number(input.interestRate) || 0);
+  const safeInstallments = Math.max(1, roundCOP(input.termInstallments));
+  const modality: LoanModality = input.modality || 'diaria';
+
+  // Cálculo Financiero Exacto en enteros COP: Total = Monto + Round(Monto * Tasa / 100) y Cuota = Round(Total / Plazo)
+  const totalInterest = roundCOP(safePrincipal * (safeRate / 100));
+  const totalDebt = safePrincipal + totalInterest;
+  const installmentAmount = roundCOP(totalDebt / safeInstallments);
+  const dueDateStr = calculateExpectedEndDate(safeInstallments, modality);
+
+  const createdLoan: LoanDetail = {
+    id: loanId,
+    code: loanCode,
+    clientId: input.clientId,
+    clientName: input.clientName,
+    tradeName: input.tradeName || input.clientName,
+    routeId: input.routeId,
+    principal: safePrincipal,
+    interestRate: safeRate,
+    totalDebt,
+    installmentAmount,
+    termDays: safeInstallments,
+    modality,
+    installmentsPaid: 0,
+    totalCollected: 0,
+    remainingBalance: totalDebt,
+    disbursedDate: todayStr,
+    dueDate: dueDateStr,
+    daysOverdue: 0,
+    status: 'activo',
+    todayPaid: false,
+  };
+
+  // Guardar siempre copia en caché local para resiliencia ante pérdidas de señal
+  saveLocalCachedLoan(createdLoan);
+
+  const isBrowserOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+  if (!isBrowserOnline) {
+    return {
+      data: createdLoan,
+      savedOffline: true,
+      error: null,
+    };
+  }
+
+  try {
+    // 1. Inserción directa en tabla `loans` de Supabase si las credenciales están activas
+    if (isLiveSupabaseConfigured) {
+      const { error: sbLoanError } = await supabase
+        .from('loans')
+        .insert([
+          {
+            id: loanId,
+            client_id: input.clientId,
+            route_id: input.routeId,
+            principal_amount: safePrincipal,
+            interest_rate: safeRate,
+            total_amount: totalDebt,
+            daily_quota: installmentAmount,
+            remaining_balance: totalDebt,
+            total_days: safeInstallments,
+            paid_days: 0,
+            modality,
+            status: 'active',
+            start_date: todayStr,
+            expected_end_date: dueDateStr,
+          },
+        ])
+        .select()
+        .single();
+
+      if (sbLoanError) {
+        console.error('❌ [Supabase INSERT Error en tabla loans]:', sbLoanError);
+        const isRls =
+          sbLoanError.code === '42501' ||
+          sbLoanError.message.toLowerCase().includes('row-level security') ||
+          sbLoanError.message.toLowerCase().includes('policy');
+
+        return {
+          data: null,
+          error: {
+            message: isRls
+              ? `Bloqueo por Política RLS en tabla 'loans': ${sbLoanError.message}`
+              : `Error de Supabase al insertar en 'loans': ${sbLoanError.message}`,
+            code: sbLoanError.code,
+            details: sbLoanError.details,
+            hint: isRls
+              ? 'Verifica que el usuario autenticado tenga permisos INSERT en public.loans para su ruta u organización.'
+              : sbLoanError.hint,
+            isRlsError: isRls,
+          },
+        };
+      }
+    }
+
+    // 2. Persistir en Cloud SQL PostgreSQL (/api/loans)
+    const loanRes = await fetch('/api/loans', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: loanId,
+        clientId: input.clientId,
+        routeId: input.routeId,
+        principalAmount: safePrincipal,
+        interestRate: safeRate,
+        totalAmount: totalDebt,
+        dailyQuota: installmentAmount,
+        remainingBalance: totalDebt,
+        totalDays: safeInstallments,
+        paidDays: 0,
+        modality,
+        status: 'active',
+        startDate: todayStr,
+        expectedEndDate: dueDateStr,
+      }),
+    });
+
+    if (!loanRes.ok) {
+      const loanErrBody = await loanRes.json().catch(() => ({}));
+      console.error('❌ [Database INSERT Error - /api/loans]:', loanErrBody);
+      return {
+        data: null,
+        error: {
+          message:
+            loanErrBody.error ||
+            `HTTP ${loanRes.status}: No se pudo insertar el préstamo en la tabla loans.`,
+          code: String(loanRes.status),
+          hint: 'Verifica que el client_id exista en la tabla clients y que la ruta esté activa.',
+        },
+      };
+    }
+
+    return {
+      data: createdLoan,
+      savedOffline: false,
+      error: null,
+    };
+  } catch (err: any) {
+    console.warn('⚠️ [Red inestable en calle - Préstamo guardado en caché Offline]:', err);
+    return {
+      data: createdLoan,
+      savedOffline: true,
+      error: null,
+    };
+  }
+}
+
+/**
+ * 3. INSERCIÓN DE CLIENTE + PRÉSTAMO PERSONALIZADO CON CAPTURA ESTRICTA DE ERRORES Y SOPORTE OFFLINE
  */
 export async function insertClientAndLoanToDB(
   input: CreateClientRecordInput
@@ -230,19 +505,77 @@ export async function insertClientAndLoanToDB(
   const loanCode = `PREST-${input.routeId.slice(-2).toUpperCase()}-${timestampSuffix.slice(-4)}`;
   const todayStr = new Date().toISOString().split('T')[0];
 
-  const dueDateObj = new Date();
-  dueDateObj.setDate(dueDateObj.getDate() + input.termDays);
-  const dueDateStr = dueDateObj.toISOString().split('T')[0];
+  const safePrincipal = Math.max(1000, roundCOP(input.principal));
+  const safeRate = Math.max(0, Number(input.interestRate) || 0);
+  const safeTerm = Math.max(1, roundCOP(input.termDays));
+  const modality: LoanModality = input.modality || 'diaria';
 
-  const totalDebt = Math.round(input.principal * (1 + input.interestRate / 100));
-  const dailyInstallment = Math.round(totalDebt / input.termDays);
+  const dueDateStr = calculateExpectedEndDate(safeTerm, modality);
+  const totalInterest = roundCOP(safePrincipal * (safeRate / 100));
+  const totalDebt = safePrincipal + totalInterest;
+  const installmentAmount = roundCOP(totalDebt / safeTerm);
   const cleanDocument =
     input.document.trim() || `CC-${Math.floor(1000000000 + Math.random() * 900000000)}`;
 
+  const createdClient: ClientProfile = {
+    id: clientId,
+    name: input.name.trim(),
+    tradeName: input.tradeName?.trim() || input.name.trim(),
+    category: input.category || 'Micronegocio Local',
+    document: cleanDocument,
+    phone: input.phone.trim(),
+    address: input.address.trim(),
+    neighborhood: input.neighborhood.trim(),
+    routeId: input.routeId,
+    riskTier: 'A_excelente',
+    daysOverdue: 0,
+    hasPreventiveBlock: false,
+    guarantorName: input.guarantorName?.trim() || 'Fiador de Ruta',
+    guarantorPhone: input.guarantorPhone?.trim() || input.phone.trim(),
+    lat: 6.2518,
+    lng: -75.6142,
+  };
+
+  const createdLoan: LoanDetail = {
+    id: loanId,
+    code: loanCode,
+    clientId,
+    clientName: createdClient.name,
+    tradeName: createdClient.tradeName,
+    routeId: input.routeId,
+    principal: safePrincipal,
+    interestRate: safeRate,
+    totalDebt,
+    installmentAmount,
+    termDays: safeTerm,
+    modality,
+    installmentsPaid: 0,
+    totalCollected: 0,
+    remainingBalance: totalDebt,
+    disbursedDate: todayStr,
+    dueDate: dueDateStr,
+    daysOverdue: 0,
+    status: 'activo',
+    todayPaid: false,
+  };
+
+  // Respaldo inmediato en almacenamiento local por si el cobrador pierde señal en calle
+  saveLocalCachedClient(createdClient);
+  saveLocalCachedLoan(createdLoan);
+
+  const isBrowserOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+  if (!isBrowserOnline) {
+    return {
+      data: { client: createdClient, loan: createdLoan },
+      savedOffline: true,
+      error: null,
+    };
+  }
+
   try {
-    // 1. Si Supabase directo está configurado, insertar en `public.clients` y verificar `error`
+    // 1. Si Supabase directo está configurado, insertar en `public.clients` y `public.loans`
     if (isLiveSupabaseConfigured) {
-      const { data: sbInserted, error: sbError } = await supabase
+      const { error: sbError } = await supabase
         .from('clients')
         .insert([
           {
@@ -257,21 +590,14 @@ export async function insertClientAndLoanToDB(
             route_id: input.routeId,
             risk_score: 80,
             risk_level: 'verde',
-            credit_limit: input.principal * 2,
+            credit_limit: safePrincipal * 2,
           },
         ])
         .select()
         .single();
 
       if (sbError) {
-        // LOG EXPLÍCITO EN CONSOLA PARA DIAGNÓSTICO DE RLS O RECHAZO DE ESQUEMA
-        console.error('❌ [Supabase INSERT Error en tabla clients]:', {
-          message: sbError.message,
-          code: sbError.code,
-          details: sbError.details,
-          hint: sbError.hint,
-        });
-
+        console.error('❌ [Supabase INSERT Error en tabla clients]:', sbError);
         const isRls =
           sbError.code === '42501' ||
           sbError.message.toLowerCase().includes('row-level security') ||
@@ -293,7 +619,28 @@ export async function insertClientAndLoanToDB(
         };
       }
 
-      console.log('✅ [Supabase INSERT Exitoso en tabla clients]:', sbInserted);
+      const { error: sbLoanErr } = await supabase.from('loans').insert([
+        {
+          id: loanId,
+          client_id: clientId,
+          route_id: input.routeId,
+          principal_amount: safePrincipal,
+          interest_rate: safeRate,
+          total_amount: totalDebt,
+          daily_quota: installmentAmount,
+          remaining_balance: totalDebt,
+          total_days: safeTerm,
+          paid_days: 0,
+          modality,
+          status: 'active',
+          start_date: todayStr,
+          expected_end_date: dueDateStr,
+        },
+      ]);
+
+      if (sbLoanErr) {
+        console.error('❌ [Supabase INSERT Error en tabla loans]:', sbLoanErr);
+      }
     }
 
     // 2. Persistir en la base de datos PostgreSQL (Cloud SQL / Backend API)
@@ -312,13 +659,14 @@ export async function insertClientAndLoanToDB(
         routeId: input.routeId,
         riskScore: 80,
         riskLevel: 'verde',
-        creditLimit: input.principal * 2,
+        creditLimit: safePrincipal * 2,
       }),
     });
 
     if (!clientRes.ok) {
       const errBody = await clientRes.json().catch(() => ({}));
-      const errMsg = errBody.error || `HTTP ${clientRes.status}: Rechazo al insertar en la tabla clients.`;
+      const errMsg =
+        errBody.error || `HTTP ${clientRes.status}: Rechazo al insertar en la tabla clients.`;
       console.error('❌ [Database INSERT Error - /api/clients]:', errBody);
       return {
         data: null,
@@ -338,13 +686,14 @@ export async function insertClientAndLoanToDB(
         id: loanId,
         clientId,
         routeId: input.routeId,
-        principalAmount: input.principal,
-        interestRate: input.interestRate,
+        principalAmount: safePrincipal,
+        interestRate: safeRate,
         totalAmount: totalDebt,
-        dailyQuota: dailyInstallment,
+        dailyQuota: installmentAmount,
         remainingBalance: totalDebt,
-        totalDays: input.termDays,
+        totalDays: safeTerm,
         paidDays: 0,
+        modality,
         status: 'active',
         startDate: todayStr,
         expectedEndDate: dueDateStr,
@@ -357,64 +706,26 @@ export async function insertClientAndLoanToDB(
       return {
         data: null,
         error: {
-          message: loanErrBody.error || 'El cliente se creó, pero hubo un error al crear su préstamo inicial.',
+          message:
+            loanErrBody.error ||
+            'El cliente se creó, pero hubo un error al crear su préstamo inicial.',
           code: String(loanRes.status),
         },
       };
     }
 
-    const createdClient: ClientProfile = {
-      id: clientId,
-      name: input.name.trim(),
-      tradeName: input.tradeName?.trim() || input.name.trim(),
-      category: input.category || 'Micronegocio Local',
-      document: cleanDocument,
-      phone: input.phone.trim(),
-      address: input.address.trim(),
-      neighborhood: input.neighborhood.trim(),
-      routeId: input.routeId,
-      riskTier: 'A_excelente',
-      daysOverdue: 0,
-      hasPreventiveBlock: false,
-      guarantorName: input.guarantorName?.trim() || 'Fiador de Ruta',
-      guarantorPhone: input.guarantorPhone?.trim() || input.phone.trim(),
-      lat: 6.2518,
-      lng: -75.6142,
-    };
-
-    const createdLoan: LoanDetail = {
-      id: loanId,
-      code: loanCode,
-      clientId,
-      clientName: createdClient.name,
-      tradeName: createdClient.tradeName,
-      routeId: input.routeId,
-      principal: input.principal,
-      interestRate: input.interestRate,
-      totalDebt,
-      installmentAmount: dailyInstallment,
-      termDays: input.termDays,
-      installmentsPaid: 0,
-      totalCollected: 0,
-      remainingBalance: totalDebt,
-      disbursedDate: todayStr,
-      dueDate: dueDateStr,
-      daysOverdue: 0,
-      status: 'activo',
-      todayPaid: false,
-    };
-
     return {
       data: { client: createdClient, loan: createdLoan },
+      savedOffline: false,
       error: null,
     };
   } catch (err: any) {
-    console.error('❌ [Excepción crítica al insertar cliente en Base de Datos]:', err);
+    console.warn('⚠️ [Red inestable en calle - Cliente y Préstamo guardados localmente]:', err);
     return {
-      data: null,
-      error: {
-        message: err?.message || 'Error inesperado de red o permisos RLS al guardar el cliente.',
-      },
+      data: { client: createdClient, loan: createdLoan },
+      savedOffline: true,
+      error: null,
     };
   }
 }
+

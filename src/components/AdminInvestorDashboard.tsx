@@ -1,36 +1,40 @@
 import React, { useState } from 'react';
-import { 
-  DollarSign, 
-  TrendingUp, 
-  AlertTriangle, 
-  ShieldAlert, 
-  MapPin, 
-  Activity, 
-  Fuel, 
+import {
+  DollarSign,
+  TrendingUp,
+  AlertTriangle,
+  ShieldAlert,
+  MapPin,
+  Activity,
+  Fuel,
   Calculator,
   Lock,
-  RefreshCw,
-  Sliders,
   BrainCircuit,
   ArrowRightLeft,
-  Sparkles,
   FileCheck,
   Bot,
-  UserPlus
+  UserPlus,
+  Users,
+  Settings,
+  Layers,
+  Database,
+  Crown,
+  Search,
+  Phone,
 } from 'lucide-react';
-import { 
-  RouteData, 
-  ClientProfile, 
-  LoanDetail, 
+import {
+  RouteData,
+  ClientProfile,
+  LoanDetail,
   RouteExpenseItem,
   LedgerEntry,
-  CollectorBase
+  CollectorBase,
 } from '../data/mockData';
-import { 
-  formatCOP, 
-  calculateNetCashFlow, 
+import {
+  formatCOP,
+  calculateNetCashFlow,
   calculateRouteBreakEven,
-  simulateMicroloan 
+  simulateMicroloan,
 } from '../utils/financialCalculations';
 import { detectRouteAnomalies } from '../utils/scoringEngine';
 import { RiskIntelligenceModal } from './RiskIntelligenceModal';
@@ -41,6 +45,7 @@ import { CollectorWeeklyBaseManager } from './CollectorWeeklyBaseManager';
 import { AdminCollectorUsersManager, CollectorUserRecord } from './AdminCollectorUsersManager';
 import { SuperAdminTenantsManager } from './SuperAdminTenantsManager';
 import { NegotiationProposal } from '../utils/aiNegotiator';
+import { useAuth } from '../context/AuthContext';
 
 interface AdminDashboardProps {
   routes: RouteData[];
@@ -60,6 +65,13 @@ interface AdminDashboardProps {
   onOpenNewClientModal?: () => void;
 }
 
+type AdminSectionTab =
+  | 'all_sections'
+  | 'gestion_cuentas'
+  | 'monitoreo_rutas'
+  | 'auditoria_riesgo'
+  | 'configuracion_sistema';
+
 export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
   routes,
   clients,
@@ -75,8 +87,13 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
   onReassignClientRoute,
   onConfirmReconciliation,
   onNavigateToTab,
-  onOpenNewClientModal
+  onOpenNewClientModal,
 }) => {
+  const { profile, role, isSuperAdmin } = useAuth();
+
+  // Navegación interna por pestañas organizadas del Super Admin / Admin
+  const [activeSection, setActiveSection] = useState<AdminSectionTab>('all_sections');
+
   // Modales avanzados
   const [showRiskModal, setShowRiskModal] = useState(false);
   const [showReassignModal, setShowReassignModal] = useState(false);
@@ -88,18 +105,19 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
   const [simRate, setSimRate] = useState<number>(20);
   const [simTerm, setSimTerm] = useState<number>(24);
   const [simDefaultRate, setSimDefaultRate] = useState<number>(8);
-
-  // Filtro de ruta seleccionada
-  const [selectedRouteId, setSelectedRouteId] = useState<string>('all');
+  const [adminClientSearch, setAdminClientSearch] = useState<string>('');
 
   // Detección de anomalías en vivo
   const anomalies = detectRouteAnomalies(routes, loans, expenses);
 
   // Cálculos consolidados globales
-  const totalPortfolio = loans.reduce((acc, l) => acc + (l.status === 'activo' || l.status === 'mora_severa' ? l.remainingBalance : 0), 0);
+  const totalPortfolio = loans.reduce(
+    (acc, l) => acc + (l.status === 'activo' || l.status === 'mora_severa' ? l.remainingBalance : 0),
+    0
+  );
   const totalGrossCollected = routes.reduce((acc, r) => acc + r.dailyGrossCollected, 0);
   const totalExpenses = expenses.reduce((acc, e) => acc + e.amount, 0);
-  
+
   // Provisión obligatoria del 4% sobre recaudo bruto para cartera incobrable
   const { badDebtProvision, netCashFlow, netMarginPercent } = calculateNetCashFlow(
     totalGrossCollected,
@@ -108,14 +126,13 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
   );
 
   // Clientes con 2 o más días de mora (Regla de Riesgo Obligatoria)
-  const highRiskOverdueLoans = loans.filter(l => l.daysOverdue >= 2 && l.status !== 'liquidado');
+  const highRiskOverdueLoans = loans.filter((l) => l.daysOverdue >= 2 && l.status !== 'liquidado');
 
   // Ejecución de simulación
   const simResult = simulateMicroloan(simPrincipal, simRate, simTerm, simDefaultRate);
 
   const handleApproveAiAgreement = (proposal: NegotiationProposal) => {
-    // Al aprobar acuerdo IA, se actualiza el préstamo y se desbloquea
-    const matchedLoan = loans.find(l => l.clientName === proposal.clientName);
+    const matchedLoan = loans.find((l) => l.clientName === proposal.clientName);
     if (matchedLoan) {
       onRestructureLoan(matchedLoan.id);
     }
@@ -124,400 +141,323 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* HEADER DE MANDO EJECUTIVO (CFO) */}
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+      {/* =====================================================================
+          1. CABECERA EJECUTIVA + TARJETAS DE MÉTRICAS (SAAS MODERNO)
+         ===================================================================== */}
+      <section className="bg-slate-900 border border-slate-800 rounded-xl p-5 sm:p-6 shadow-xs">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-800">
           <div>
-            <div className="flex items-center gap-2">
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                CFO Cockpit & Liquidity Hub
-              </span>
-              <span className="text-xs text-slate-400">Región: Medellín y Área Metropolitana</span>
+            <div className="flex items-center gap-2 text-xs text-slate-400">
+              <span>{isSuperAdmin ? 'Administración Global Multi-Fondo' : 'Panel de Administración de Fondo'}</span>
+              <span aria-hidden="true">·</span>
+              <span>{profile?.organizationName || 'RutaCapital Medellín'}</span>
+              <span aria-hidden="true">·</span>
+              <span className="font-mono text-slate-300">{role}</span>
             </div>
-            <h2 className="text-2xl font-bold text-white tracking-tight mt-1">
-              Consolidado de Caja & Margen Operativo Neto
+            <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight mt-1">
+              {isSuperAdmin
+                ? 'Centro de Control Super Administrador & Liquidez'
+                : 'Consolidado de Caja, Rutas y Equipo de Cobro'}
             </h2>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Fórmula en tiempo real: <span className="font-mono text-emerald-300">Net Cash Flow = Recaudo Bruto - Gastos Operativos - Provisión Cartera</span>
+            <p className="text-xs text-slate-400 mt-1">
+              Flujo de Caja Neto = Recaudo Bruto Diario − Gastos Operativos de Ruta − Provisión de Cartera (4%)
             </p>
           </div>
 
-          {/* BOTONES DE OPERACIONES AVANZADAS */}
+          {/* Botones de Acción Rápida */}
           <div className="flex flex-wrap items-center gap-2">
             {onOpenNewClientModal && (
               <button
+                type="button"
                 onClick={onOpenNewClientModal}
-                className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-md shadow-emerald-950/40"
+                className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <UserPlus className="w-4 h-4" />
-                + Nuevo Cliente / Crédito
+                <span>Nuevo Cliente / Crédito</span>
               </button>
             )}
 
             <button
-              onClick={() => setShowAiNegotiatorModal(true)}
-              className="px-3 py-2 bg-gradient-to-r from-purple-600/30 to-indigo-600/30 hover:from-purple-600/40 hover:to-indigo-600/40 text-purple-200 border border-purple-500/40 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-md shadow-purple-950/40"
-            >
-              <Bot className="w-4 h-4 text-purple-400" />
-              IA Negociador de Deuda
-            </button>
-
-            <button
+              type="button"
               onClick={() => setShowRiskModal(true)}
-              className="px-3 py-2 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/30 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all"
+              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <BrainCircuit className="w-4 h-4 text-purple-400" />
-              Scoring de Riesgo
+              <BrainCircuit className="w-4 h-4 text-emerald-400" />
+              <span>Scoring de Riesgo</span>
             </button>
 
             <button
+              type="button"
               onClick={() => setShowReassignModal(true)}
-              className="px-3 py-2 bg-teal-600/20 hover:bg-teal-600/30 text-teal-300 border border-teal-500/30 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all"
+              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
             >
               <ArrowRightLeft className="w-4 h-4 text-teal-400" />
-              Asignación Dinámica
+              <span>Reasignar Rutas</span>
             </button>
           </div>
         </div>
 
-        {/* BANNER DE BASE DE DATOS LIMPIA (LISTA PARA NUEVOS CLIENTES) */}
-        {clients.length === 0 && (
-          <div className="mt-4 bg-emerald-950/30 border border-emerald-500/30 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
-                <UserPlus className="w-4 h-4" />
-              </div>
-              <div>
-                <span className="font-bold text-white text-xs block">
-                  Base de Datos Limpia (0 Registros de Prueba)
-                </span>
-                <span className="text-[11px] text-slate-300 block">
-                  Tablas y esquemas de Cloud SQL preservados al 100%. Lista para vincular los primeros deudores reales de la ruta.
-                </span>
-              </div>
-            </div>
-            {onOpenNewClientModal && (
-              <button
-                onClick={onOpenNewClientModal}
-                className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-md shadow-emerald-950/40 shrink-0"
-              >
-                <UserPlus className="w-3.5 h-3.5" />
-                Registrar Primer Cliente
-              </button>
-            )}
-          </div>
-        )}
-
-        {/* ALERTA DE ANOMALÍAS EN RUTA */}
-        {anomalies.length > 0 && (
-          <div className="mt-4 bg-rose-950/30 border border-rose-800/50 rounded-xl p-3.5 flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-rose-500/20 text-rose-400 flex items-center justify-center shrink-0">
-                <AlertTriangle className="w-4 h-4" />
-              </div>
-              <div>
-                <span className="font-bold text-white text-xs block">
-                  {anomalies.length} Anomalía(s) Estadísticas Detectadas en Calle
-                </span>
-                <span className="text-[11px] text-rose-300/90 block">
-                  {anomalies[0].message}
-                </span>
-              </div>
-            </div>
-            <button
-              onClick={() => setShowRiskModal(true)}
-              className="px-3 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold shrink-0 ml-3"
-            >
-              Inspeccionar
-            </button>
-          </div>
-        )}
-
-        {/* METRIC CARDS DEL NET CASH FLOW */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-5">
-          {/* 1. Recaudo Bruto */}
-          <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-4">
+        {/* Grid de 4 Tarjetas de Métricas Clave (SaaS Cards con tabular-nums) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mt-5">
+          {/* Card 1 */}
+          <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4">
             <div className="flex items-center justify-between text-slate-400 text-xs">
               <span>Recaudo Bruto Diario</span>
               <DollarSign className="w-4 h-4 text-emerald-400" />
             </div>
-            <div className="text-xl font-bold text-white mt-1">
+            <div className="text-xl font-bold text-white mt-1.5 font-mono tabular-nums">
               {formatCOP(totalGrossCollected)}
             </div>
-            <div className="text-[11px] text-emerald-400 flex items-center gap-1 mt-1 font-medium">
-              <span>{loans.filter(l => l.todayPaid).length} cobranzas hoy</span>
-              <span className="text-slate-500">•</span>
-              <span className="text-slate-400">4 rutas en calle</span>
+            <div className="text-xs text-slate-400 mt-1">
+              <span>{loans.filter((l) => l.todayPaid).length} abonos hoy</span>
+              <span className="mx-1.5" aria-hidden="true">
+                ·
+              </span>
+              <span>{routes.length} rutas activas</span>
             </div>
           </div>
 
-          {/* 2. Gastos de Ruta (OpEx) */}
-          <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-4">
+          {/* Card 2 */}
+          <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4">
             <div className="flex items-center justify-between text-slate-400 text-xs">
-              <span>Gastos Operativos Asignados</span>
+              <span>Gastos Operativos (OpEx)</span>
               <Fuel className="w-4 h-4 text-amber-400" />
             </div>
-            <div className="text-xl font-bold text-amber-300 mt-1">
+            <div className="text-xl font-bold text-amber-300 mt-1.5 font-mono tabular-nums">
               {formatCOP(totalExpenses)}
             </div>
-            <div className="text-[11px] text-slate-400 mt-1">
-              Gasolina, motos, viáticos y datos móviles
+            <div className="text-xs text-slate-400 mt-1">
+              Combustible, mantenimiento y viáticos
             </div>
           </div>
 
-          {/* 3. Provisión de Cartera (Colchón) */}
-          <div className="bg-slate-800/60 border border-slate-700/60 rounded-xl p-4">
+          {/* Card 3 */}
+          <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4">
             <div className="flex items-center justify-between text-slate-400 text-xs">
-              <span>Provisión Cartera Incobrable (4%)</span>
+              <span>Provisión Cartera (4%)</span>
               <ShieldAlert className="w-4 h-4 text-rose-400" />
             </div>
-            <div className="text-xl font-bold text-rose-300 mt-1">
+            <div className="text-xl font-bold text-rose-300 mt-1.5 font-mono tabular-nums">
               {formatCOP(badDebtProvision)}
             </div>
-            <div className="text-[11px] text-slate-400 mt-1">
-              Fondo de contingencia obligatorio
+            <div className="text-xs text-slate-400 mt-1">
+              Reserva obligatoria de riesgo
             </div>
           </div>
 
-          {/* 4. NET CASH FLOW REAL */}
-          <div className="bg-emerald-950/40 border border-emerald-500/30 rounded-xl p-4">
-            <div className="flex items-center justify-between text-emerald-300 text-xs font-semibold">
-              <span>NET CASH FLOW (Margen Neto)</span>
+          {/* Card 4 */}
+          <div className="bg-slate-950/70 border border-emerald-500/30 rounded-xl p-4">
+            <div className="flex items-center justify-between text-emerald-300 text-xs font-medium">
+              <span>Flujo de Caja Neto</span>
               <TrendingUp className="w-4 h-4 text-emerald-400" />
             </div>
-            <div className="text-2xl font-black text-emerald-400 mt-1">
+            <div className="text-xl font-bold text-emerald-400 mt-1.5 font-mono tabular-nums">
               {formatCOP(netCashFlow)}
             </div>
-            <div className="text-[11px] text-emerald-300/80 mt-1 font-medium">
-              Margen neto operativo: <span className="font-bold text-white">{netMarginPercent.toFixed(1)}%</span>
+            <div className="text-xs text-slate-300 mt-1 tabular-nums">
+              Margen operativo neto: <strong className="text-white">{netMarginPercent.toFixed(1)}%</strong>
             </div>
           </div>
         </div>
+      </section>
+
+      {/* =====================================================================
+          2. NAVEGACIÓN INTERNA POR APARTADOS ORGANIZADOS (TABS RESPONSIVE)
+         ===================================================================== */}
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-1.5 flex items-center gap-1 overflow-x-auto">
+        <button
+          type="button"
+          onClick={() => setActiveSection('all_sections')}
+          className={`px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            activeSection === 'all_sections'
+              ? 'bg-emerald-600 text-white shadow-xs'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+          }`}
+        >
+          <Layers className="w-3.5 h-3.5" />
+          <span>Vista General</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveSection('gestion_cuentas')}
+          className={`px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            activeSection === 'gestion_cuentas'
+              ? 'bg-emerald-600 text-white shadow-xs'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+          }`}
+        >
+          {isSuperAdmin ? <Crown className="w-3.5 h-3.5 text-amber-300" /> : <Users className="w-3.5 h-3.5" />}
+          <span>{isSuperAdmin ? '1. Gestión de Administradores & Cobradores' : '1. Gestión de Cobradores & Bases'}</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveSection('monitoreo_rutas')}
+          className={`px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            activeSection === 'monitoreo_rutas'
+              ? 'bg-emerald-600 text-white shadow-xs'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+          }`}
+        >
+          <Activity className="w-3.5 h-3.5" />
+          <span>2. Monitoreo de Rutas & Arqueos</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveSection('auditoria_riesgo')}
+          className={`px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            activeSection === 'auditoria_riesgo'
+              ? 'bg-emerald-600 text-white shadow-xs'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+          }`}
+        >
+          <ShieldAlert className="w-3.5 h-3.5" />
+          <span>3. Auditoría General & Mora ({highRiskOverdueLoans.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveSection('configuracion_sistema')}
+          className={`px-3.5 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            activeSection === 'configuracion_sistema'
+              ? 'bg-emerald-600 text-white shadow-xs'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+          }`}
+        >
+          <Settings className="w-3.5 h-3.5" />
+          <span>4. Configuración & Simulador Financiero</span>
+        </button>
       </div>
 
-      {/* NIVEL 1 (EXCLUSIVO SUPER_ADMIN): PANEL DE CREACIÓN DE ADMINISTRADORES Y FONDOS */}
-      <SuperAdminTenantsManager />
+      {/* =====================================================================
+          APARTADO 1: GESTIÓN DE ADMINISTRADORES, COBRADORES Y BASES SEMANALES
+         ===================================================================== */}
+      {(activeSection === 'all_sections' || activeSection === 'gestion_cuentas') && (
+        <div className="space-y-6">
+          {/* Nivel 1 (Exclusivo Super Admin): Creación de Administradores */}
+          <SuperAdminTenantsManager />
 
-      {/* NIVEL 2 (ADMIN & SUPER_ADMIN): MÓDULO DE GESTIÓN DE COBRADORES (CREACIÓN DE USUARIOS Y ASIGNACIÓN DE RUTAS) */}
-      <AdminCollectorUsersManager
-        routes={routes}
-        onCollectorCreated={onCollectorCreated}
-        onSwitchToCollectorView={() => onNavigateToTab && onNavigateToTab('collector_street')}
-      />
+          {/* Nivel 2 (Admin y Super Admin): Creación de Cobradores y Asignación de Rutas */}
+          <AdminCollectorUsersManager
+            routes={routes}
+            onCollectorCreated={onCollectorCreated}
+            onSwitchToCollectorView={() => onNavigateToTab && onNavigateToTab('collector_street')}
+          />
 
-      {/* MÓDULO DE GESTIÓN DE BASES SEMANALES PARA COBRADORES (collector_bases) */}
-      {onAssignCollectorBase && onUpdateCollectorBaseStatus && (
-        <CollectorWeeklyBaseManager
-          routes={routes}
-          collectorBases={collectorBases}
-          onAssignBase={onAssignCollectorBase}
-          onUpdateBaseStatus={onUpdateCollectorBaseStatus}
-        />
+          {/* Gestión de Bases Semanales de Efectivo para Cobradores */}
+          {onAssignCollectorBase && onUpdateCollectorBaseStatus && (
+            <CollectorWeeklyBaseManager
+              routes={routes}
+              collectorBases={collectorBases}
+              onAssignBase={onAssignCollectorBase}
+              onUpdateBaseStatus={onUpdateCollectorBaseStatus}
+            />
+          )}
+        </div>
       )}
 
-      {/* ALERTAS TEMPRANAS DE RIESGO: MORA >= 2 DÍAS (BLOQUEO Y REESTRUCTURACIÓN) */}
-      <div className="bg-rose-950/20 border border-rose-900/40 rounded-2xl p-5">
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-rose-500/20 flex items-center justify-center text-rose-400">
-              <AlertTriangle className="w-4 h-4" />
-            </div>
+      {/* =====================================================================
+          APARTADO 2: MONITOREO DE RUTAS, PUNTO DE EQUILIBRIO Y ARQUEO DE CAJA
+         ===================================================================== */}
+      {(activeSection === 'all_sections' || activeSection === 'monitoreo_rutas') && (
+        <section className="bg-slate-900 border border-slate-800 rounded-xl p-5 sm:p-6 shadow-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-5 pb-4 border-b border-slate-800">
             <div>
-              <h3 className="text-sm font-bold text-white">
-                Protocolo de Mitigación de Riesgos: Alertas Tempranas (Mora ≥ 2 Días)
-              </h3>
-              <p className="text-xs text-rose-300/80">
-                Regla obligatoria: Bloqueo preventivo de nuevos desembolsos y habilitación de reestructuración de plazo.
-              </p>
-            </div>
-          </div>
-          <span className="text-xs font-semibold px-2 py-1 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
-            {highRiskOverdueLoans.length} caso(s) en alerta
-          </span>
-        </div>
-
-        {highRiskOverdueLoans.length === 0 ? (
-          <p className="text-xs text-slate-400 py-2">No hay créditos en mora crítica mayor o igual a 2 días.</p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-900/60 text-slate-400 border-b border-slate-800">
-                <tr>
-                  <th className="py-2.5 px-3">Cliente / Negocio</th>
-                  <th className="py-2.5 px-3">Ruta</th>
-                  <th className="py-2.5 px-3">Días de Mora</th>
-                  <th className="py-2.5 px-3">Saldo Insoluto</th>
-                  <th className="py-2.5 px-3">Cuota Diaria</th>
-                  <th className="py-2.5 px-3">Bloqueo Preventivo</th>
-                  <th className="py-2.5 px-3 text-right">Acción de Mitigación</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60">
-                {highRiskOverdueLoans.map(loan => {
-                  const client = clients.find(c => c.id === loan.clientId);
-                  const isBlocked = client?.hasPreventiveBlock ?? true;
-
-                  return (
-                    <tr key={loan.id} className="hover:bg-slate-800/30 transition-colors">
-                      <td className="py-3 px-3">
-                        <div className="font-semibold text-white">{loan.clientName}</div>
-                        <div className="text-[11px] text-slate-400">{loan.tradeName}</div>
-                      </td>
-                      <td className="py-3 px-3 text-slate-300 font-mono text-[11px]">
-                        {loan.routeId === 'route-1' ? 'Comuna 13' : 'Manrique'}
-                      </td>
-                      <td className="py-3 px-3">
-                        <span className="px-2 py-0.5 rounded font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
-                          {loan.daysOverdue} días sin pagar
-                        </span>
-                      </td>
-                      <td className="py-3 px-3 font-semibold text-rose-200">
-                        {formatCOP(loan.remainingBalance)}
-                      </td>
-                      <td className="py-3 px-3 text-slate-300">
-                        {formatCOP(loan.installmentAmount)}
-                      </td>
-                      <td className="py-3 px-3">
-                        <button
-                          onClick={() => onToggleClientBlock(loan.clientId)}
-                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${
-                            isBlocked 
-                              ? 'bg-rose-900/60 text-rose-200 border border-rose-700/60' 
-                              : 'bg-slate-800 text-slate-300 border border-slate-700'
-                          }`}
-                        >
-                          <Lock className="w-3 h-3" />
-                          {isBlocked ? 'Bloqueo Activo' : 'Desbloqueado'}
-                        </button>
-                      </td>
-                      <td className="py-3 px-3 text-right">
-                        <button
-                          onClick={() => setShowAiNegotiatorModal(true)}
-                          className="inline-flex items-center gap-1 px-3 py-1 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-lg text-[11px] font-bold shadow-sm transition-all"
-                        >
-                          <Bot className="w-3 h-3" />
-                          Negociar con IA
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      {/* PUNTO DE EQUILIBRIO POR RUTA Y COSTOS OPERATIVOS */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
                 <Activity className="w-4 h-4 text-emerald-400" />
-                Punto de Equilibrio de Cada Ruta de Cobro
+                Monitoreo de Rutas y Punto de Equilibrio Operativo
               </h3>
-              <p className="text-xs text-slate-400">
-                Créditos mínimos al día necesarios para absorber la logística de calle (motos, combustible, viáticos del rutero)
+              <p className="text-xs text-slate-400 mt-0.5">
+                Cobertura de gastos fijos diarios (combustible, moto y viáticos) y estado de recaudo por sector
               </p>
             </div>
-            <span className="text-xs bg-slate-800 text-slate-300 px-2 py-1 rounded border border-slate-700">
-              Cartera Total: {formatCOP(totalPortfolio)}
-            </span>
+            <div className="text-xs font-mono text-slate-300 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800 tabular-nums">
+              Cartera Activa Total: <strong className="text-white">{formatCOP(totalPortfolio)}</strong>
+            </div>
           </div>
 
-          <div className="space-y-4">
-            {routes.map(route => {
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {routes.map((route) => {
               const breakEven = calculateRouteBreakEven(route.fixedDailyOpex, 850000, 20, 24);
-              const coverageRatio = (route.activeLoansCount / breakEven.breakEvenActiveLoans);
+              const coverageRatio = route.activeLoansCount / breakEven.breakEvenActiveLoans;
               const isHealthy = coverageRatio >= 1.5;
 
               return (
-                <div key={route.id} className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-700/40 pb-3">
+                <div
+                  key={route.id}
+                  className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 flex flex-col justify-between space-y-4"
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-800/80">
                     <div>
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-white text-sm">{route.name}</span>
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-700 text-slate-300">
-                          {route.code}
-                        </span>
+                        <span className="text-xs font-mono text-slate-400">({route.code})</span>
                       </div>
-                      <div className="text-xs text-slate-400 flex items-center gap-1 mt-0.5">
-                        <MapPin className="w-3 h-3 text-slate-500" />
+                      <div className="text-xs text-slate-400 flex items-center gap-1.5 mt-1">
+                        <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                         <span>Rutero: {route.collectorName}</span>
-                        <span className="text-slate-600">•</span>
+                        <span aria-hidden="true">·</span>
                         <span>{route.zone}</span>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-3">
-                      <div className="text-right">
-                        <div className="text-xs text-slate-400">Gasto Diario Fijo</div>
-                        <div className="text-xs font-bold text-amber-300">{formatCOP(route.fixedDailyOpex)}/día</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-xs text-slate-400">Recaudo Hoy</div>
-                        <div className="text-xs font-bold text-emerald-300">{formatCOP(route.dailyGrossCollected)}</div>
-                      </div>
-                      <button
-                        onClick={() => setReconcilingRoute(route)}
-                        className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition-colors"
-                      >
-                        <FileCheck className="w-3 h-3 text-amber-400" />
-                        Arqueo
-                      </button>
+                    <button
+                      type="button"
+                      onClick={() => setReconcilingRoute(route)}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors self-start sm:self-auto whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <FileCheck className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Arqueo de Caja</span>
+                    </button>
+                  </div>
+
+                  {/* Métricas de la Ruta */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                    <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800/80">
+                      <span className="text-slate-400 text-[11px] block">Recaudo Hoy</span>
+                      <span className="text-sm font-bold text-emerald-400 font-mono tabular-nums">
+                        {formatCOP(route.dailyGrossCollected)}
+                      </span>
+                    </div>
+
+                    <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800/80">
+                      <span className="text-slate-400 text-[11px] block">OpEx Fijo/Día</span>
+                      <span className="text-sm font-bold text-amber-300 font-mono tabular-nums">
+                        {formatCOP(route.fixedDailyOpex)}
+                      </span>
+                    </div>
+
+                    <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800/80">
+                      <span className="text-slate-400 text-[11px] block">Créditos Activos</span>
+                      <span className="text-sm font-bold text-white font-mono tabular-nums">
+                        {route.activeLoansCount} / {breakEven.breakEvenActiveLoans} mín
+                      </span>
+                    </div>
+
+                    <div className="bg-slate-900/90 p-2.5 rounded-lg border border-slate-800/80">
+                      <span className="text-slate-400 text-[11px] block">Mora PAR-1 / 30</span>
+                      <span className="text-sm font-bold text-slate-200 font-mono tabular-nums">
+                        {route.par1Rate}% / <span className="text-rose-400">{route.par30Rate}%</span>
+                      </span>
                     </div>
                   </div>
 
-                  {/* Indicadores de equilibrio */}
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3 text-xs">
-                    <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
-                      <span className="text-slate-400 text-[11px] block">Créditos en Equilibrio</span>
-                      <span className="text-sm font-bold text-white">
-                        {breakEven.breakEvenActiveLoans} créditos
-                      </span>
-                      <span className="text-[10px] text-slate-500 block">mínimo necesario</span>
-                    </div>
-
-                    <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
-                      <span className="text-slate-400 text-[11px] block">Créditos Activos Reales</span>
-                      <span className="text-sm font-bold text-emerald-400">
-                        {route.activeLoansCount} activos
-                      </span>
-                      <span className="text-[10px] text-emerald-500 block">
-                        {(coverageRatio).toFixed(1)}x cobertura
-                      </span>
-                    </div>
-
-                    <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
-                      <span className="text-slate-400 text-[11px] block">Mora PAR-1 (Alerta)</span>
-                      <span className={`text-sm font-bold ${route.par1Rate > 5 ? 'text-amber-400' : 'text-slate-300'}`}>
-                        {route.par1Rate}%
-                      </span>
-                      <span className="text-[10px] text-slate-500 block">atraso 1 día</span>
-                    </div>
-
-                    <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
-                      <span className="text-slate-400 text-[11px] block">Mora PAR-30 (Pérdida)</span>
-                      <span className="text-sm font-bold text-rose-400">
-                        {route.par30Rate}%
-                      </span>
-                      <span className="text-[10px] text-slate-500 block">castigo probable</span>
-                    </div>
-                  </div>
-
-                  {/* Barra de progreso de equilibrio */}
-                  <div className="mt-3">
+                  {/* Barra de Cobertura */}
+                  <div>
                     <div className="flex justify-between text-[11px] text-slate-400 mb-1">
-                      <span>Eficiencia operativa y absorción de costos</span>
-                      <span className={isHealthy ? 'text-emerald-400 font-semibold' : 'text-amber-400 font-semibold'}>
-                        {isHealthy ? 'Superávit Operativo Neto' : 'Ruta Cerca al Límite de Costos'}
+                      <span>Cobertura de Punto de Equilibrio ({coverageRatio.toFixed(1)}x)</span>
+                      <span className={isHealthy ? 'text-emerald-400 font-medium' : 'text-amber-400 font-medium'}>
+                        {isHealthy ? 'Rentabilidad Óptima' : 'En Umbral de Costos'}
                       </span>
                     </div>
                     <div className="w-full bg-slate-900 h-2 rounded-full overflow-hidden">
-                      <div 
-                        className={`h-full rounded-full transition-all duration-500 ${isHealthy ? 'bg-emerald-500' : 'bg-amber-500'}`}
-                        style={{ width: `${Math.min(100, (route.activeLoansCount / (breakEven.breakEvenActiveLoans * 2)) * 100)}%` }}
+                      <div
+                        className={`h-full rounded-full ${isHealthy ? 'bg-emerald-500' : 'bg-amber-500'}`}
+                        style={{
+                          width: `${Math.min(100, (route.activeLoansCount / (breakEven.breakEvenActiveLoans * 2)) * 100)}%`,
+                        }}
                       />
                     </div>
                   </div>
@@ -525,131 +465,395 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
               );
             })}
           </div>
-        </div>
+        </section>
+      )}
 
-        {/* SIMULADOR DE MICROCRÉDITOS & TEA IMPLÍCITA (CFO TOOL) */}
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col justify-between">
-          <div>
-            <div className="flex items-center gap-2 mb-2">
-              <div className="w-8 h-8 rounded-lg bg-emerald-500/20 flex items-center justify-center text-emerald-400">
+      {/* =====================================================================
+          APARTADO 3: AUDITORÍA GENERAL, ALERTAS DE RIESGO Y MORA >= 2 DÍAS
+         ===================================================================== */}
+      {(activeSection === 'all_sections' || activeSection === 'auditoria_riesgo') && (
+        <section className="bg-slate-900 border border-slate-800 rounded-xl p-5 sm:p-6 shadow-xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
+            <div>
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-400" />
+                Auditoría de Cartera y Alertas Tempranas (Mora ≥ 2 Días)
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Control de bloqueo preventivo de nuevos desembolsos y reestructuración asistida de deuda
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowAiNegotiatorModal(true)}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Bot className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Asistente de Reestructuración</span>
+              </button>
+              {onNavigateToTab && (
+                <button
+                  type="button"
+                  onClick={() => onNavigateToTab('audit_logs')}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Ver Bitácora SHA-256</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {anomalies.length > 0 && (
+            <div className="bg-rose-950/30 border border-rose-800/50 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="text-xs">
+                <span className="font-bold text-white block">
+                  {anomalies.length} Anomalía(s) Operativa(s) Detectada(s)
+                </span>
+                <span className="text-rose-300">{anomalies[0].message}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRiskModal(true)}
+                className="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-semibold shrink-0 cursor-pointer"
+              >
+                Auditar Anomalías
+              </button>
+            </div>
+          )}
+
+          {/* Buscador Instantáneo por Nombre o Teléfono en Panel de Administración */}
+          <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+              <input
+                type="text"
+                value={adminClientSearch}
+                onChange={(e) => setAdminClientSearch(e.target.value)}
+                placeholder="Buscador instantáneo de cartera por nombre, teléfono celular o comercio..."
+                className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-colors"
+              />
+            </div>
+            <div className="text-[11px] text-slate-400 font-mono shrink-0">
+              Total préstamos activos: <strong className="text-white">{loans.length}</strong>
+            </div>
+          </div>
+
+          {adminClientSearch.trim() !== '' && (
+            <div className="overflow-x-auto bg-slate-950/50 border border-slate-800 rounded-xl p-3">
+              <div className="text-[11px] font-semibold text-emerald-400 mb-2">
+                Resultados de búsqueda instantánea ("{adminClientSearch}"):
+              </div>
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="bg-slate-900/90 text-slate-400 border-b border-slate-800">
+                  <tr>
+                    <th className="py-2 px-3">Cliente / Comercio</th>
+                    <th className="py-2 px-3">Teléfono</th>
+                    <th className="py-2 px-3">Ruta</th>
+                    <th className="py-2 px-3 text-right">Saldo Pendiente (COP)</th>
+                    <th className="py-2 px-3 text-right">Cuota</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {loans
+                    .filter((loan) => {
+                      const client = clients.find((c) => c.id === loan.clientId);
+                      const q = adminClientSearch.trim().toLowerCase();
+                      const qDigits = q.replace(/\D/g, '');
+                      const phoneRaw = client?.phone || '';
+                      const phoneDigits = phoneRaw.replace(/\D/g, '');
+                      return (
+                        loan.clientName.toLowerCase().includes(q) ||
+                        loan.tradeName.toLowerCase().includes(q) ||
+                        phoneRaw.toLowerCase().includes(q) ||
+                        (qDigits.length > 0 && phoneDigits.includes(qDigits))
+                      );
+                    })
+                    .map((loan) => {
+                      const client = clients.find((c) => c.id === loan.clientId);
+                      return (
+                        <tr key={loan.id} className="hover:bg-slate-800/30">
+                          <td className="py-2.5 px-3">
+                            <div className="font-semibold text-white">{loan.clientName}</div>
+                            <div className="text-[11px] text-slate-400">{loan.tradeName}</div>
+                          </td>
+                          <td className="py-2.5 px-3 font-mono text-emerald-300 text-[11px]">
+                            <span className="inline-flex items-center gap-1">
+                              <Phone className="w-3 h-3" />
+                              {client?.phone || 'Sin teléfono'}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 font-mono text-slate-300 text-[11px]">{loan.routeId}</td>
+                          <td className="py-2.5 px-3 text-right font-mono font-semibold text-white tabular-nums">
+                            {formatCOP(loan.remainingBalance)}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono text-slate-300 tabular-nums">
+                            {formatCOP(loan.installmentAmount)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {highRiskOverdueLoans.length === 0 ? (
+            <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-6 text-center">
+              <p className="text-xs text-slate-300 font-medium">
+                Sin préstamos con mora crítica igual o superior a 2 días en este momento.
+              </p>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Todos los clientes registrados en las rutas activas se encuentran al día.
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead className="bg-slate-950/80 text-slate-400 border-b border-slate-800">
+                  <tr>
+                    <th className="py-2.5 px-3">Cliente / Comercio</th>
+                    <th className="py-2.5 px-3">Ruta</th>
+                    <th className="py-2.5 px-3">Atraso</th>
+                    <th className="py-2.5 px-3 text-right">Saldo Pendiente</th>
+                    <th className="py-2.5 px-3 text-right">Cuota Diaria</th>
+                    <th className="py-2.5 px-3">Estado de Bloqueo</th>
+                    <th className="py-2.5 px-3 text-right">Acción</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {highRiskOverdueLoans.map((loan) => {
+                    const client = clients.find((c) => c.id === loan.clientId);
+                    const isBlocked = client?.hasPreventiveBlock ?? true;
+
+                    return (
+                      <tr key={loan.id} className="hover:bg-slate-800/30 transition-colors">
+                        <td className="py-3 px-3">
+                          <div className="font-semibold text-white">{loan.clientName}</div>
+                          <div className="text-[11px] text-slate-400">{loan.tradeName}</div>
+                        </td>
+                        <td className="py-3 px-3 text-slate-300 font-mono text-[11px]">
+                          {loan.routeId}
+                        </td>
+                        <td className="py-3 px-3 text-rose-300 font-medium tabular-nums">
+                          {loan.daysOverdue} días
+                        </td>
+                        <td className="py-3 px-3 text-right font-mono font-semibold text-rose-200 tabular-nums">
+                          {formatCOP(loan.remainingBalance)}
+                        </td>
+                        <td className="py-3 px-3 text-right font-mono text-slate-300 tabular-nums">
+                          {formatCOP(loan.installmentAmount)}
+                        </td>
+                        <td className="py-3 px-3">
+                          <button
+                            type="button"
+                            onClick={() => onToggleClientBlock(loan.clientId)}
+                            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-medium transition-colors cursor-pointer ${
+                              isBlocked
+                                ? 'bg-rose-950/80 text-rose-200 border border-rose-700/60'
+                                : 'bg-slate-800 text-slate-300 border border-slate-700'
+                            }`}
+                          >
+                            <Lock className="w-3 h-3" />
+                            {isBlocked ? 'Bloqueado' : 'Desbloqueado'}
+                          </button>
+                        </td>
+                        <td className="py-3 px-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => setShowAiNegotiatorModal(true)}
+                            className="inline-flex items-center gap-1 px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[11px] font-semibold transition-colors cursor-pointer"
+                          >
+                            Reestructurar
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* =====================================================================
+          APARTADO 4: CONFIGURACIÓN DEL SISTEMA & SIMULADOR FINANCIERO
+         ===================================================================== */}
+      {(activeSection === 'all_sections' || activeSection === 'configuracion_sistema') && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Simulador Financiero & TEA Implícita */}
+          <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-xl p-5 sm:p-6 shadow-xs">
+            <div className="flex items-center gap-2.5 pb-4 border-b border-slate-800">
+              <div className="w-8 h-8 rounded-lg bg-emerald-500/15 flex items-center justify-center text-emerald-400">
                 <Calculator className="w-4 h-4" />
               </div>
               <div>
-                <h3 className="text-sm font-bold text-white">Simulador Financiero & TEA Implícita</h3>
-                <p className="text-[11px] text-slate-400">Cálculo de cuota, colchón de liquidez y costo de capital</p>
+                <h3 className="text-base font-bold text-white">
+                  Simulador Financiero de Microcréditos & TEA Implícita
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Calibración de cuotas diarias, amortización y reserva de liquidez
+                </p>
               </div>
             </div>
 
-            <div className="space-y-3.5 mt-4 text-xs">
-              <div>
-                <label className="text-slate-300 font-medium block mb-1">
-                  Monto de Capital (COP): <span className="text-white font-bold">{formatCOP(simPrincipal)}</span>
-                </label>
-                <input
-                  type="range"
-                  min={200000}
-                  max={3000000}
-                  step={100000}
-                  value={simPrincipal}
-                  onChange={(e) => setSimPrincipal(Number(e.target.value))}
-                  className="w-full accent-emerald-500"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-4 text-xs">
+              <div className="space-y-3.5">
                 <div>
                   <label className="text-slate-300 font-medium block mb-1">
-                    Tasa Mensual: <span className="text-emerald-300 font-bold">{simRate}% flat</span>
+                    Capital a Desembolsar: <strong className="text-white font-mono tabular-nums">{formatCOP(simPrincipal)}</strong>
                   </label>
-                  <select
-                    value={simRate}
-                    onChange={(e) => setSimRate(Number(e.target.value))}
-                    className="w-full bg-slate-800 text-slate-200 rounded-lg p-2 border border-slate-700"
-                  >
-                    <option value={15}>15% Flat</option>
-                    <option value={20}>20% Flat (Típico)</option>
-                    <option value={25}>25% Flat</option>
-                  </select>
+                  <input
+                    type="range"
+                    min={200000}
+                    max={3000000}
+                    step={100000}
+                    value={simPrincipal}
+                    onChange={(e) => setSimPrincipal(Number(e.target.value))}
+                    className="w-full accent-emerald-500"
+                  />
                 </div>
 
-                <div>
-                  <label className="text-slate-300 font-medium block mb-1">
-                    Plazo en Días: <span className="text-white font-bold">{simTerm} días</span>
-                  </label>
-                  <select
-                    value={simTerm}
-                    onChange={(e) => setSimTerm(Number(e.target.value))}
-                    className="w-full bg-slate-800 text-slate-200 rounded-lg p-2 border border-slate-700"
-                  >
-                    <option value={20}>20 Días hábiles</option>
-                    <option value={24}>24 Días hábiles</option>
-                    <option value={30}>30 Días corridos</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="text-slate-300 font-medium block mb-1">
-                  Tasa de Morosidad Estimada: <span className="text-rose-300 font-bold">{simDefaultRate}%</span>
-                </label>
-                <input
-                  type="range"
-                  min={3}
-                  max={20}
-                  step={1}
-                  value={simDefaultRate}
-                  onChange={(e) => setSimDefaultRate(Number(e.target.value))}
-                  className="w-full accent-rose-500"
-                />
-              </div>
-
-              {/* RESULTADOS DEL SIMULADOR */}
-              <div className="bg-slate-800/80 border border-slate-700 rounded-xl p-3.5 space-y-2 mt-2">
-                <div className="flex justify-between items-center text-xs">
-                  <span className="text-slate-400">Cuota Diaria Fija:</span>
-                  <span className="font-bold text-white text-base font-mono">{formatCOP(simResult.dailyInstallment)}</span>
-                </div>
-                <div className="flex justify-between items-center text-[11px] text-slate-400">
-                  <span>- Amortización Capital:</span>
-                  <span className="font-mono text-slate-300">{formatCOP(simResult.dailyPrincipalPortion)}/día</span>
-                </div>
-                <div className="flex justify-between items-center text-[11px] text-slate-400">
-                  <span>- Interés Devengado:</span>
-                  <span className="font-mono text-emerald-400">{formatCOP(simResult.dailyInterestPortion)}/día</span>
-                </div>
-                <div className="border-t border-slate-700/60 pt-2 flex justify-between items-center text-xs">
-                  <span className="text-slate-300">Total Deuda a Cobrar:</span>
-                  <span className="font-bold text-emerald-300 font-mono">{formatCOP(simResult.totalDebt)}</span>
-                </div>
-                <div className="bg-rose-950/30 border border-rose-900/40 rounded-lg p-2 mt-2">
-                  <div className="flex justify-between text-[11px]">
-                    <span className="text-rose-300 font-medium">Colchón de Liquidez Obligatorio:</span>
-                    <span className="font-bold text-rose-300 font-mono">{formatCOP(simResult.liquidityBufferRequired)}</span>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-slate-300 font-medium block mb-1">Tasa Flat</label>
+                    <select
+                      value={simRate}
+                      onChange={(e) => setSimRate(Number(e.target.value))}
+                      className="w-full bg-slate-950 text-slate-200 rounded-lg p-2 border border-slate-800"
+                    >
+                      <option value={15}>15% Flat</option>
+                      <option value={20}>20% Flat</option>
+                      <option value={25}>25% Flat</option>
+                    </select>
                   </div>
-                  <span className="text-[10px] text-rose-400/80 block mt-0.5">
-                    Reserva requerida para cubrir retrasos en calle sin quebrar el flujo de caja.
+
+                  <div>
+                    <label className="text-slate-300 font-medium block mb-1">Plazo</label>
+                    <select
+                      value={simTerm}
+                      onChange={(e) => setSimTerm(Number(e.target.value))}
+                      className="w-full bg-slate-950 text-slate-200 rounded-lg p-2 border border-slate-800"
+                    >
+                      <option value={20}>20 Días</option>
+                      <option value={24}>24 Días</option>
+                      <option value={30}>30 Días</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-slate-300 font-medium block mb-1">
+                    Morosidad Proyectada: <strong className="text-rose-300 font-mono tabular-nums">{simDefaultRate}%</strong>
+                  </label>
+                  <input
+                    type="range"
+                    min={3}
+                    max={20}
+                    step={1}
+                    value={simDefaultRate}
+                    onChange={(e) => setSimDefaultRate(Number(e.target.value))}
+                    className="w-full accent-rose-500"
+                  />
+                </div>
+              </div>
+
+              <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-4 space-y-2.5 text-xs">
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Cuota Diaria Fija:</span>
+                  <span className="font-bold text-white text-base font-mono tabular-nums">
+                    {formatCOP(simResult.dailyInstallment)}
                   </span>
                 </div>
-                <div className="bg-slate-900 p-2 rounded-lg border border-slate-800 mt-2">
-                  <div className="flex justify-between text-[11px]">
-                    <span className="text-slate-400">T.E.A. Implícita Anualizada:</span>
-                    <span className="font-bold text-amber-300 font-mono">{simResult.implicitTEA.toFixed(0)}% E.A.</span>
-                  </div>
-                  <span className="text-[10px] text-slate-500 block mt-0.5">
-                    Rendimiento bruto de rotación de capital antes de descontar OpEx de cobranza.
+                <div className="flex justify-between items-center text-slate-400">
+                  <span>Amortización Capital:</span>
+                  <span className="font-mono text-slate-300 tabular-nums">
+                    {formatCOP(simResult.dailyPrincipalPortion)}/día
+                  </span>
+                </div>
+                <div className="flex justify-between items-center text-slate-400">
+                  <span>Interés Devengado:</span>
+                  <span className="font-mono text-emerald-400 tabular-nums">
+                    {formatCOP(simResult.dailyInterestPortion)}/día
+                  </span>
+                </div>
+                <div className="border-t border-slate-800 pt-2 flex justify-between items-center">
+                  <span className="text-slate-300">Total a Recaudar:</span>
+                  <span className="font-bold text-emerald-300 font-mono tabular-nums">
+                    {formatCOP(simResult.totalDebt)}
+                  </span>
+                </div>
+                <div className="border-t border-slate-800 pt-2 flex justify-between items-center">
+                  <span className="text-slate-400">Colchón de Liquidez:</span>
+                  <span className="font-bold text-rose-300 font-mono tabular-nums">
+                    {formatCOP(simResult.liquidityBufferRequired)}
+                  </span>
+                </div>
+                <div className="border-t border-slate-800 pt-2 flex justify-between items-center">
+                  <span className="text-slate-400">TEA Implícita:</span>
+                  <span className="font-bold text-amber-300 font-mono tabular-nums">
+                    {simResult.implicitTEA.toFixed(0)}% E.A.
                   </span>
                 </div>
               </div>
             </div>
           </div>
 
-          <div className="text-[11px] text-slate-500 mt-3 pt-3 border-t border-slate-800">
-            Regla CFO: Toda simulación descuenta gastos operativos del rutero antes de considerar la utilidad como ganancia distribuible.
+          {/* Parámetros de Seguridad y Configuración Multi-Tenant */}
+          <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-xl p-5 sm:p-6 shadow-xs flex flex-col justify-between space-y-4">
+            <div>
+              <div className="flex items-center gap-2.5 pb-4 border-b border-slate-800">
+                <div className="w-8 h-8 rounded-lg bg-indigo-500/15 flex items-center justify-center text-indigo-400">
+                  <Settings className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">
+                    Configuración del Sistema & Seguridad RLS
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Parámetros activos de aislamiento jerárquico de 3 niveles
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-2.5 text-xs">
+                <div className="flex items-center justify-between py-2 border-b border-slate-800/70">
+                  <span className="text-slate-400">Rol de Sesión Actual</span>
+                  <span className="font-mono font-semibold text-emerald-400">{role}</span>
+                </div>
+                <div className="flex items-center justify-between py-2 border-b border-slate-800/70">
+                  <span className="text-slate-400">Organización Vinculada</span>
+                  <span className="font-mono text-white">{profile?.organizationId || 'org-medellin-01'}</span>
+                </div>
+                <div className="flex items-center justify-between py-2 border-b border-slate-800/70">
+                  <span className="text-slate-400">Provisión Cartera Incobrable</span>
+                  <span className="font-mono text-white tabular-nums">4.0% Fijo</span>
+                </div>
+                <div className="flex items-center justify-between py-2 border-b border-slate-800/70">
+                  <span className="text-slate-400">Política de Inicio de Sesión</span>
+                  <span className="font-mono text-amber-300">Login Obligatorio</span>
+                </div>
+              </div>
+            </div>
+
+            {onNavigateToTab && (
+              <button
+                type="button"
+                onClick={() => onNavigateToTab('supabase_sql')}
+                className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 rounded-lg text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <Database className="w-4 h-4 text-emerald-400" />
+                <span>Inspeccionar Script SQL & Políticas RLS</span>
+              </button>
+            )}
           </div>
         </div>
-      </div>
+      )}
 
-      {/* MODAL DE INTELIGENCIA DE RIESGO */}
+      {/* MODALES OPERATIVOS */}
       {showRiskModal && (
         <RiskIntelligenceModal
           clients={clients}
@@ -660,7 +864,6 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
         />
       )}
 
-      {/* MODAL DE ASIGNACIÓN DINÁMICA DE RUTAS */}
       {showReassignModal && (
         <DynamicRouteAssignment
           routes={routes}
@@ -671,7 +874,6 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
         />
       )}
 
-      {/* MODAL ASISTENTE IA DE NEGOCIACIÓN */}
       {showAiNegotiatorModal && (
         <AiNegotiationAssistantModal
           clients={clients}
@@ -681,7 +883,6 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
         />
       )}
 
-      {/* MODAL DE ARQUEO POR RUTA */}
       {reconcilingRoute && (
         <DailyCashReconciliationModal
           route={reconcilingRoute}

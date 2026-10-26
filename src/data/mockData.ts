@@ -47,10 +47,11 @@ export interface LoanDetail {
   tradeName: string;
   routeId: string;
   principal: number;
-  interestRate: number; // Ej: 20% flat a 24 días
+  interestRate: number; // Ej: 20% flat
   totalDebt: number;
   installmentAmount: number;
-  termDays: number;
+  termDays: number; // Número de cuotas / días
+  modality?: 'diaria' | 'semanal' | 'quincenal' | 'mensual';
   installmentsPaid: number;
   totalCollected: number;
   remainingBalance: number;

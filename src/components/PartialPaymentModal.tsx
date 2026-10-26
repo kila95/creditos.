@@ -1,30 +1,29 @@
 import React, { useState } from 'react';
-import { 
-  Coins, 
-  CheckCircle2, 
-  Clock, 
-  ArrowRight, 
-  AlertCircle, 
-  Receipt, 
-  Calendar, 
-  DollarSign,
+import {
+  Coins,
+  CheckCircle2,
+  AlertCircle,
+  Calendar,
   TrendingDown,
   ShieldCheck,
-  Percent
+  Percent,
+  X,
 } from 'lucide-react';
 import { LoanDetail, ClientProfile } from '../data/mockData';
-import { 
-  formatCOP, 
-  calculatePartialPaymentDistribution, 
-  PartialPaymentDistribution 
+import {
+  formatCOP,
+  roundCOP,
+  validatePaymentAmount,
+  calculatePartialPaymentDistribution,
+  PartialPaymentDistribution,
 } from '../utils/financialCalculations';
 
 interface PartialPaymentModalProps {
   loan: LoanDetail;
   client?: ClientProfile;
   onConfirmPayment: (
-    loanId: string, 
-    amount: number, 
+    loanId: string,
+    amount: number,
     distribution: PartialPaymentDistribution,
     notes: string,
     extensionDays?: number
@@ -34,199 +33,234 @@ interface PartialPaymentModalProps {
 
 export const PartialPaymentModal: React.FC<PartialPaymentModalProps> = ({
   loan,
-  client,
   onConfirmPayment,
-  onClose
+  onClose,
 }) => {
-  const fullInstallment = loan.installmentAmount;
-  // Sugerir la mitad de la cuota por defecto
-  const [partialAmount, setPartialAmount] = useState<number>(Math.round(fullInstallment / 2));
-  const [paymentMethod, setPaymentMethod] = useState<'efectivo' | 'nequi' | 'daviplata'>('efectivo');
-  const [collectorNotes, setCollectorNotes] = useState<string>('Abonó la mitad de la cuota hoy, promete el resto mañana.');
+  const maxAllowedBalance = Math.max(0, roundCOP(loan.remainingBalance));
+  const fullInstallment = Math.min(roundCOP(loan.installmentAmount), maxAllowedBalance);
+  const defaultSuggested = Math.min(roundCOP(loan.installmentAmount / 2), maxAllowedBalance);
+
+  const [partialAmountInput, setPartialAmountInput] = useState<string>(String(defaultSuggested));
+  const [collectorNotes, setCollectorNotes] = useState<string>(
+    'Abonó cuota parcial en efectivo, compromiso de pago por saldo restante.'
+  );
   const [hasExtension, setHasExtension] = useState<boolean>(false);
   const [extensionDays, setExtensionDays] = useState<number>(1);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
-  // Cálculo en tiempo real de la distribución financiera
+  const partialAmount = roundCOP(partialAmountInput);
+  const paymentCheck = validatePaymentAmount(partialAmount, maxAllowedBalance);
+
+  // Cálculo en tiempo real de la distribución financiera en enteros COP
   const distribution = calculatePartialPaymentDistribution(
     partialAmount,
     loan.installmentAmount,
     loan.principal,
     loan.totalDebt,
-    loan.remainingBalance
+    maxAllowedBalance
   );
+
+  const handleAmountChange = (rawVal: string) => {
+    setPartialAmountInput(rawVal);
+    const numericVal = roundCOP(rawVal);
+    const check = validatePaymentAmount(numericVal, maxAllowedBalance);
+    setValidationError(check.isValid ? null : check.errorMessage);
+  };
+
+  const handleSelectPreset = (targetAmount: number) => {
+    const clamped = Math.min(roundCOP(targetAmount), maxAllowedBalance);
+    setPartialAmountInput(String(clamped));
+    setValidationError(null);
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (partialAmount <= 0) return;
+    if (!paymentCheck.isValid) {
+      setValidationError(paymentCheck.errorMessage);
+      return;
+    }
 
     onConfirmPayment(
       loan.id,
-      partialAmount,
+      paymentCheck.sanitizedAmount,
       distribution,
       collectorNotes,
       hasExtension ? extensionDays : undefined
     );
   };
 
-  const handleSelectPreset = (fraction: number) => {
-    const calculated = Math.round(fullInstallment * fraction);
-    setPartialAmount(calculated);
-  };
-
   return (
-    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5">
-      <div className="bg-slate-900 border-2 border-emerald-500/40 rounded-3xl w-full max-w-lg shadow-2xl overflow-hidden max-h-[92vh] flex flex-col">
+    <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-xs flex items-center justify-center p-3 sm:p-5">
+      <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-lg shadow-xl overflow-hidden max-h-[92vh] flex flex-col">
         {/* ENCABEZADO */}
-        <div className="p-4 sm:p-5 border-b border-slate-800 bg-slate-950/80 flex items-center justify-between">
+        <div className="p-4 sm:p-5 border-b border-slate-800 bg-slate-950 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-500 text-white flex items-center justify-center shadow-lg shadow-emerald-950/50">
-              <Coins className="w-5 h-5 stroke-[2.2]" />
+            <div className="w-10 h-10 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
+              <Coins className="w-5 h-5" />
             </div>
             <div>
-              <div className="flex items-center gap-1.5">
-                <span className="text-[10px] font-bold uppercase font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                  Abono Parcial & Prórroga
-                </span>
-                <span className="text-[10px] text-slate-400 font-mono">{loan.code}</span>
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <span>Registrar Abono o Pago</span>
+                <span aria-hidden="true">·</span>
+                <span className="font-mono text-slate-300">{loan.code}</span>
               </div>
-              <h3 className="text-sm sm:text-base font-black text-white mt-0.5">
-                {loan.clientName}
-              </h3>
+              <h3 className="text-base font-bold text-white mt-0.5">{loan.clientName}</h3>
               <p className="text-xs text-slate-400">{loan.tradeName}</p>
             </div>
           </div>
 
           <button
+            type="button"
             onClick={onClose}
-            className="w-8 h-8 rounded-xl bg-slate-800 text-slate-400 hover:text-white flex items-center justify-center text-sm transition-colors"
+            className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
           >
-            ✕
+            <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* CONTENIDO SCROLLABLE */}
         <form onSubmit={handleSubmit} className="p-4 sm:p-5 space-y-4 overflow-y-auto text-xs">
-          {/* CUOTA DIARIA COMPLETA VS MONTO ABONADO */}
-          <div className="bg-slate-950/70 p-4 rounded-2xl border border-slate-800 flex items-center justify-between">
+          {/* CUOTA PACTADA VS SALDO TOTAL PENDIENTE DEL CLIENTE */}
+          <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 grid grid-cols-2 gap-4">
             <div>
-              <span className="text-[10px] uppercase font-bold text-slate-400 block">Cuota Completa del Día</span>
-              <span className="text-lg sm:text-xl font-black text-slate-200 font-mono">
-                {formatCOP(fullInstallment)}
+              <span className="text-[11px] text-slate-400 block">Cuota Pactada</span>
+              <span className="text-lg font-bold text-slate-100 font-mono tabular-nums">
+                {formatCOP(loan.installmentAmount)}
               </span>
             </div>
             <div className="text-right">
-              <span className="text-[10px] uppercase font-bold text-amber-400 block">Saldo Pendiente Hoy</span>
-              <span className="text-lg sm:text-xl font-black text-amber-300 font-mono">
-                {formatCOP(distribution.unpaidInstallmentBalance)}
+              <span className="text-[11px] text-indigo-300 font-medium block">
+                Saldo Pendiente Actual (Máximo)
+              </span>
+              <span className="text-lg font-bold text-emerald-400 font-mono tabular-nums">
+                {formatCOP(maxAllowedBalance)}
               </span>
             </div>
           </div>
 
-          {/* INPUT PRINCIPAL DE ABONO CON BOTONES RÁPIDOS */}
+          {/* ALERTA DE VALIDACIÓN SI EL PAGO SUPERA EL SALDO PENDIENTE */}
+          {(!paymentCheck.isValid || validationError) && (
+            <div className="p-3.5 rounded-xl bg-rose-950/70 border border-rose-500/50 text-rose-200 space-y-2">
+              <div className="flex items-start gap-2 font-semibold text-rose-300">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{validationError || paymentCheck.errorMessage}</span>
+              </div>
+              {partialAmount > maxAllowedBalance && (
+                <button
+                  type="button"
+                  onClick={() => handleSelectPreset(maxAllowedBalance)}
+                  className="px-3 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-white font-semibold text-xs transition-colors cursor-pointer"
+                >
+                  Ajustar al Saldo Pendiente Exacto ({formatCOP(maxAllowedBalance)})
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* INPUT PRINCIPAL DE ABONO EN ENTEROS COP CON BOTONES TÁCTILES */}
           <div className="space-y-2">
-            <label className="text-slate-200 font-bold block flex items-center justify-between">
-              <span>Monto en Efectivo a Abonar (COP):</span>
-              <span className="text-[10px] text-emerald-400 font-mono">Mínimo sugerido: {formatCOP(distribution.dailyInterestDue)}</span>
+            <label className="text-slate-200 font-semibold flex items-center justify-between">
+              <span>Monto a Recibir (Pesos Colombianos - COP):</span>
+              <span className="text-[11px] text-emerald-400 font-mono tabular-nums">
+                Entero exacto: {formatCOP(partialAmount)}
+              </span>
             </label>
 
             <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500 font-mono font-bold text-lg">
+              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-emerald-400 font-mono font-bold text-base">
                 $
               </div>
               <input
                 type="number"
-                min={1000}
-                max={loan.remainingBalance}
-                step={1000}
+                min={1}
+                max={maxAllowedBalance}
+                step={1}
                 required
-                value={partialAmount}
-                onChange={(e) => setPartialAmount(Math.max(0, Number(e.target.value)))}
-                className="w-full bg-slate-950 border-2 border-slate-700 rounded-2xl pl-9 pr-4 py-3 text-xl font-black text-white font-mono focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20"
+                value={partialAmountInput}
+                onChange={(e) => handleAmountChange(e.target.value)}
+                className={`w-full bg-slate-950 border rounded-xl pl-9 pr-4 py-3 text-lg font-bold text-white font-mono tabular-nums focus:outline-none ${
+                  !paymentCheck.isValid
+                    ? 'border-rose-500 focus:border-rose-400'
+                    : 'border-slate-700 focus:border-emerald-500'
+                }`}
               />
             </div>
 
-            {/* PRESETS DE FRACCIÓN DE CUOTA (1/4, 1/2, 3/4) */}
-            <div className="grid grid-cols-4 gap-2 pt-1">
+            {/* PRESETS RÁPIDOS TÁCTILES PARA CALLE */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1">
               <button
                 type="button"
-                onClick={() => handleSelectPreset(0.25)}
-                className="py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] transition-all border border-slate-700"
+                onClick={() => handleSelectPreset(roundCOP(loan.installmentAmount * 0.5))}
+                className="py-2.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs transition-colors border border-slate-700 cursor-pointer font-mono tabular-nums"
               >
-                25% ({formatCOP(Math.round(fullInstallment * 0.25))})
+                50% ({formatCOP(Math.min(roundCOP(loan.installmentAmount * 0.5), maxAllowedBalance))})
               </button>
               <button
                 type="button"
-                onClick={() => handleSelectPreset(0.50)}
-                className="py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] transition-all border border-slate-700"
+                onClick={() => handleSelectPreset(fullInstallment)}
+                className="py-2.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs transition-colors border border-slate-700 cursor-pointer font-mono tabular-nums"
               >
-                50% ({formatCOP(Math.round(fullInstallment * 0.50))})
+                1 Cuota ({formatCOP(fullInstallment)})
               </button>
               <button
                 type="button"
-                onClick={() => handleSelectPreset(0.75)}
-                className="py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-[11px] transition-all border border-slate-700"
+                onClick={() => handleSelectPreset(roundCOP(loan.installmentAmount * 2))}
+                className="py-2.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs transition-colors border border-slate-700 cursor-pointer font-mono tabular-nums"
               >
-                75% ({formatCOP(Math.round(fullInstallment * 0.75))})
+                2 Cuotas ({formatCOP(Math.min(roundCOP(loan.installmentAmount * 2), maxAllowedBalance))})
               </button>
               <button
                 type="button"
-                onClick={() => setPartialAmount(fullInstallment)}
-                className="py-2 rounded-xl bg-emerald-950/60 hover:bg-emerald-900/60 text-emerald-300 font-bold text-[11px] transition-all border border-emerald-500/40"
+                onClick={() => handleSelectPreset(maxAllowedBalance)}
+                className="py-2.5 px-2 rounded-lg bg-indigo-950/70 hover:bg-indigo-900/70 text-indigo-300 font-semibold text-xs transition-colors border border-indigo-500/40 cursor-pointer font-mono tabular-nums"
               >
-                100% Cuota
+                Liquidar Saldo
               </button>
             </div>
           </div>
 
-          {/* DESGLOSE AUTOMÁTICO DE AMORTIZACIÓN (INTERÉS PRIMERO, SOBRANTE A CAPITAL) */}
-          <div className="bg-slate-950/90 rounded-2xl p-4 border border-slate-800 space-y-2.5">
-            <div className="flex items-center justify-between text-[11px] text-slate-300 font-bold border-b border-slate-800/80 pb-2">
+          {/* DESGLOSE AUTOMÁTICO DE AMORTIZACIÓN EN ENTEROS COP */}
+          <div className="bg-slate-950 rounded-xl p-4 border border-slate-800 space-y-2.5">
+            <div className="flex items-center justify-between text-xs text-slate-300 font-semibold border-b border-slate-800 pb-2">
               <span className="flex items-center gap-1.5 text-emerald-400">
                 <ShieldCheck className="w-4 h-4" />
-                Motor Financiero de Liquidación Automática
+                Distribución del Pago (Enteros COP)
               </span>
-              <span className="text-[10px] text-slate-500 font-mono">Regla CFO de Prelación</span>
+              <span className="text-[11px] text-slate-400 font-mono">Prelación Interés / Capital</span>
             </div>
 
             <div className="space-y-1.5 text-xs">
               <div className="flex justify-between items-center text-slate-300">
-                <span className="flex items-center gap-1 text-amber-300 font-semibold">
+                <span className="flex items-center gap-1.5 text-amber-300 font-medium">
                   <Percent className="w-3.5 h-3.5" />
-                  1. Interés del Día Cubierto:
+                  Interés Cubierto:
                 </span>
-                <span className="font-mono font-bold text-amber-300">
+                <span className="font-mono font-bold text-amber-300 tabular-nums">
                   {formatCOP(distribution.interestPortionCovered)}
                 </span>
               </div>
 
               <div className="flex justify-between items-center text-slate-300">
-                <span className="flex items-center gap-1 text-emerald-400 font-semibold">
+                <span className="flex items-center gap-1.5 text-emerald-400 font-medium">
                   <TrendingDown className="w-3.5 h-3.5" />
-                  2. Amortización Directa a Capital:
+                  Abono Directo a Capital:
                 </span>
-                <span className="font-mono font-bold text-emerald-400">
+                <span className="font-mono font-bold text-emerald-400 tabular-nums">
                   {formatCOP(distribution.principalPortionCovered)}
                 </span>
               </div>
 
-              <div className="flex justify-between items-center pt-2 border-t border-slate-800/80 text-white font-bold">
-                <span>Nuevo Saldo Restante del Crédito:</span>
-                <span className="font-mono text-emerald-300 text-sm">
+              <div className="flex justify-between items-center pt-2 border-t border-slate-800 text-white font-bold">
+                <span>Nuevo Saldo Pendiente del Cliente:</span>
+                <span className="font-mono text-emerald-400 text-sm tabular-nums">
                   {formatCOP(distribution.postBalance)}
                 </span>
               </div>
             </div>
-
-            {distribution.principalPortionCovered === 0 && partialAmount > 0 && (
-              <div className="p-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-[10px] text-amber-300 flex items-center gap-2">
-                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                <span>El abono solo cubre los intereses devengados de hoy; el capital restante no disminuye.</span>
-              </div>
-            )}
           </div>
 
           {/* OPCIÓN DE PRÓRROGA DE PLAZO */}
-          <div className="bg-slate-950/60 p-3.5 rounded-2xl border border-slate-800 space-y-2.5">
+          <div className="bg-slate-950/70 p-3.5 rounded-xl border border-slate-800 space-y-2.5">
             <div className="flex items-center justify-between">
               <label htmlFor="extensionToggle" className="flex items-center gap-2 cursor-pointer">
                 <input
@@ -236,34 +270,34 @@ export const PartialPaymentModal: React.FC<PartialPaymentModalProps> = ({
                   onChange={(e) => setHasExtension(e.target.checked)}
                   className="w-4 h-4 rounded text-emerald-500 bg-slate-900 border-slate-700 accent-emerald-500"
                 />
-                <span className="text-xs font-bold text-white flex items-center gap-1">
+                <span className="text-xs font-semibold text-white flex items-center gap-1.5">
                   <Calendar className="w-3.5 h-3.5 text-emerald-400" />
-                  Otorgar Prórroga Formal de Plazo
+                  Otorgar Prórroga de Plazo
                 </span>
               </label>
               {hasExtension && (
-                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300">
-                  +{extensionDays} día(s)
+                <span className="text-xs font-mono font-semibold text-amber-300">
+                  +{extensionDays} {extensionDays === 1 ? 'día' : 'días'}
                 </span>
               )}
             </div>
 
             {hasExtension && (
-              <div className="pt-2 border-t border-slate-800/80 flex items-center gap-3">
-                <span className="text-[11px] text-slate-400">Extender vencimiento en:</span>
+              <div className="pt-2 border-t border-slate-800 flex items-center gap-3">
+                <span className="text-xs text-slate-400">Extender en:</span>
                 <div className="flex gap-1.5">
                   {[1, 2, 3, 5].map((days) => (
                     <button
                       type="button"
                       key={days}
                       onClick={() => setExtensionDays(days)}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
                         extensionDays === days
                           ? 'bg-emerald-600 text-white'
                           : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
                       }`}
                     >
-                      {days} {days === 1 ? 'día' : 'días'}
+                      {days}d
                     </button>
                   ))}
                 </div>
@@ -273,34 +307,35 @@ export const PartialPaymentModal: React.FC<PartialPaymentModalProps> = ({
 
           {/* NOTA OPERACIONAL DEL COBRADOR */}
           <div className="space-y-1">
-            <label className="text-slate-300 font-bold block">
-              Nota / Compromiso del Deudor (Obligatoria para auditoría):
+            <label className="text-slate-300 font-semibold block">
+              Nota u Observación de Cobro:
             </label>
             <textarea
               required
               rows={2}
               value={collectorNotes}
               onChange={(e) => setCollectorNotes(e.target.value)}
-              placeholder="Ej: Abonó $25.000, promete completar los otros $25.000 mañana a las 3:00 PM..."
-              className="w-full bg-slate-950 border-2 border-slate-800 rounded-xl p-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 font-medium"
+              placeholder="Ej: Abonó en efectivo, resto programado para próxima visita..."
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
             />
           </div>
 
-          {/* BOTONES DE ACCIÓN */}
+          {/* BOTONES DE ACCIÓN TÁCTILES */}
           <div className="pt-2 flex gap-3">
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-2xl font-bold text-xs transition-colors"
+              className="flex-1 min-h-[46px] py-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl font-semibold text-xs transition-colors cursor-pointer"
             >
               Cancelar
             </button>
             <button
               type="submit"
-              className="flex-1 py-3 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white rounded-2xl font-black text-xs shadow-lg shadow-emerald-950 flex items-center justify-center gap-2 transition-all"
+              disabled={!paymentCheck.isValid}
+              className="flex-1 min-h-[46px] py-3 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded-xl font-bold text-xs shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
             >
               <CheckCircle2 className="w-4 h-4" />
-              <span>Confirmar Abono ({formatCOP(partialAmount)})</span>
+              <span>Confirmar Pago ({formatCOP(partialAmount)})</span>
             </button>
           </div>
         </form>
@@ -308,3 +343,4 @@ export const PartialPaymentModal: React.FC<PartialPaymentModalProps> = ({
     </div>
   );
 };
+

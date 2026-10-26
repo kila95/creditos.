@@ -218,6 +218,7 @@ export async function createLoan(data: {
   remainingBalance: number;
   totalDays: number;
   paidDays?: number;
+  modality?: string;
   status?: string;
   startDate: string;
   expectedEndDate: string;
@@ -234,6 +235,7 @@ export async function createLoan(data: {
       remainingBalance: data.remainingBalance.toString(),
       totalDays: data.totalDays,
       paidDays: data.paidDays ?? 0,
+      modality: data.modality ?? 'diaria',
       status: data.status ?? 'active',
       startDate: data.startDate,
       expectedEndDate: data.expectedEndDate,
@@ -453,6 +455,7 @@ export async function createCollectorUser(data: {
   password: string;
   name: string;
   assignedRouteId: string;
+  routeZone?: string;
   organizationId?: string;
   organizationName?: string;
   createdBy?: string;
@@ -462,6 +465,7 @@ export async function createCollectorUser(data: {
   try {
     return await db.transaction(async (tx) => {
       const normalizedEmail = data.email.trim().toLowerCase();
+      const cleanZone = (data.routeZone || 'Centro / El Hueco').trim();
 
       const inserted = await tx
         .insert(users)
@@ -475,27 +479,50 @@ export async function createCollectorUser(data: {
           organizationName: data.organizationName || 'Fondo RutaCapital Medellín',
           createdBy: data.createdBy || 'usr-admin-001',
           assignedRouteId: data.assignedRouteId,
+          routeZone: cleanZone,
           phone: data.phone || '',
           documentId: data.documentId || '',
           isActive: true,
         })
         .returning();
 
-      // Vincular el cobrador y la organización del Admin a la ruta asignada en la tabla routes
-      await tx
-        .update(routes)
-        .set({
+      // Vincular el cobrador, la zona seleccionada (zone) y la organización del Admin a la tabla routes
+      const existingRoute = await tx
+        .select()
+        .from(routes)
+        .where(eq(routes.id, data.assignedRouteId))
+        .limit(1);
+
+      if (existingRoute.length > 0) {
+        await tx
+          .update(routes)
+          .set({
+            collectorId: data.uid,
+            collectorName: data.name.trim(),
+            zone: cleanZone,
+            organizationId: data.organizationId || 'org-medellin-01',
+            createdBy: data.createdBy || 'usr-admin-001',
+          })
+          .where(eq(routes.id, data.assignedRouteId));
+      } else {
+        await tx.insert(routes).values({
+          id: data.assignedRouteId,
+          name: `Ruta ${cleanZone}`,
+          zone: cleanZone,
           collectorId: data.uid,
           collectorName: data.name.trim(),
           organizationId: data.organizationId || 'org-medellin-01',
           createdBy: data.createdBy || 'usr-admin-001',
-        })
-        .where(eq(routes.id, data.assignedRouteId));
+          status: 'active',
+          targetDailyCollection: '500000',
+          operatingExpenseBudget: '45000',
+        });
+      }
 
       // Registrar en la bitácora de auditoría inmutable
       await tx.insert(auditLogs).values({
         id: `aud-${Date.now()}`,
-        action: 'CREACION_COBRADOR_Y_ASIGNACION_RUTA',
+        action: 'CREACION_COBRADOR_Y_ASIGNACION_ZONA',
         actorId: data.createdBy || 'usr-admin-001',
         actorName: 'Administrador de Fondo',
         actorRole: 'admin',
@@ -510,6 +537,7 @@ export async function createCollectorUser(data: {
           name: data.name.trim(),
           role: 'collector',
           assignedRouteId: data.assignedRouteId,
+          routeZone: cleanZone,
           organizationId: data.organizationId || 'org-medellin-01',
           createdBy: data.createdBy || 'usr-admin-001',
         },

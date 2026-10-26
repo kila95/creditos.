@@ -22,6 +22,7 @@ export const users = pgTable('users', {
   organizationName: text('organization_name').default('Fondo RutaCapital Medellín'),
   createdBy: text('created_by'), // UID del super_admin o admin que creó esta cuenta
   assignedRouteId: text('assigned_route_id'),
+  routeZone: text('route_zone'), // Zona o Comuna de Medellín asignada (ej: 'Laureles / Estadio', 'Centro / El Hueco', etc.)
   phone: text('phone'),
   documentId: text('document_id'),
   isActive: boolean('is_active').notNull().default(true),
@@ -75,6 +76,7 @@ export const loans = pgTable('loans', {
   remainingBalance: numeric('remaining_balance', { precision: 12, scale: 2 }).notNull(),
   totalDays: integer('total_days').notNull(),
   paidDays: integer('paid_days').notNull().default(0),
+  modality: text('modality').notNull().default('diaria'), // 'diaria' | 'semanal' | 'quincenal' | 'mensual'
   status: text('status').notNull().default('active'), // 'active' | 'completed' | 'defaulted'
   startDate: text('start_date').notNull(),
   expectedEndDate: text('expected_end_date').notNull(),

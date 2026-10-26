@@ -1,22 +1,100 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { 
-  UserPlus, 
-  Bike, 
-  Mail, 
-  KeyRound, 
-  MapPin, 
-  ShieldCheck, 
-  CheckCircle2, 
-  AlertCircle, 
-  Phone, 
+import {
+  UserPlus,
+  Bike,
+  Mail,
+  KeyRound,
+  MapPin,
+  ShieldCheck,
+  CheckCircle2,
+  AlertCircle,
+  Phone,
   FileText,
   Lock,
   LogIn,
-  Building2
+  Building2,
+  Search,
+  Compass,
 } from 'lucide-react';
 import { RouteData } from '../data/mockData';
 import { registerNewCollectorAccount, DEMO_USERS } from '../services/supabaseAuth';
 import { useAuth } from '../context/AuthContext';
+
+export interface MedellinZoneOption {
+  value: string;
+  label: string;
+  comuna: string;
+}
+
+export const MEDELLIN_ZONES_CATALOG: MedellinZoneOption[] = [
+  {
+    value: 'Centro / El Hueco',
+    label: 'Centro / El Hueco',
+    comuna: 'Comuna 10 · La Candelaria',
+  },
+  {
+    value: 'Laureles / Estadio',
+    label: 'Laureles / Estadio',
+    comuna: 'Comuna 11 · Occidente',
+  },
+  {
+    value: 'El Poblado',
+    label: 'El Poblado',
+    comuna: 'Comuna 14 · Suroriente',
+  },
+  {
+    value: 'Aranjuez / Manrique',
+    label: 'Aranjuez / Manrique',
+    comuna: 'Comunas 3 y 4 · Nororiente',
+  },
+  {
+    value: 'Belén',
+    label: 'Belén',
+    comuna: 'Comuna 16 · Suroccidente',
+  },
+  {
+    value: 'Doce de Octubre / Robledo',
+    label: 'Doce de Octubre / Robledo',
+    comuna: 'Comunas 6 y 7 · Noroccidente',
+  },
+  {
+    value: 'Castilla / Flórez',
+    label: 'Castilla / Flórez',
+    comuna: 'Comunas 5 y 12 · La América',
+  },
+  {
+    value: 'Comuna 13 / San Javier',
+    label: 'Comuna 13 / San Javier',
+    comuna: 'Comuna 13 · Occidente',
+  },
+  {
+    value: 'Buenos Aires / Villa Hermosa',
+    label: 'Buenos Aires / Villa Hermosa',
+    comuna: 'Comunas 8 y 9 · Centro Oriente',
+  },
+  {
+    value: 'Guayabal / Cristo Rey',
+    label: 'Guayabal / Cristo Rey',
+    comuna: 'Comuna 15 · Sur',
+  },
+  {
+    value: 'Popular / Santa Cruz',
+    label: 'Popular / Santa Cruz',
+    comuna: 'Comunas 1 y 2 · Nororiente',
+  },
+  {
+    value: 'Itagüí / Envigado / Sabaneta (Área Metropolitana)',
+    label: 'Itagüí / Envigado / Sabaneta (Área Metropolitana)',
+    comuna: 'Valle de Aburrá Sur',
+  },
+  {
+    value: 'Bello / Copacabana (Área Metropolitana Norte)',
+    label: 'Bello / Copacabana (Área Metropolitana Norte)',
+    comuna: 'Valle de Aburrá Norte',
+  },
+];
+
+const CUSTOM_ZONE_VALUE = '__CUSTOM_ZONE__';
 
 export interface CollectorUserRecord {
   uid: string;
@@ -24,6 +102,7 @@ export interface CollectorUserRecord {
   name: string;
   role: string;
   assignedRouteId: string;
+  routeZone: string;
   organizationId?: string;
   organizationName?: string;
   createdBy?: string;
@@ -35,6 +114,9 @@ export interface CollectorUserRecord {
 
 interface AdminCollectorUsersManagerProps {
   routes: RouteData[];
+  currentAdminEmail?: string;
+  currentOrganizationId?: string;
+  currentUserRole?: 'super_admin' | 'admin';
   onCollectorCreated?: (collector: CollectorUserRecord) => void;
   onSwitchToCollectorView?: () => void;
 }
@@ -44,12 +126,20 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
   onCollectorCreated,
   onSwitchToCollectorView,
 }) => {
-  const { role, profile, isSuperAdmin, isAdmin, switchDemoUser } = useAuth();
+  const { profile, isSuperAdmin, isAdmin, switchDemoUser } = useAuth();
 
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('cobrador123@Medellin');
   const [assignedRouteId, setAssignedRouteId] = useState(routes[0]?.id || 'route-1');
+
+  // Estado del Selector Ampliado de Zonas y Comunas de Medellín
+  const [zoneSearchFilter, setZoneSearchFilter] = useState('');
+  const [selectedZoneOption, setSelectedZoneOption] = useState<string>(
+    MEDELLIN_ZONES_CATALOG[0].value
+  );
+  const [customZoneText, setCustomZoneText] = useState<string>('');
+
   const [phone, setPhone] = useState('');
   const [documentId, setDocumentId] = useState('');
 
@@ -66,22 +156,33 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
-          const mapped: CollectorUserRecord[] = data.map((u: any) => ({
-            uid: u.uid || String(u.id),
-            email: u.email,
-            name: u.name,
-            role: u.role || 'collector',
-            assignedRouteId: u.assignedRouteId || u.assigned_route_id || 'route-1',
-            organizationId: u.organizationId || u.organization_id || 'org-medellin-01',
-            organizationName: u.organizationName || u.organization_name || 'Fondo RutaCapital Medellín Central',
-            createdBy: u.createdBy || u.created_by || 'usr-admin-001',
-            phone: u.phone || '',
-            documentId: u.documentId || u.document_id || '',
-            isActive: u.isActive ?? u.is_active ?? true,
-            createdAt: u.createdAt || u.created_at,
-          }));
+          const mapped: CollectorUserRecord[] = data.map((u: any) => {
+            const assignedId = u.assignedRouteId || u.assigned_route_id || 'route-1';
+            const fallbackRoute = routes.find((r) => r.id === assignedId);
+            return {
+              uid: u.uid || String(u.id),
+              email: u.email,
+              name: u.name,
+              role: u.role || 'collector',
+              assignedRouteId: assignedId,
+              routeZone:
+                u.routeZone ||
+                u.route_zone ||
+                fallbackRoute?.zone ||
+                'Centro / El Hueco',
+              organizationId: u.organizationId || u.organization_id || 'org-medellin-01',
+              organizationName:
+                u.organizationName ||
+                u.organization_name ||
+                'Fondo RutaCapital Medellín Central',
+              createdBy: u.createdBy || u.created_by || 'usr-admin-001',
+              phone: u.phone || '',
+              documentId: u.documentId || u.document_id || '',
+              isActive: u.isActive ?? u.is_active ?? true,
+              createdAt: u.createdAt || u.created_at,
+            };
+          });
 
-          // Sincronizar con DEMO_USERS para pruebas de cambio instantáneo de rol
           mapped.forEach((col) => {
             const norm = col.email.trim().toLowerCase();
             if (!DEMO_USERS[norm]) {
@@ -93,6 +194,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
                   fullName: col.name,
                   role: 'collector',
                   assignedRouteId: col.assignedRouteId,
+                  routeZone: col.routeZone,
                   organizationId: col.organizationId,
                   organizationName: col.organizationName,
                   createdBy: col.createdBy,
@@ -113,20 +215,29 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
     } finally {
       setIsLoadingList(false);
     }
-  }, []);
+  }, [routes]);
 
   useEffect(() => {
     loadCollectors();
   }, [loadCollectors]);
 
-  // Acceso exclusivo para Super Admin o Admin
   if (!isAdmin) {
     return null;
   }
 
+  // Filtrado de zonas de Medellín según buscador rápido
+  const filteredZones = MEDELLIN_ZONES_CATALOG.filter(
+    (z) =>
+      z.label.toLowerCase().includes(zoneSearchFilter.toLowerCase()) ||
+      z.comuna.toLowerCase().includes(zoneSearchFilter.toLowerCase())
+  );
+
+  // Zona efectiva final que se guardará en `route_zone` (profiles) y `zone` (routes)
+  const resolvedRouteZone =
+    selectedZoneOption === CUSTOM_ZONE_VALUE ? customZoneText.trim() : selectedZoneOption;
+
   // AISLAMIENTO RLS DE SEGUNDO NIVEL:
-  // - Si el usuario es 'super_admin', tiene visibilidad total de todos los cobradores.
-  // - Si el usuario es 'admin', SOLO ve y gestiona los cobradores que él mismo creó (created_by) o de su organización (organization_id).
+  // Super Admin ve todos; Admin ve solo los cobradores que él creó o de su organización
   const visibleCollectors = isSuperAdmin
     ? collectors
     : collectors.filter(
@@ -141,12 +252,21 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
     setSuccessMsg(null);
 
     if (!fullName.trim() || !email.trim() || !password.trim() || !assignedRouteId) {
-      setErrorMsg('Completa Nombre completo, Correo electrónico, Contraseña temporal y Ruta Asignada.');
+      setErrorMsg(
+        'Completa Nombre completo, Correo electrónico, Contraseña temporal y Ruta Asignada.'
+      );
+      return;
+    }
+
+    if (!resolvedRouteZone) {
+      setErrorMsg('Por favor selecciona una zona de Medellín o escribe la zona personalizada.');
       return;
     }
 
     if (password.trim().length < 6) {
-      setErrorMsg('La contraseña temporal debe tener al menos 6 caracteres (requisito de Supabase Auth).');
+      setErrorMsg(
+        'La contraseña temporal debe tener al menos 6 caracteres (requisito de Supabase Auth).'
+      );
       return;
     }
 
@@ -157,6 +277,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
       password: password.trim(),
       fullName: fullName.trim(),
       assignedRouteId,
+      routeZone: resolvedRouteZone,
       organizationId: profile?.organizationId || 'org-medellin-01',
       organizationName: profile?.organizationName || 'Fondo RutaCapital Medellín Central',
       createdByAdminId: profile?.id || 'usr-admin-001',
@@ -177,8 +298,12 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
       name: createdProfile.fullName,
       role: 'collector',
       assignedRouteId: createdProfile.assignedRouteId || assignedRouteId,
+      routeZone: createdProfile.routeZone || resolvedRouteZone,
       organizationId: createdProfile.organizationId || profile?.organizationId || 'org-medellin-01',
-      organizationName: createdProfile.organizationName || profile?.organizationName || 'Fondo RutaCapital Medellín',
+      organizationName:
+        createdProfile.organizationName ||
+        profile?.organizationName ||
+        'Fondo RutaCapital Medellín',
       createdBy: createdProfile.createdBy || profile?.id || 'usr-admin-001',
       phone: createdProfile.phone,
       documentId: createdProfile.documentId,
@@ -186,22 +311,26 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
       createdAt: createdProfile.createdAt,
     };
 
-    setCollectors((prev) => [newCollectorRecord, ...prev.filter((c) => c.email !== newCollectorRecord.email)]);
+    setCollectors((prev) => [
+      newCollectorRecord,
+      ...prev.filter((c) => c.email !== newCollectorRecord.email),
+    ]);
+
     if (onCollectorCreated) {
       onCollectorCreated(newCollectorRecord);
     }
 
-    const assignedRouteObj = routes.find((r) => r.id === assignedRouteId);
     setSuccessMsg(
-      `¡Cobrador ${createdProfile.fullName} (${createdProfile.email}) creado con rol 'collector', vinculado a ${
-        profile?.organizationName || 'tu organización'
-      } (created_by: ${profile?.id}) y aislado en ${assignedRouteObj?.name || assignedRouteId}!`
+      `¡Cobrador ${createdProfile.fullName} registrado! Zona asignada en perfil (route_zone): "${resolvedRouteZone}" vinculada a la ruta ${assignedRouteId}.`
     );
 
     setFullName('');
     setEmail('');
     setPhone('');
     setDocumentId('');
+    if (selectedZoneOption === CUSTOM_ZONE_VALUE) {
+      setCustomZoneText('');
+    }
   };
 
   const handleTestCollectorLogin = (collectorEmail: string) => {
@@ -212,28 +341,32 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
   };
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 shadow-sm">
       {/* ENCABEZADO */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-4">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 flex items-center gap-1">
+            <span className="px-2.5 py-0.5 rounded-md text-[11px] font-mono bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 flex items-center gap-1">
               <Lock className="w-3.5 h-3.5 text-emerald-400" />
-              Nivel 2 → Nivel 3: Gestión de Cobradores ('collector')
+              Nivel 2 → Nivel 3: Gestión de Cobradores y Zonas de Medellín
             </span>
-            <span className="px-2.5 py-0.5 rounded-full text-[11px] font-mono bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1">
+            <span className="px-2.5 py-0.5 rounded-md text-[11px] font-mono bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1">
               <Building2 className="w-3 h-3" />
               {isSuperAdmin
-                ? 'Vista Global Super Admin (Todos los Fondos)'
-                : `Fondo Aislado: ${profile?.organizationName || 'Mi Fondo'} (${profile?.organizationId || 'org-medellin-01'})`}
+                ? 'Vista Global Super Admin'
+                : `${profile?.organizationName || 'Mi Fondo'} (${
+                    profile?.organizationId || 'org-medellin-01'
+                  })`}
             </span>
           </div>
           <h3 className="text-lg font-bold text-white mt-1.5 flex items-center gap-2">
             <Bike className="w-5 h-5 text-emerald-400" />
-            Módulo de Creación de Cobradores y Asignación de Rutas
+            Creación de Cobradores y Asignación de Comunas / Zonas en Medellín
           </h3>
           <p className="text-xs text-slate-400 mt-0.5">
-            Cada cobrador creado queda atado exclusivamente a la gestión de su Administrador (<code className="text-emerald-300 font-mono">created_by = '{profile?.id}'</code> y <code className="text-emerald-300 font-mono">organization_id = '{profile?.organizationId}'</code>) y solo puede ver los clientes de su ruta asignada.
+            Selecciona la comuna o zona metropolitana de Medellín y guárdala directamente en{' '}
+            <code className="text-emerald-300 font-mono">profiles.route_zone</code> y{' '}
+            <code className="text-emerald-300 font-mono">routes.zone</code>.
           </p>
         </div>
 
@@ -245,8 +378,8 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
             <span className="text-[10px] uppercase tracking-wider text-slate-400 font-bold block">
               {isSuperAdmin ? 'Cobradores Globales' : 'Mis Cobradores (RLS)'}
             </span>
-            <span className="text-sm font-black text-white font-mono">
-              {visibleCollectors.length} Collector(s)
+            <span className="text-sm font-bold text-white font-mono tabular-nums">
+              {visibleCollectors.length} Activos
             </span>
           </div>
         </div>
@@ -254,7 +387,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
 
       {/* CONTENIDO EN 2 COLUMNAS */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-5">
-        {/* COLUMNA IZQUIERDA: FORMULARIO DE ALTA DE COBRADOR */}
+        {/* COLUMNA IZQUIERDA: FORMULARIO DE ALTA DE COBRADOR Y SELECTOR DE ZONAS DE MEDELLÍN */}
         <form
           onSubmit={handleCreateCollector}
           className="lg:col-span-5 bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-3.5 text-xs"
@@ -265,7 +398,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
               Registrar Nuevo Cobrador
             </span>
             <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-              role: 'collector'
+              route_zone + RLS
             </span>
           </div>
 
@@ -283,14 +416,6 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
             </div>
           )}
 
-          {/* Vínculo jerárquico automático */}
-          <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-2.5 flex items-center justify-between text-[11px]">
-            <span className="text-slate-400">Vinculado a Admin / Organización:</span>
-            <span className="font-mono font-bold text-indigo-300">
-              {profile?.organizationId || 'org-medellin-01'} ({profile?.id || 'usr-admin-001'})
-            </span>
-          </div>
-
           {/* 1. NOMBRE COMPLETO */}
           <div>
             <label className="block text-slate-300 font-semibold mb-1">
@@ -302,7 +427,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
               placeholder="Ej. Mateo Alejandro Ospina"
               value={fullName}
               onChange={(e) => setFullName(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-white focus:outline-none focus:border-emerald-500"
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3.5 py-2.5 text-white focus:outline-none focus:border-emerald-500"
             />
           </div>
 
@@ -319,7 +444,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
                 placeholder="Ej. mateo.ruta1@rutacapital.co"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-10 pr-3.5 py-2.5 text-white font-mono focus:outline-none focus:border-emerald-500"
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-10 pr-3.5 py-2.5 text-white font-mono focus:outline-none focus:border-emerald-500"
               />
             </div>
           </div>
@@ -338,28 +463,94 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
                 placeholder="Mínimo 6 caracteres"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-10 pr-3.5 py-2.5 text-emerald-300 font-mono font-bold focus:outline-none focus:border-emerald-500"
+                className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-10 pr-3.5 py-2.5 text-emerald-300 font-mono font-bold focus:outline-none focus:border-emerald-500"
               />
             </div>
           </div>
 
-          {/* 4. RUTA ASIGNADA */}
-          <div>
-            <label className="block text-slate-300 font-semibold mb-1">
-              4. Ruta Asignada (Aislamiento Estricto RLS) *
-            </label>
+          {/* =====================================================================
+              4. SELECTOR DE ZONAS AMPLIADO (COMUNAS Y ZONAS DE MEDELLÍN + PERSONALIZADA)
+             ===================================================================== */}
+          <div className="p-3 rounded-xl bg-slate-900/90 border border-emerald-500/30 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <label className="text-emerald-300 font-semibold flex items-center gap-1.5">
+                <Compass className="w-4 h-4 text-emerald-400" />
+                4. Zona / Comuna de Cobro en Medellín *
+              </label>
+              <span className="text-[10px] font-mono text-slate-400">profiles.route_zone</span>
+            </div>
+
+            {/* Buscador rápido para filtrar comunas/zonas */}
             <div className="relative">
-              <MapPin className="w-4 h-4 text-emerald-400 absolute left-3.5 top-2.5" />
+              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-3 top-2.5" />
+              <input
+                type="text"
+                placeholder="Filtrar comuna o barrio (ej: Laureles, Hueco, Envigado...)"
+                value={zoneSearchFilter}
+                onChange={(e) => setZoneSearchFilter(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-8 pr-3 py-1.5 text-[11px] text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+
+            {/* Menú desplegable (<select>) con todas las zonas de Medellín + Opción Personalizada */}
+            <div className="relative">
+              <MapPin className="w-4 h-4 text-emerald-400 absolute left-3 top-2.5" />
+              <select
+                value={selectedZoneOption}
+                onChange={(e) => setSelectedZoneOption(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg pl-9 pr-3 py-2.5 text-white font-semibold focus:outline-none focus:border-emerald-500"
+              >
+                <optgroup label="Comunas y Zonas Principales de Medellín">
+                  {(filteredZones.length > 0 ? filteredZones : MEDELLIN_ZONES_CATALOG).map((z) => (
+                    <option key={z.value} value={z.value}>
+                      {z.label} — ({z.comuna})
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="Zona Abierta / Personalizada">
+                  <option value={CUSTOM_ZONE_VALUE}>
+                    + Otra zona personalizada (Escribir texto libre)...
+                  </option>
+                </optgroup>
+              </select>
+            </div>
+
+            {/* Campo de texto libre si el usuario elige "Otra zona personalizada" */}
+            {selectedZoneOption === CUSTOM_ZONE_VALUE && (
+              <div className="pt-1">
+                <label className="block text-[11px] text-amber-300 font-semibold mb-1">
+                  Escribe el nombre de la Zona o Barrio personalizado *
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  placeholder="Ej. Barrio Antioquia / Guayabal, San Antonio de Prado, Rionegro..."
+                  value={customZoneText}
+                  onChange={(e) => setCustomZoneText(e.target.value)}
+                  className="w-full bg-slate-950 border border-amber-500/50 focus:border-amber-400 rounded-lg px-3 py-2 text-white font-medium focus:outline-none"
+                />
+              </div>
+            )}
+
+            {/* Código de Ruta Técnica Vinculada (assigned_route_id) */}
+            <div className="pt-1 border-t border-slate-800/80 flex items-center justify-between gap-2">
+              <label className="text-[11px] text-slate-400 shrink-0">
+                ID de Ruta (<code className="font-mono text-slate-300">route_id</code>):
+              </label>
               <select
                 value={assignedRouteId}
                 onChange={(e) => setAssignedRouteId(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-10 pr-3.5 py-2.5 text-white font-semibold focus:outline-none focus:border-emerald-500"
+                className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-[11px] text-slate-200 font-mono focus:outline-none focus:border-emerald-500"
               >
                 {routes.map((r) => (
                   <option key={r.id} value={r.id}>
-                    {r.name} — ID: {r.id} ({r.code})
+                    {r.id} ({r.code})
                   </option>
                 ))}
+                <option value={`route-${routes.length + 1}`}>
+                  + Crear nueva ruta (route-{routes.length + 1})
+                </option>
               </select>
             </div>
           </div>
@@ -375,7 +566,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
                   placeholder="314 000 0000"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-8 pr-2.5 py-2 text-white text-xs focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-8 pr-2.5 py-2 text-white text-xs focus:outline-none focus:border-emerald-500"
                 />
               </div>
             </div>
@@ -388,7 +579,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
                   placeholder="CC 1.017..."
                   value={documentId}
                   onChange={(e) => setDocumentId(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl pl-8 pr-2.5 py-2 text-white text-xs focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-slate-900 border border-slate-800 rounded-lg pl-8 pr-2.5 py-2 text-white text-xs focus:outline-none focus:border-emerald-500"
                 />
               </div>
             </div>
@@ -397,80 +588,80 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
           <button
             type="submit"
             disabled={isSubmitting}
-            className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black text-xs uppercase tracking-wider rounded-xl shadow-lg shadow-emerald-950/60 flex items-center justify-center gap-2 transition-all cursor-pointer"
+            className="w-full py-3 px-4 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold text-xs uppercase tracking-wider rounded-lg shadow-lg flex items-center justify-center gap-2 transition-all cursor-pointer"
           >
             <UserPlus className="w-4 h-4" />
-            {isSubmitting ? 'Creando en Supabase Auth & DB...' : "Crear Usuario 'collector' y Vincular Ruta"}
+            {isSubmitting
+              ? 'Guardando en profiles & routes...'
+              : 'Asignar Cobrador y Guardar Zona'}
           </button>
         </form>
 
-        {/* COLUMNA DERECHA: DIRECTORIO DE COBRADORES Y PRUEBA DE ACCESO AISLADO */}
+        {/* COLUMNA DERECHA: DIRECTORIO DE COBRADORES Y ZONAS ASIGNADAS */}
         <div className="lg:col-span-7 flex flex-col justify-between bg-slate-950/50 border border-slate-800 rounded-xl p-4">
           <div>
             <div className="flex items-center justify-between border-b border-slate-800 pb-2.5 mb-3">
               <span className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
                 <Bike className="w-4 h-4 text-emerald-400" />
                 {isSuperAdmin
-                  ? 'Todos los Cobradores del Sistema (Vista Super Admin)'
-                  : `Cobradores de ${profile?.organizationName || 'Mi Fondo'} (Aislamiento Admin)`}
+                  ? 'Directorio Global de Cobradores y Zonas Asignadas'
+                  : `Cobradores de ${profile?.organizationName || 'Mi Fondo'} y Zonas en Medellín`}
               </span>
-              <span className="text-[11px] text-slate-400">
-                {isLoadingList ? 'Sincronizando...' : `${visibleCollectors.length} cuentas visibles`}
+              <span className="text-[11px] text-slate-400 font-mono">
+                {isLoadingList ? 'Sincronizando...' : `${visibleCollectors.length} registros`}
               </span>
             </div>
 
             {visibleCollectors.length === 0 ? (
               <div className="py-10 text-center space-y-2">
                 <p className="text-xs text-slate-400">
-                  No tienes cobradores registrados bajo tu administración (<code className="text-indigo-300 font-mono">{profile?.organizationId}</code>).
+                  No hay cobradores registrados aún en esta organización.
                 </p>
                 <p className="text-[11px] text-slate-500">
-                  Utiliza el formulario de la izquierda para registrar tu primer cobrador (<code className="text-emerald-400 font-mono">role: 'collector'</code>).
+                  Usa el formulario para crear un cobrador y asignarle su comuna o zona en Medellín.
                 </p>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
-                    <tr className="border-b border-slate-800 text-[10px] text-slate-400 uppercase">
+                    <tr className="border-b border-slate-800 text-[10px] font-mono text-slate-400 uppercase">
                       <th className="py-2 px-2">Cobrador / Correo</th>
-                      <th className="py-2 px-2">Organización / Admin</th>
-                      <th className="py-2 px-2">Ruta Vinculada (RLS)</th>
-                      <th className="py-2 px-2 text-right">Simular / Verificar</th>
+                      <th className="py-2 px-2">Zona de Medellín (route_zone)</th>
+                      <th className="py-2 px-2">Ruta ID</th>
+                      <th className="py-2 px-2 text-right">Acción</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 text-xs">
                     {visibleCollectors.map((col) => {
                       const routeObj = routes.find((r) => r.id === col.assignedRouteId);
+                      const displayZone =
+                        col.routeZone || routeObj?.zone || 'Centro / El Hueco';
                       return (
                         <tr key={col.uid} className="hover:bg-slate-900/60 transition-colors">
                           <td className="py-2.5 px-2">
                             <div className="font-bold text-white">{col.name}</div>
-                            <div className="text-[11px] text-emerald-400 font-mono">{col.email}</div>
+                            <div className="text-[11px] text-emerald-400 font-mono">
+                              {col.email}
+                            </div>
                           </td>
                           <td className="py-2.5 px-2">
-                            <span className="text-[10px] font-mono text-indigo-300 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20 block w-fit">
-                              {col.organizationId || 'org-medellin-01'}
-                            </span>
-                            <span className="text-[10px] text-slate-500 font-mono block mt-0.5">
-                              por: {col.createdBy || 'usr-admin-001'}
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                              <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                              <span>{displayZone}</span>
                             </span>
                           </td>
-                          <td className="py-2.5 px-2">
-                            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-mono">
-                              <MapPin className="w-3 h-3 text-emerald-400" />
-                              {routeObj ? `${routeObj.name} (${col.assignedRouteId})` : col.assignedRouteId}
-                            </span>
+                          <td className="py-2.5 px-2 font-mono text-[11px] text-slate-300">
+                            {col.assignedRouteId}
                           </td>
                           <td className="py-2.5 px-2 text-right">
                             <button
                               type="button"
                               onClick={() => handleTestCollectorLogin(col.email)}
                               className="px-2.5 py-1.5 bg-slate-800 hover:bg-emerald-600 text-slate-200 hover:text-white border border-slate-700 rounded-lg text-[10px] font-bold inline-flex items-center gap-1 transition-all cursor-pointer"
-                              title="Entrar como este cobrador para verificar que solo ve su ruta asignada"
                             >
                               <LogIn className="w-3 h-3" />
-                              Abrir su Ruta
+                              Ver Ruta
                             </button>
                           </td>
                         </tr>
@@ -484,10 +675,12 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
 
           <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px] text-slate-400">
             <span>
-              Política RLS: <code className="text-emerald-300 font-mono">created_by = auth.uid()</code> (Admin solo modifica sus propios cobradores y clientes).
+              Sincronización automática en{' '}
+              <code className="text-emerald-300 font-mono">profiles.route_zone</code> y{' '}
+              <code className="text-emerald-300 font-mono">routes.zone</code>.
             </span>
             <span className="font-mono text-[10px] text-slate-500">
-              Jerarquía de 3 niveles activa
+              Medellín & Área Metropolitana
             </span>
           </div>
         </div>

@@ -58,6 +58,7 @@ CREATE TABLE public.profiles (
   organization_name TEXT DEFAULT 'Fondo RutaCapital',
   created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL, -- Jerarquía directa: quién creó esta cuenta
   assigned_route_id TEXT,                                 -- Ej: 'route-1' (Ruta asignada al collector)
+  route_zone TEXT,                                        -- Ej: 'Centro / El Hueco', 'Laureles / Estadio', 'El Poblado', etc.
   phone TEXT,
   partner_equity_pct NUMERIC(5, 2) DEFAULT 0.00 CHECK (partner_equity_pct >= 0 AND partner_equity_pct <= 100),
   capital_invested_cop NUMERIC(14, 2) DEFAULT 0.00 CHECK (capital_invested_cop >= 0),
@@ -122,7 +123,7 @@ RETURNS BOOLEAN AS $$
   );
 $$ LANGUAGE sql STABLE SECURITY DEFINER;
 
--- TRIGGER AUTOMÁTICO PARA SINCRONIZAR AUTH.USERS -> PUBLIC.PROFILES CON JERARQUÍA DE 3 NIVELES
+-- TRIGGER AUTOMÁTICO PARA SINCRONIZAR AUTH.USERS -> PUBLIC.PROFILES CON JERARQUÍA DE 3 NIVELES Y ZONA DE COBRO
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -134,7 +135,8 @@ BEGIN
     organization_id,
     organization_name,
     created_by,
-    assigned_route_id
+    assigned_route_id,
+    route_zone
   )
   VALUES (
     NEW.id,
@@ -144,7 +146,8 @@ BEGIN
     COALESCE(NEW.raw_user_meta_data->>'organization_id', 'org-medellin-01'),
     COALESCE(NEW.raw_user_meta_data->>'organization_name', 'Fondo RutaCapital'),
     NULLIF(NEW.raw_user_meta_data->>'created_by', '')::uuid,
-    NEW.raw_user_meta_data->>'assigned_route_id'
+    NEW.raw_user_meta_data->>'assigned_route_id',
+    NEW.raw_user_meta_data->>'route_zone'
   )
   ON CONFLICT (id) DO UPDATE SET
     full_name = EXCLUDED.full_name,
@@ -152,7 +155,8 @@ BEGIN
     organization_id = EXCLUDED.organization_id,
     organization_name = EXCLUDED.organization_name,
     created_by = EXCLUDED.created_by,
-    assigned_route_id = EXCLUDED.assigned_route_id;
+    assigned_route_id = EXCLUDED.assigned_route_id,
+    route_zone = EXCLUDED.route_zone;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;

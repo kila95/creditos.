@@ -217,6 +217,7 @@ app.post('/api/auth/login', async (req, res) => {
       organizationName: userRecord.organizationName,
       createdBy: userRecord.createdBy,
       assignedRouteId: userRecord.assignedRouteId,
+      routeZone: userRecord.routeZone,
       phone: userRecord.phone,
       documentId: userRecord.documentId,
       isActive: userRecord.isActive,

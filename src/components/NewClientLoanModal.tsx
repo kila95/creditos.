@@ -1,33 +1,56 @@
 import React, { useState } from 'react';
-import { 
-  X, 
-  UserPlus, 
-  DollarSign, 
-  Calendar, 
-  MapPin, 
-  Phone, 
-  Store, 
-  ShieldCheck, 
-  FileText,
+import {
+  X,
+  UserPlus,
+  DollarSign,
+  Calendar,
+  Percent,
+  CheckCircle2,
   AlertCircle,
-  CheckCircle2
+  FileText,
+  Users,
+  Calculator,
+  Clock,
 } from 'lucide-react';
 import { RouteData, ClientProfile, LoanDetail } from '../data/mockData';
 import { formatCOP } from '../utils/financialCalculations';
-import { insertClientAndLoanToDB } from '../services/clientSyncService';
+import {
+  insertClientAndLoanToDB,
+  createCustomLoanInDB,
+  LoanModality,
+} from '../services/clientSyncService';
+import {
+  calculateLoanSchedule,
+  convertInstallmentsOnModalityChange,
+  MODALITY_METADATA,
+} from '../utils/loanFrequencyCalculator';
 
 interface NewClientLoanModalProps {
   routes: RouteData[];
+  clients?: ClientProfile[];
+  defaultSelectedClientId?: string;
   onClose: () => void;
   onClientCreated: (newClient: ClientProfile, newLoan: LoanDetail) => void;
+  onLoanCreatedForExistingClient?: (newLoan: LoanDetail) => void;
 }
 
 export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
   routes,
+  clients = [],
+  defaultSelectedClientId,
   onClose,
-  onClientCreated
+  onClientCreated,
+  onLoanCreatedForExistingClient,
 }) => {
-  // Datos del Cliente
+  // Modo de operación: 'existing_client' (vincular a client_id existente) o 'new_client' (registrar cliente y crear préstamo)
+  const [mode, setMode] = useState<'existing_client' | 'new_client'>(
+    defaultSelectedClientId || clients.length > 0 ? 'existing_client' : 'new_client'
+  );
+  const [selectedClientId, setSelectedClientId] = useState<string>(
+    defaultSelectedClientId || clients[0]?.id || ''
+  );
+
+  // Datos de Nuevo Cliente (cuando mode === 'new_client')
   const [name, setName] = useState('');
   const [tradeName, setTradeName] = useState('');
   const [document, setDocument] = useState('');
@@ -39,38 +62,130 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
   const [guarantorName, setGuarantorName] = useState('');
   const [guarantorPhone, setGuarantorPhone] = useState('');
 
-  // Parámetros Financieros del Crédito
-  const [principal, setPrincipal] = useState<number>(1000000);
-  const [interestRate, setInterestRate] = useState<number>(20);
-  const [termDays, setTermDays] = useState<number>(24);
+  // =========================================================================
+  // 1. CAMPOS NUMÉRICOS LIBRES DEL PRÉSTAMO Y FRECUENCIA DE PAGO
+  // =========================================================================
+  const [principalInput, setPrincipalInput] = useState<string>('500000'); // Monto libre en COP
+  const [interestRateInput, setInterestRateInput] = useState<string>('20'); // Porcentaje de interés libre (%)
+  const [termInstallmentsInput, setTermInstallmentsInput] = useState<string>('24'); // Número de cuotas según frecuencia
+  const [modality, setModality] = useState<LoanModality>('diaria'); // Frecuencia: diaria, semanal, quincenal, mensual
 
-  // Estados de interfaz
+  // Estados de envío y errores de Supabase / RLS
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [errorDetails, setErrorDetails] = useState<{ code?: string; hint?: string } | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
-  // Cálculos automáticos del crédito
-  const totalInterest = Math.round(principal * (interestRate / 100));
-  const totalDebt = principal + totalInterest;
-  const dailyInstallment = Math.round(totalDebt / termDays);
+  // =========================================================================
+  // 2. CÁLCULO AUTOMÁTICO EN TIEMPO REAL SEGÚN MONTO, TASA, PLAZO Y FRECUENCIA
+  // =========================================================================
+  const schedule = calculateLoanSchedule(
+    principalInput,
+    interestRateInput,
+    termInstallmentsInput,
+    modality
+  );
+
+  const numericPrincipal = schedule.principal;
+  const numericInterestRate = schedule.interestRate;
+  const numericTermInstallments = schedule.numberOfInstallments;
+  const calculatedInterestCOP = schedule.totalInterest;
+  const calculatedTotalToPay = schedule.totalToPay;
+  const calculatedInstallmentValue = schedule.installmentValue;
+  const currentModalityMeta = MODALITY_METADATA[modality];
+
+  // Al cambiar la frecuencia de pago, ajusta automáticamente el número de cuotas equivalente
+  // (ej: 24 días -> 4 semanas -> 2 quincenas -> 1 mes) y recalcula el Valor de la Cuota al instante
+  const handleModalityChange = (nextModality: LoanModality) => {
+    const convertedInstallments = convertInstallmentsOnModalityChange(
+      modality,
+      nextModality,
+      Number(termInstallmentsInput) || MODALITY_METADATA[modality].defaultInstallments
+    );
+    setModality(nextModality);
+    setTermInstallmentsInput(String(convertedInstallments));
+  };
+
+  const quickTermSuggestions: Record<LoanModality, number[]> = {
+    diaria: [24, 30, 45],
+    semanal: [4, 8, 12],
+    quincenal: [2, 4, 6],
+    mensual: [1, 3, 6],
+  };
+
+  const selectedExistingClient = clients.find((c) => c.id === selectedClientId);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     setErrorDetails(null);
 
-    if (!name.trim() || !document.trim() || !phone.trim() || !address.trim()) {
-      setErrorMsg('Por favor completa todos los campos obligatorios del cliente (Nombre, Cédula, Teléfono y Dirección).');
+    if (numericPrincipal <= 0) {
+      setErrorMsg('Por favor ingresa un Monto del Préstamo válido mayor a $0 COP.');
       return;
     }
 
-    if (principal < 100000) {
-      setErrorMsg('El monto principal mínimo para otorgar es de $100.000 COP.');
+    if (numericTermInstallments <= 0) {
+      setErrorMsg('El Plazo / Número de Cuotas debe ser al menos 1.');
       return;
     }
 
     setIsSubmitting(true);
+
+    // CASO A: Crear Préstamo para un Cliente Existente en `loans` (vinculando `client_id`)
+    if (mode === 'existing_client') {
+      if (!selectedExistingClient) {
+        setIsSubmitting(false);
+        setErrorMsg('Selecciona un cliente válido o cambia a la pestaña "Nuevo Cliente".');
+        return;
+      }
+
+      const { data: createdLoan, error } = await createCustomLoanInDB({
+        clientId: selectedExistingClient.id,
+        clientName: selectedExistingClient.name,
+        tradeName: selectedExistingClient.tradeName,
+        routeId: selectedExistingClient.routeId || routeId,
+        principal: numericPrincipal,
+        interestRate: numericInterestRate,
+        termInstallments: numericTermInstallments,
+        modality,
+      });
+
+      setIsSubmitting(false);
+
+      if (error || !createdLoan) {
+        console.error('❌ [Error al insertar préstamo en tabla loans]:', error);
+        setErrorMsg(
+          error?.message ||
+            'La base de datos rechazó el préstamo. Verifica las políticas RLS en la tabla loans.'
+        );
+        setErrorDetails({ code: error?.code, hint: error?.hint });
+        return;
+      }
+
+      if (onLoanCreatedForExistingClient) {
+        onLoanCreatedForExistingClient(createdLoan);
+      }
+
+      setSuccessMsg(
+        `¡Préstamo ${createdLoan.code} creado para ${selectedExistingClient.name}! Total: ${formatCOP(
+          createdLoan.totalDebt
+        )} (${numericTermInstallments} cuotas de ${formatCOP(createdLoan.installmentAmount)}).`
+      );
+      setTimeout(() => {
+        onClose();
+      }, 750);
+      return;
+    }
+
+    // CASO B: Registrar Nuevo Cliente + Insertar su Préstamo en `loans`
+    if (!name.trim() || !document.trim() || !phone.trim() || !address.trim()) {
+      setIsSubmitting(false);
+      setErrorMsg(
+        'Por favor completa los datos obligatorios del cliente (Nombre, Cédula, Teléfono y Dirección).'
+      );
+      return;
+    }
 
     const { data, error } = await insertClientAndLoanToDB({
       name: name.trim(),
@@ -83,18 +198,19 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
       routeId,
       guarantorName: guarantorName.trim(),
       guarantorPhone: guarantorPhone.trim(),
-      principal,
-      interestRate,
-      termDays,
+      principal: numericPrincipal,
+      interestRate: numericInterestRate,
+      termDays: numericTermInstallments,
+      modality,
     });
 
     setIsSubmitting(false);
 
     if (error || !data) {
-      console.error('❌ [Error al insertar cliente en tabla clients]:', error);
+      console.error('❌ [Error al insertar cliente/préstamo]:', error);
       setErrorMsg(
         error?.message ||
-          'La base de datos rechazó el registro. Verifica las políticas RLS (INSERT) en la tabla clients.'
+          'La base de datos rechazó el registro. Verifica las políticas RLS en clients y loans.'
       );
       setErrorDetails({
         code: error?.code,
@@ -103,44 +219,46 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
       return;
     }
 
-    // Actualizar el estado en tiempo real tras confirmar la inserción en base de datos
     onClientCreated(data.client, data.loan);
-    setSuccessMsg(`¡Cliente ${data.client.name} y Crédito ${data.loan.code} guardados exitosamente en la base de datos!`);
+    setSuccessMsg(
+      `¡Préstamo ${data.loan.code} y cliente ${data.client.name} guardados exitosamente en Supabase!`
+    );
     setTimeout(() => {
       onClose();
-    }, 700);
+    }, 750);
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-800 rounded-3xl w-full max-w-2xl shadow-2xl overflow-hidden my-auto animate-in zoom-in-95 duration-200">
-        
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl shadow-2xl overflow-hidden my-auto">
         {/* ENCABEZADO */}
-        <div className="bg-gradient-to-r from-emerald-950/70 to-slate-900 p-5 border-b border-slate-800 flex items-center justify-between">
+        <div className="bg-slate-950 p-5 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
-              <UserPlus className="w-5 h-5" />
+            <div className="w-10 h-10 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+              <Calculator className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base sm:text-lg font-black text-white">
-                Vincular Nuevo Cliente & Microcrédito
+              <h2 className="text-base sm:text-lg font-bold text-white">
+                Crear Préstamo con Monto y Condiciones Libres
               </h2>
               <p className="text-xs text-slate-400">
-                Apertura formal de crédito con validación de inserción en Base de Datos y RLS
+                Cálculo automático en tiempo real de Total a Pagar y Cuota con guardado en tabla{' '}
+                <code className="text-emerald-400 font-mono">loans</code>
               </p>
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition-colors"
+            className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* MENSAJES DE ESTADO */}
+        {/* ALERTAS DE ERROR O ÉXITO */}
         {errorMsg && (
-          <div className="mx-5 mt-4 p-3.5 rounded-xl bg-rose-950/70 border border-rose-500/50 text-rose-200 text-xs space-y-1.5">
+          <div className="mx-5 mt-4 p-3.5 rounded-xl bg-rose-950/70 border border-rose-500/50 text-rose-200 text-xs space-y-1">
             <div className="flex items-start gap-2 font-bold text-rose-300">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{errorMsg}</span>
@@ -151,9 +269,7 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
               </div>
             )}
             {errorDetails?.hint && (
-              <div className="text-[11px] text-rose-200/80 pl-6">
-                Sugerencia: {errorDetails.hint}
-              </div>
+              <div className="text-[11px] text-rose-200/80 pl-6">Sugerencia: {errorDetails.hint}</div>
             )}
           </div>
         )}
@@ -165,281 +281,380 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
           </div>
         )}
 
-        {/* FORMULARIO */}
         <form onSubmit={handleSubmit} className="p-5 sm:p-6 space-y-5 text-xs">
-          {/* SECCIÓN 1: DATOS DEL DEUDOR */}
+          {/* SELECTOR DE VINCULACIÓN DE CLIENTE: CLIENTE EXISTENTE vs NUEVO CLIENTE */}
           <div>
-            <h3 className="text-emerald-400 font-bold uppercase tracking-wider text-[11px] mb-3 flex items-center gap-1.5">
-              <FileText className="w-3.5 h-3.5" />
-              1. Ficha del Cliente / Deudor
-            </h3>
-            
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              <div>
-                <label className="text-slate-300 font-medium block mb-1">
-                  Nombre Completo *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ej. Rosa Inés Cardona"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 transition-colors"
-                />
-              </div>
-
-              <div>
-                <label className="text-slate-300 font-medium block mb-1">
-                  Cédula de Ciudadanía (C.C.) *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ej. 1017384920"
-                  value={document}
-                  onChange={(e) => setDocument(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 transition-colors"
-                />
-              </div>
-
-              <div>
-                <label className="text-slate-300 font-medium block mb-1">
-                  Nombre del Negocio / Establecimiento
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ej. Tienda La Floresta / Barbería Don Alex"
-                  value={tradeName}
-                  onChange={(e) => setTradeName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 transition-colors"
-                />
-              </div>
-
-              <div>
-                <label className="text-slate-300 font-medium block mb-1">
-                  Actividad Económica
-                </label>
-                <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 transition-colors"
-                >
-                  <option value="Comercio / Abarrotes">Comercio / Abarrotes</option>
-                  <option value="Puesto de Comidas / Frutas">Puesto de Comidas / Frutas</option>
-                  <option value="Estética / Barbería">Estética / Peluquería / Barbería</option>
-                  <option value="Taller Mecánico / Motos">Taller Mecánico / Motos</option>
-                  <option value="Confección / Textiles">Confección / Textiles</option>
-                  <option value="Servicios Varios">Servicios Varios</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="text-slate-300 font-medium block mb-1">
-                  WhatsApp / Celular *
-                </label>
-                <input
-                  type="tel"
-                  required
-                  placeholder="Ej. 312 458 9021"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 transition-colors"
-                />
-              </div>
-
-              <div>
-                <label className="text-slate-300 font-medium block mb-1">
-                  Ruta de Cobro Asignada *
-                </label>
-                <select
-                  value={routeId}
-                  onChange={(e) => setRouteId(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 transition-colors font-medium"
-                >
-                  {routes.map(r => (
-                    <option key={r.id} value={r.id}>
-                      {r.name} ({r.collectorName})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="text-slate-300 font-medium block mb-1">
-                  Dirección del Local / Domicilio *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ej. Calle 44 # 108-25"
-                  value={address}
-                  onChange={(e) => setAddress(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 transition-colors"
-                />
-              </div>
-
-              <div>
-                <label className="text-slate-300 font-medium block mb-1">
-                  Barrio / Comuna (Medellín)
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ej. Comuna 13 - San Javier"
-                  value={neighborhood}
-                  onChange={(e) => setNeighborhood(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 transition-colors"
-                />
-              </div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-[11px] font-mono uppercase tracking-wider text-emerald-400 font-semibold flex items-center gap-1.5">
+                <Users className="w-3.5 h-3.5" />
+                1. Titular del Préstamo (client_id)
+              </span>
+              {clients.length > 0 && (
+                <div className="inline-flex rounded-lg bg-slate-950 p-1 border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setMode('existing_client')}
+                    className={`px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                      mode === 'existing_client'
+                        ? 'bg-emerald-500 text-slate-950'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Cliente Existente ({clients.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMode('new_client')}
+                    className={`px-3 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                      mode === 'new_client'
+                        ? 'bg-emerald-500 text-slate-950'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    + Nuevo Cliente
+                  </button>
+                </div>
+              )}
             </div>
 
-            {/* FIADOR */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 mt-3 pt-3 border-t border-slate-800/80">
-              <div>
-                <label className="text-slate-400 text-[11px] block mb-1">
-                  Nombre del Fiador / Codeudor
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ej. Juan Carlos Cardona (Hermano)"
-                  value={guarantorName}
-                  onChange={(e) => setGuarantorName(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 transition-colors"
-                />
-              </div>
+            {mode === 'existing_client' && clients.length > 0 ? (
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 space-y-3">
+                <div>
+                  <label className="block text-slate-300 font-medium mb-1">
+                    Seleccionar Cliente Registrado (<code className="font-mono text-emerald-400">client_id</code>) *
+                  </label>
+                  <select
+                    value={selectedClientId}
+                    onChange={(e) => setSelectedClientId(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2.5 text-white focus:outline-none focus:border-emerald-500 font-medium"
+                  >
+                    {clients.map((cl) => (
+                      <option key={cl.id} value={cl.id}>
+                        {cl.name} — {cl.tradeName} (CC: {cl.document} · Ruta: {cl.routeId})
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-              <div>
-                <label className="text-slate-400 text-[11px] block mb-1">
-                  Teléfono del Fiador
-                </label>
-                <input
-                  type="tel"
-                  placeholder="Ej. 310 982 1478"
-                  value={guarantorPhone}
-                  onChange={(e) => setGuarantorPhone(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 transition-colors"
-                />
+                {selectedExistingClient && (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-2 border-t border-slate-800/80 text-[11px] text-slate-400">
+                    <div>
+                      <span className="block text-slate-500">ID Cliente:</span>
+                      <span className="font-mono text-slate-200">{selectedExistingClient.id}</span>
+                    </div>
+                    <div>
+                      <span className="block text-slate-500">Teléfono / WhatsApp:</span>
+                      <span className="font-mono text-slate-200">{selectedExistingClient.phone}</span>
+                    </div>
+                    <div>
+                      <span className="block text-slate-500">Dirección:</span>
+                      <span className="text-slate-200 truncate block">{selectedExistingClient.address}</span>
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
+            ) : (
+              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 space-y-3.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                  <div>
+                    <label className="text-slate-300 font-medium block mb-1">Nombre Completo *</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ej. Rosa Inés Cardona"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-slate-300 font-medium block mb-1">
+                      Cédula de Ciudadanía (C.C.) *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ej. 1017384920"
+                      value={document}
+                      onChange={(e) => setDocument(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-slate-300 font-medium block mb-1">WhatsApp / Celular *</label>
+                    <input
+                      type="tel"
+                      required
+                      placeholder="Ej. 312 458 9021"
+                      value={phone}
+                      onChange={(e) => setPhone(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-slate-300 font-medium block mb-1">
+                      Ruta de Cobro Asignada *
+                    </label>
+                    <select
+                      value={routeId}
+                      onChange={(e) => setRouteId(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                    >
+                      {routes.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.name} ({r.collectorName})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-slate-300 font-medium block mb-1">
+                      Dirección del Negocio o Casa *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ej. Calle 44 # 108-25"
+                      value={address}
+                      onChange={(e) => setAddress(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-slate-300 font-medium block mb-1">
+                      Nombre del Negocio / Local
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ej. Tienda La Floresta"
+                      value={tradeName}
+                      onChange={(e) => setTradeName(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* SECCIÓN 2: CONDICIONES FINANCIERAS DEL MICROCRÉDITO */}
+          {/* =====================================================================
+              SECCIÓN 2: CONDICIONES DEL PRÉSTAMO CON MONTO Y PARÁMETROS 100% LIBRES
+             ===================================================================== */}
           <div className="pt-2 border-t border-slate-800">
-            <h3 className="text-emerald-400 font-bold uppercase tracking-wider text-[11px] mb-3 flex items-center gap-1.5">
+            <h3 className="text-emerald-400 font-mono uppercase tracking-wider text-[11px] font-semibold mb-3 flex items-center gap-1.5">
               <DollarSign className="w-3.5 h-3.5" />
-              2. Parámetros del Microcrédito Desembolsado
+              2. Condiciones Personalizadas del Préstamo (Monto, Tasa, Plazo y Modalidad Libres)
             </h3>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+              {/* CAMPO 1: MONTO DEL PRÉSTAMO LIBRE */}
               <div>
                 <label className="text-slate-300 font-medium block mb-1">
-                  Monto Principal (COP)
+                  Monto del Préstamo (COP) *
                 </label>
-                <select
-                  value={principal}
-                  onChange={(e) => setPrincipal(Number(e.target.value))}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 font-mono font-bold"
-                >
-                  <option value={300000}>$300.000 COP</option>
-                  <option value={500000}>$500.000 COP</option>
-                  <option value={800000}>$800.000 COP</option>
-                  <option value={1000000}>$1.000.000 COP</option>
-                  <option value={1500000}>$1.500.000 COP</option>
-                  <option value={2000000}>$2.000.000 COP</option>
-                  <option value={3000000}>$3.000.000 COP</option>
-                </select>
+                <div className="relative">
+                  <DollarSign className="w-3.5 h-3.5 text-emerald-400 absolute left-3 top-2.5" />
+                  <input
+                    type="number"
+                    required
+                    min={1000}
+                    step="any"
+                    placeholder="Ej. 500000"
+                    value={principalInput}
+                    onChange={(e) => setPrincipalInput(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg pl-8 pr-3 py-2 text-white font-mono tabular-nums font-bold text-sm focus:outline-none"
+                  />
+                </div>
+                <span className="text-[10px] text-slate-400 font-mono mt-1 block">
+                  {formatCOP(numericPrincipal)}
+                </span>
               </div>
 
+              {/* CAMPO 2: PORCENTAJE DE INTERÉS O TASA LIBRE */}
               <div>
                 <label className="text-slate-300 font-medium block mb-1">
-                  Tasa de Interés Flat
+                  Tasa de Interés (%) *
                 </label>
-                <select
-                  value={interestRate}
-                  onChange={(e) => setInterestRate(Number(e.target.value))}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 font-mono font-bold"
-                >
-                  <option value={15}>15% Flat</option>
-                  <option value={20}>20% Flat (Estándar)</option>
-                  <option value={25}>25% Flat</option>
-                </select>
+                <div className="relative">
+                  <Percent className="w-3.5 h-3.5 text-amber-400 absolute left-3 top-2.5" />
+                  <input
+                    type="number"
+                    required
+                    min={0}
+                    step="0.1"
+                    placeholder="Ej. 20"
+                    value={interestRateInput}
+                    onChange={(e) => setInterestRateInput(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg pl-8 pr-3 py-2 text-white font-mono tabular-nums font-bold text-sm focus:outline-none"
+                  />
+                </div>
+                <span className="text-[10px] text-amber-400/90 font-mono mt-1 block">
+                  Interés: +{formatCOP(calculatedInterestCOP)}
+                </span>
               </div>
 
+              {/* CAMPO 3: FRECUENCIA DE PAGO (DIARIA, SEMANAL, QUINCENAL, MENSUAL) */}
               <div>
                 <label className="text-slate-300 font-medium block mb-1">
-                  Plazo en Días de Cobro
+                  Frecuencia de Pago *
                 </label>
-                <select
-                  value={termDays}
-                  onChange={(e) => setTermDays(Number(e.target.value))}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white focus:outline-none focus:border-emerald-500 font-mono font-bold"
-                >
-                  <option value={20}>20 Días hábiles</option>
-                  <option value={24}>24 Días hábiles (Estándar)</option>
-                  <option value={30}>30 Días corridos</option>
-                </select>
+                <div className="relative">
+                  <Clock className="w-3.5 h-3.5 text-indigo-400 absolute left-3 top-2.5" />
+                  <select
+                    value={modality}
+                    onChange={(e) => handleModalityChange(e.target.value as LoanModality)}
+                    className="w-full bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg pl-8 pr-3 py-2 text-white font-semibold text-xs focus:outline-none"
+                  >
+                    <option value="diaria">Diaria (por días)</option>
+                    <option value="semanal">Semanal (por semanas)</option>
+                    <option value="quincenal">Quincenal (por quincenas)</option>
+                    <option value="mensual">Mensual (por meses)</option>
+                  </select>
+                </div>
+                <span className="text-[10px] text-indigo-300 font-mono mt-1 block">
+                  {currentModalityMeta.examples}
+                </span>
+              </div>
+
+              {/* CAMPO 4: PLAZO / NÚMERO DE CUOTAS SEGÚN FRECUENCIA */}
+              <div>
+                <label className="text-slate-300 font-medium block mb-1">
+                  Plazo (N° de {currentModalityMeta.unitPlural}) *
+                </label>
+                <div className="relative">
+                  <Calendar className="w-3.5 h-3.5 text-sky-400 absolute left-3 top-2.5" />
+                  <input
+                    type="number"
+                    required
+                    min={1}
+                    step={1}
+                    placeholder={currentModalityMeta.placeholder}
+                    value={termInstallmentsInput}
+                    onChange={(e) => setTermInstallmentsInput(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg pl-8 pr-3 py-2 text-white font-mono tabular-nums font-bold text-sm focus:outline-none"
+                  />
+                </div>
+                <div className="flex items-center justify-between gap-1 mt-1">
+                  <span className="text-[10px] text-slate-400 font-mono">
+                    {numericTermInstallments}{' '}
+                    {numericTermInstallments === 1
+                      ? currentModalityMeta.unitSingular
+                      : currentModalityMeta.unitPlural}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    {quickTermSuggestions[modality].map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => setTermInstallmentsInput(String(preset))}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-mono transition-colors cursor-pointer ${
+                          numericTermInstallments === preset
+                            ? 'bg-sky-500/25 text-sky-300 border border-sky-500/40 font-bold'
+                            : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
+                        }`}
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
 
-            {/* RESUMEN FINANCIERO EN TIEMPO REAL */}
-            <div className="mt-3.5 bg-slate-950/80 border border-emerald-500/30 rounded-2xl p-4 grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
-              <div>
-                <span className="text-[10px] text-slate-400 block">Total a Recaudar</span>
-                <span className="text-sm font-black text-emerald-400 font-mono">
-                  {formatCOP(totalDebt)}
+            {/* ===================================================================
+                3. VISTA PREVIA DE CÁLCULO AUTOMÁTICO EN TIEMPO REAL ANTES DE GUARDAR
+               =================================================================== */}
+            <div className="mt-4 bg-slate-950 border border-emerald-500/30 rounded-xl p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5 mb-3">
+                <span className="text-[11px] font-mono uppercase tracking-wider text-emerald-400 font-semibold">
+                  Cálculo Automático en Tiempo Real ({currentModalityMeta.label})
+                </span>
+                <span className="text-[11px] font-mono text-slate-400">
+                  Fórmula:{' '}
+                  <strong className="text-slate-200">
+                    {formatCOP(calculatedTotalToPay)} ÷ {numericTermInstallments}{' '}
+                    {numericTermInstallments === 1
+                      ? currentModalityMeta.unitSingular
+                      : currentModalityMeta.unitPlural}
+                  </strong>
                 </span>
               </div>
-              <div>
-                <span className="text-[10px] text-slate-400 block">Cuota Diaria Fija</span>
-                <span className="text-sm font-black text-white font-mono">
-                  {formatCOP(dailyInstallment)}
-                </span>
-              </div>
-              <div>
-                <span className="text-[10px] text-slate-400 block">Interés Ganado</span>
-                <span className="text-sm font-black text-amber-400 font-mono">
-                  {formatCOP(totalInterest)}
-                </span>
-              </div>
-              <div>
-                <span className="text-[10px] text-slate-400 block">Número de Cuotas</span>
-                <span className="text-sm font-black text-slate-200 font-mono">
-                  {termDays} días
-                </span>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 block">Capital Prestado</span>
+                  <span className="text-sm sm:text-base font-bold text-white font-mono tabular-nums">
+                    {formatCOP(numericPrincipal)}
+                  </span>
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 block">
+                    Interés ({numericInterestRate}%)
+                  </span>
+                  <span className="text-sm sm:text-base font-bold text-amber-400 font-mono tabular-nums">
+                    +{formatCOP(calculatedInterestCOP)}
+                  </span>
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-emerald-950/30 border border-emerald-500/30">
+                  <span className="text-[10px] text-emerald-300 block font-semibold">
+                    Total a Pagar (Monto + Interés)
+                  </span>
+                  <span className="text-sm sm:text-base font-bold text-emerald-400 font-mono tabular-nums">
+                    {formatCOP(calculatedTotalToPay)}
+                  </span>
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-sky-950/30 border border-sky-500/30">
+                  <span className="text-[10px] text-sky-300 block font-semibold">
+                    Valor Cuota {currentModalityMeta.label} (x{numericTermInstallments})
+                  </span>
+                  <span className="text-sm sm:text-base font-bold text-white font-mono tabular-nums">
+                    {formatCOP(calculatedInstallmentValue)}
+                  </span>
+                  <span className="text-[10px] text-sky-300/80 font-mono block">
+                    cada {currentModalityMeta.unitSingular}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
 
-          {/* BOTONES ACCIÓN */}
+          {/* BOTONES DE ACCIÓN */}
           <div className="pt-3 border-t border-slate-800 flex items-center justify-end gap-3">
             <button
               type="button"
               onClick={onClose}
               disabled={isSubmitting}
-              className="px-4 py-2.5 rounded-xl border border-slate-700 text-slate-300 hover:bg-slate-800 font-semibold transition-colors"
+              className="px-4 py-2.5 rounded-lg border border-slate-700 text-slate-300 hover:bg-slate-800 font-semibold transition-colors cursor-pointer"
             >
               Cancelar
             </button>
             <button
               type="submit"
               disabled={isSubmitting}
-              className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow-lg shadow-emerald-900/40 transition-all disabled:opacity-50"
+              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold shadow-lg transition-all disabled:opacity-50 cursor-pointer"
             >
               {isSubmitting ? (
                 <>
-                  <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  <span>Guardando en Cloud SQL...</span>
+                  <div className="w-3.5 h-3.5 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                  <span>Guardando en tabla loans...</span>
                 </>
               ) : (
                 <>
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Vincular Cliente & Activar Préstamo</span>
+                  <span>Crear Préstamo</span>
                 </>
               )}
             </button>
           </div>
         </form>
-
       </div>
     </div>
   );

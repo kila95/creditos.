@@ -210,6 +210,7 @@ export async function signInWithEmailPassword(
             organizationName: profileData.organization_name || data.user.user_metadata?.organization_name || 'Fondo RutaCapital',
             createdBy: profileData.created_by || data.user.user_metadata?.created_by,
             assignedRouteId: profileData.assigned_route_id || data.user.user_metadata?.assigned_route_id || 'route-1',
+            routeZone: profileData.route_zone || data.user.user_metadata?.route_zone || '',
             phone: profileData.phone,
             partnerEquityPct: profileData.partner_equity_pct,
             capitalInvestedCop: profileData.capital_invested_cop,
@@ -249,6 +250,7 @@ export async function signInWithEmailPassword(
         organizationName: dbUser.organizationName || 'Fondo RutaCapital Medellín',
         createdBy: dbUser.createdBy || 'usr-admin-001',
         assignedRouteId: dbUser.assignedRouteId || 'route-1',
+        routeZone: dbUser.routeZone || '',
         phone: dbUser.phone || '',
         documentId: dbUser.documentId || '',
         isActive: dbUser.isActive ?? true,
@@ -461,6 +463,7 @@ export async function registerNewCollectorAccount(input: {
   password: string;
   fullName: string;
   assignedRouteId: string;
+  routeZone: string;
   organizationId?: string;
   organizationName?: string;
   createdByAdminId?: string;
@@ -472,6 +475,7 @@ export async function registerNewCollectorAccount(input: {
   const orgId = input.organizationId || 'org-medellin-01';
   const orgName = input.organizationName || 'Fondo RutaCapital Medellín';
   const creatorId = input.createdByAdminId || 'usr-admin-001';
+  const cleanRouteZone = input.routeZone.trim() || 'Centro / El Hueco';
 
   try {
     if (isLiveSupabaseConfigured) {
@@ -490,6 +494,7 @@ export async function registerNewCollectorAccount(input: {
             full_name: input.fullName.trim(),
             role: 'collector',
             assigned_route_id: input.assignedRouteId,
+            route_zone: cleanRouteZone,
             organization_id: orgId,
             organization_name: orgName,
             created_by: creatorId,
@@ -509,6 +514,7 @@ export async function registerNewCollectorAccount(input: {
         generatedUid = signUpData.user.id;
       }
 
+      // 1. Guardar el perfil del cobrador incluyendo `route_zone` en la tabla `profiles`
       const { error: profileError } = await supabase.from('profiles').upsert([
         {
           id: generatedUid,
@@ -516,6 +522,7 @@ export async function registerNewCollectorAccount(input: {
           full_name: input.fullName.trim(),
           role: 'collector',
           assigned_route_id: input.assignedRouteId,
+          route_zone: cleanRouteZone,
           organization_id: orgId,
           organization_name: orgName,
           created_by: creatorId,
@@ -532,6 +539,16 @@ export async function registerNewCollectorAccount(input: {
           error: `Error al vincular perfil en tabla profiles (RLS): ${profileError.message}`,
         };
       }
+
+      // 2. Actualizar también la tabla `routes` en Supabase asociando la zona (`zone`) y el cobrador
+      await supabase
+        .from('routes')
+        .update({
+          collector_id: generatedUid,
+          collector_name: input.fullName.trim(),
+          zone: cleanRouteZone,
+        })
+        .eq('id', input.assignedRouteId);
     }
 
     const apiRes = await fetch('/api/collectors', {
@@ -543,6 +560,7 @@ export async function registerNewCollectorAccount(input: {
         password: input.password,
         name: input.fullName.trim(),
         assignedRouteId: input.assignedRouteId,
+        routeZone: cleanRouteZone,
         organizationId: orgId,
         organizationName: orgName,
         createdBy: creatorId,
@@ -569,6 +587,7 @@ export async function registerNewCollectorAccount(input: {
       organizationName: orgName,
       createdBy: creatorId,
       assignedRouteId: input.assignedRouteId,
+      routeZone: cleanRouteZone,
       phone: input.phone?.trim() || '',
       documentId: input.documentId?.trim() || '',
       isActive: true,

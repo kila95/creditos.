@@ -18,6 +18,7 @@ export interface UserProfile {
   partnerEquityPct?: number; // % de participación si es socio (ej: 35.00)
   capitalInvestedCop?: number; // Capital aportado al fondo común
   assignedRouteId?: string; // Para collectors / cobradores
+  routeZone?: string; // Zona o comuna de Medellín asignada al cobrador (route_zone)
   documentId?: string;
   avatarUrl?: string;
   lastLoginAt?: string;

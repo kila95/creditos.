@@ -1,6 +1,7 @@
 /**
  * MOTOR DE CÁLCULO FINANCIERO & CFO ANALYTICS
  * Microcréditos urbanos de alto riesgo y liquidación diaria (Gota a Gota)
+ * Todos los cálculos operan en números enteros exactos en Pesos Colombianos (COP).
  */
 
 export interface LoanSimulationResult {
@@ -14,40 +15,83 @@ export interface LoanSimulationResult {
   dailyInterestPortion: number;
   implicitDailyRate: number; // % diario
   implicitTEA: number; // Tasa Efectiva Anual implícita (%)
-  liquidityBufferRequired: number; // Colchón de liquidez sugerido (ej: 12% morosidad esperada)
+  liquidityBufferRequired: number; // Colchón de liquidez sugerido
 }
 
 /**
- * Simula un microcrédito bajo modalidad comercial habitual (Flat interés en cuotas fijas diarias)
+ * Redondea cualquier valor numérico al entero exacto más cercano en Pesos Colombianos (COP)
+ */
+export function roundCOP(amount: number | string): number {
+  const numeric = Number(amount);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.round(numeric);
+}
+
+/**
+ * Valida que un pago o abono sea un entero positivo y NO supere el saldo pendiente actual del cliente
+ */
+export function validatePaymentAmount(
+  amount: number,
+  remainingBalance: number
+): { isValid: boolean; sanitizedAmount: number; errorMessage: string | null } {
+  const cleanAmount = roundCOP(amount);
+  const cleanBalance = Math.max(0, roundCOP(remainingBalance));
+
+  if (cleanAmount <= 0) {
+    return {
+      isValid: false,
+      sanitizedAmount: cleanAmount,
+      errorMessage: 'El monto del pago debe ser mayor a $0 COP.',
+    };
+  }
+
+  if (cleanAmount > cleanBalance) {
+    return {
+      isValid: false,
+      sanitizedAmount: cleanAmount,
+      errorMessage: `El pago ingresado (${formatCOP(cleanAmount)}) no puede superar el saldo pendiente actual del cliente (${formatCOP(cleanBalance)}).`,
+    };
+  }
+
+  return {
+    isValid: true,
+    sanitizedAmount: cleanAmount,
+    errorMessage: null,
+  };
+}
+
+/**
+ * Simula un microcrédito bajo modalidad comercial habitual (Flat interés en cuotas fijas enteras COP)
  */
 export function simulateMicroloan(
   principal: number,
   flatMonthlyRatePercent: number = 20,
   termDays: number = 24,
-  expectedDefaultRate: number = 8.0 // 8% tasa de impago estimada
+  expectedDefaultRate: number = 8.0
 ): LoanSimulationResult {
-  const totalInterest = principal * (flatMonthlyRatePercent / 100);
-  const totalDebt = principal + totalInterest;
-  const dailyInstallment = Math.ceil(totalDebt / termDays);
-  const dailyPrincipalPortion = principal / termDays;
-  const dailyInterestPortion = totalInterest / termDays;
+  const safePrincipal = Math.max(0, roundCOP(principal));
+  const safeTerm = Math.max(1, roundCOP(termDays));
+  const totalInterest = roundCOP(safePrincipal * (flatMonthlyRatePercent / 100));
+  const totalDebt = safePrincipal + totalInterest;
+  const dailyInstallment = roundCOP(totalDebt / safeTerm);
+  const dailyPrincipalPortion = roundCOP(safePrincipal / safeTerm);
+  const dailyInterestPortion = Math.max(0, dailyInstallment - dailyPrincipalPortion);
 
   // Tasa diaria equivalente simple
-  const implicitDailyRate = (totalInterest / principal / termDays) * 100;
+  const implicitDailyRate =
+    safePrincipal > 0 ? (totalInterest / safePrincipal / safeTerm) * 100 : 0;
 
-  // Tasa Efectiva Anual implícita considerando 300 días hábiles de rotación de capital al año:
-  // TEA = (1 + r_diaria)^(300) - 1
-  const dailyRateDecimal = (totalInterest / principal) / termDays;
+  // Tasa Efectiva Anual implícita considerando 300 días hábiles de rotación de capital al año
+  const dailyRateDecimal = safePrincipal > 0 ? totalInterest / safePrincipal / safeTerm : 0;
   const implicitTEA = (Math.pow(1 + dailyRateDecimal, 300) - 1) * 100;
 
-  // Fondo de Colchón de Liquidez Obligatorio para absorber días de impago
-  // Cushion = Saldo expuesto * tasa de mora esperada
-  const liquidityBufferRequired = principal * (expectedDefaultRate / 100);
+  // Fondo de Colchón de Liquidez Obligatorio en enteros COP
+  const liquidityBufferRequired = roundCOP(safePrincipal * (expectedDefaultRate / 100));
 
   return {
-    principal,
+    principal: safePrincipal,
     flatMonthlyRate: flatMonthlyRatePercent,
-    termDays,
+    termDays: safeTerm,
     totalInterest,
     totalDebt,
     dailyInstallment,
@@ -55,18 +99,18 @@ export function simulateMicroloan(
     dailyInterestPortion,
     implicitDailyRate,
     implicitTEA,
-    liquidityBufferRequired
+    liquidityBufferRequired,
   };
 }
 
 /**
- * Calcula el Margen Operativo Neto Diario (Net Cash Flow) según la directriz:
+ * Calcula el Margen Operativo Neto Diario (Net Cash Flow) en enteros exactos COP:
  * Net Cash Flow = Recaudo Bruto Diario - Gastos Operativos Asignados - Provisión para Cartera Incobrable
  */
 export function calculateNetCashFlow(
   grossDailyCollection: number,
   assignedDailyExpenses: number,
-  provisionRatePercent: number = 4.0 // 4% diario provisionado sobre recaudo o saldo
+  provisionRatePercent: number = 4.0
 ): {
   grossDailyCollection: number;
   assignedDailyExpenses: number;
@@ -74,26 +118,26 @@ export function calculateNetCashFlow(
   netCashFlow: number;
   netMarginPercent: number;
 } {
-  const badDebtProvision = grossDailyCollection * (provisionRatePercent / 100);
-  const netCashFlow = grossDailyCollection - assignedDailyExpenses - badDebtProvision;
-  const netMarginPercent = grossDailyCollection > 0 ? (netCashFlow / grossDailyCollection) * 100 : 0;
+  const safeGross = roundCOP(grossDailyCollection);
+  const safeExpenses = roundCOP(assignedDailyExpenses);
+  const badDebtProvision = roundCOP(safeGross * (provisionRatePercent / 100));
+  const netCashFlow = safeGross - safeExpenses - badDebtProvision;
+  const netMarginPercent = safeGross > 0 ? (netCashFlow / safeGross) * 100 : 0;
 
   return {
-    grossDailyCollection,
-    assignedDailyExpenses,
+    grossDailyCollection: safeGross,
+    assignedDailyExpenses: safeExpenses,
     badDebtProvision,
     netCashFlow,
-    netMarginPercent
+    netMarginPercent,
   };
 }
 
 /**
- * Calcula el Punto de Equilibrio de una Ruta:
- * Determina cuántos créditos activos al día se requieren para cubrir los costos fijos
- * ineludibles del cobrador (gasolina, viáticos, desgaste moto, telecomunicaciones)
+ * Calcula el Punto de Equilibrio de una Ruta en enteros exactos COP
  */
 export function calculateRouteBreakEven(
-  fixedDailyOpex: number, // Ej: $48,000 COP al día
+  fixedDailyOpex: number,
   averageLoanPrincipal: number = 800000,
   flatMonthlyRate: number = 20,
   termDays: number = 24
@@ -103,57 +147,56 @@ export function calculateRouteBreakEven(
   breakEvenActiveLoans: number;
   minPortfolioRequired: number;
 } {
-  // Interés total generado por crédito promedio
-  const totalInterestPerLoan = averageLoanPrincipal * (flatMonthlyRate / 100);
-  // Interés diario generado por cada crédito al día
-  const dailyInterestYieldPerLoan = totalInterestPerLoan / termDays;
+  const safeOpex = roundCOP(fixedDailyOpex);
+  const safeAvgPrincipal = roundCOP(averageLoanPrincipal);
+  const safeTerm = Math.max(1, roundCOP(termDays));
 
-  // Cantidad de créditos al día para que el interés diario pague el gasto fijo diario
-  const breakEvenActiveLoans = dailyInterestYieldPerLoan > 0 
-    ? Math.ceil(fixedDailyOpex / dailyInterestYieldPerLoan) 
-    : 0;
+  const totalInterestPerLoan = roundCOP(safeAvgPrincipal * (flatMonthlyRate / 100));
+  const dailyInterestYieldPerLoan = Math.max(1, roundCOP(totalInterestPerLoan / safeTerm));
 
-  const minPortfolioRequired = breakEvenActiveLoans * averageLoanPrincipal;
+  const breakEvenActiveLoans =
+    dailyInterestYieldPerLoan > 0 ? Math.ceil(safeOpex / dailyInterestYieldPerLoan) : 0;
+
+  const minPortfolioRequired = breakEvenActiveLoans * safeAvgPrincipal;
 
   return {
-    fixedDailyOpex,
+    fixedDailyOpex: safeOpex,
     dailyInterestYieldPerLoan,
     breakEvenActiveLoans,
-    minPortfolioRequired
+    minPortfolioRequired,
   };
 }
 
 /**
- * Formateador de moneda colombiana COP
+ * Formateador de moneda colombiana COP (Siempre números enteros exactos sin decimales)
  */
 export function formatCOP(amount: number): string {
+  const integerAmount = roundCOP(amount);
   return new Intl.NumberFormat('es-CO', {
     style: 'currency',
     currency: 'COP',
-    maximumFractionDigits: 0
-  }).format(amount);
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(integerAmount);
 }
 
 export interface PartialPaymentDistribution {
   amountPaid: number;
   installmentAmount: number;
-  dailyInterestDue: number; // Porción de interés esperada para la cuota diaria
-  interestPortionCovered: number; // Cubre primero el interés diario
-  principalPortionCovered: number; // El remanente amortiza directamente a capital
-  unpaidInstallmentBalance: number; // Lo que faltó para completar la cuota del día
+  dailyInterestDue: number;
+  interestPortionCovered: number;
+  principalPortionCovered: number;
+  unpaidInstallmentBalance: number;
   preBalance: number;
   postBalance: number;
   isFullPayment: boolean;
   isPartialPayment: boolean;
+  exceedsBalance: boolean;
   capitalRatio: number;
 }
 
 /**
- * MOTOR FINANCIERO: Distribución estricta de abonos parciales y liquidación diaria
- * Regla de amortización estricta:
- * 1. Primero se absorbe la porción de interés devengado del día (costo financiero).
- * 2. Si el abono supera el interés diario, el remanente se destina 100% a reducción de capital insoluto.
- * 3. Si el abono no alcanza a cubrir el interés del día, el 100% cubre interés parcial y el capital queda intacto.
+ * MOTOR FINANCIERO: Distribución estricta de abonos parciales y liquidación diaria en enteros COP
  */
 export function calculatePartialPaymentDistribution(
   amountPaid: number,
@@ -162,44 +205,49 @@ export function calculatePartialPaymentDistribution(
   totalDebtAmount: number,
   currentRemainingBalance: number
 ): PartialPaymentDistribution {
-  const interestRatio = (totalDebtAmount - principalAmount) / totalDebtAmount;
-  const capitalRatio = principalAmount / totalDebtAmount;
+  const cleanPaid = Math.max(0, roundCOP(amountPaid));
+  const cleanInstallment = Math.max(1, roundCOP(installmentAmount));
+  const cleanPrincipal = Math.max(1, roundCOP(principalAmount));
+  const cleanTotalDebt = Math.max(cleanPrincipal, roundCOP(totalDebtAmount));
+  const cleanRemaining = Math.max(0, roundCOP(currentRemainingBalance));
 
-  // Interés diario esperado en la cuota estándar
-  const dailyInterestDue = Math.round(installmentAmount * interestRatio);
+  const interestRatio = (cleanTotalDebt - cleanPrincipal) / cleanTotalDebt;
+  const capitalRatio = cleanPrincipal / cleanTotalDebt;
+
+  // Interés diario esperado en la cuota estándar (entero exacto COP)
+  const dailyInterestDue = roundCOP(cleanInstallment * interestRatio);
 
   let interestPortionCovered = 0;
   let principalPortionCovered = 0;
 
-  if (amountPaid >= installmentAmount) {
-    // Pago completo o mayor
+  if (cleanPaid >= cleanInstallment) {
     interestPortionCovered = dailyInterestDue;
-    principalPortionCovered = amountPaid - dailyInterestDue;
-  } else if (amountPaid <= dailyInterestDue) {
-    // El abono ni siquiera cubre el interés del día: todo va a interés
-    interestPortionCovered = amountPaid;
+    principalPortionCovered = cleanPaid - dailyInterestDue;
+  } else if (cleanPaid <= dailyInterestDue) {
+    interestPortionCovered = cleanPaid;
     principalPortionCovered = 0;
   } else {
-    // El abono cubre el interés del día y amortiza el remanente a capital
     interestPortionCovered = dailyInterestDue;
-    principalPortionCovered = amountPaid - dailyInterestDue;
+    principalPortionCovered = cleanPaid - dailyInterestDue;
   }
 
-  const unpaidInstallmentBalance = Math.max(0, installmentAmount - amountPaid);
-  const postBalance = Math.max(0, currentRemainingBalance - amountPaid);
+  const unpaidInstallmentBalance = Math.max(0, cleanInstallment - cleanPaid);
+  const postBalance = Math.max(0, cleanRemaining - cleanPaid);
+  const exceedsBalance = cleanPaid > cleanRemaining;
 
   return {
-    amountPaid,
-    installmentAmount,
+    amountPaid: cleanPaid,
+    installmentAmount: cleanInstallment,
     dailyInterestDue,
-    interestPortionCovered,
-    principalPortionCovered,
-    unpaidInstallmentBalance,
-    preBalance: currentRemainingBalance,
-    postBalance,
-    isFullPayment: amountPaid >= installmentAmount,
-    isPartialPayment: amountPaid < installmentAmount && amountPaid > 0,
-    capitalRatio
+    interestPortionCovered: roundCOP(interestPortionCovered),
+    principalPortionCovered: roundCOP(principalPortionCovered),
+    unpaidInstallmentBalance: roundCOP(unpaidInstallmentBalance),
+    preBalance: cleanRemaining,
+    postBalance: roundCOP(postBalance),
+    isFullPayment: cleanPaid >= cleanInstallment && !exceedsBalance,
+    isPartialPayment: cleanPaid < cleanInstallment && cleanPaid > 0 && !exceedsBalance,
+    exceedsBalance,
+    capitalRatio,
   };
 }
 
@@ -215,7 +263,7 @@ export interface ExtensionCalculationResult {
 }
 
 /**
- * Motor de Prórrogas Operativas (Extensión de plazo)
+ * Motor de Prórrogas Operativas (Extensión de plazo en enteros COP)
  */
 export function calculateLoanExtension(
   currentTermDays: number,
@@ -223,22 +271,27 @@ export function calculateLoanExtension(
   currentBalance: number,
   applyFeePercent: number = 0
 ): ExtensionCalculationResult {
-  const newTermDays = currentTermDays + extensionDays;
-  const extensionFee = currentBalance * (applyFeePercent / 100);
-  const newRemainingBalance = currentBalance + extensionFee;
-  const newDailyInstallment = Math.ceil(newRemainingBalance / Math.max(1, extensionDays + 5));
+  const safeCurrentTerm = roundCOP(currentTermDays);
+  const safeExtDays = roundCOP(extensionDays);
+  const safeBalance = roundCOP(currentBalance);
+
+  const newTermDays = safeCurrentTerm + safeExtDays;
+  const extensionFee = roundCOP(safeBalance * (applyFeePercent / 100));
+  const newRemainingBalance = safeBalance + extensionFee;
+  const newDailyInstallment = roundCOP(newRemainingBalance / Math.max(1, safeExtDays + 5));
 
   const dueDate = new Date();
-  dueDate.setDate(dueDate.getDate() + extensionDays + 5);
+  dueDate.setDate(dueDate.getDate() + safeExtDays + 5);
 
   return {
-    currentTermDays,
-    extensionDays,
+    currentTermDays: safeCurrentTerm,
+    extensionDays: safeExtDays,
     newTermDays,
-    currentBalance,
+    currentBalance: safeBalance,
     extensionFee,
     newRemainingBalance,
     newDailyInstallment,
-    newDueDate: dueDate.toISOString().split('T')[0]
+    newDueDate: dueDate.toISOString().split('T')[0],
   };
 }
+

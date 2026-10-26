@@ -1,48 +1,55 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Navigation, 
-  Wallet, 
-  Receipt, 
-  MapPin, 
-  CheckCircle2, 
-  PlusCircle, 
-  Fuel, 
-  Smartphone, 
-  Clock, 
+import {
+  Wallet,
+  Receipt,
+  MapPin,
+  CheckCircle2,
+  Fuel,
+  Smartphone,
   Search,
   Wifi,
   WifiOff,
   ShieldCheck,
   AlertCircle,
-  Send,
   RefreshCw,
   Lock,
   MessageCircle,
-  SlidersHorizontal,
   XCircle,
-  HelpCircle,
   Coins,
-  ChevronRight,
   UserX,
   Store,
   PhoneCall,
-  UserPlus
+  UserPlus,
+  Calculator,
+  ClipboardCheck,
+  X,
+  ArrowRight,
+  Clock,
 } from 'lucide-react';
-import { 
-  RouteData, 
-  ClientProfile, 
-  LoanDetail, 
-  RouteExpenseItem, 
+import {
+  RouteData,
+  ClientProfile,
+  LoanDetail,
+  RouteExpenseItem,
   LedgerEntry,
-  CollectorBase
+  CollectorBase,
 } from '../data/mockData';
-import { formatCOP } from '../utils/financialCalculations';
-import { buildMorningPaymentReminder, buildDigitalReceiptWhatsAppMessage } from '../utils/whatsappMessaging';
-import { useOnlineStatus, enqueueOfflinePayment, getOfflineQueue, clearOfflineQueue, OfflineQueueItem } from '../utils/offlineSync';
+import {
+  formatCOP,
+  roundCOP,
+  validatePaymentAmount,
+} from '../utils/financialCalculations';
+import { buildMorningPaymentReminder } from '../utils/whatsappMessaging';
+import {
+  useOnlineStatus,
+  enqueueOfflinePayment,
+  getOfflineQueue,
+  syncOfflineQueueWithServer,
+  OfflineQueueItem,
+} from '../utils/offlineSync';
 import { DigitalReceiptModal } from './DigitalReceiptModal';
 import { DailyCashReconciliationModal } from './DailyCashReconciliationModal';
 import { PartialPaymentModal } from './PartialPaymentModal';
-import { OfflineNoticeBanner } from './OfflineNoticeBanner';
 import { QuickClientRouteRegistrationModal } from './QuickClientRouteRegistrationModal';
 
 interface NonPaymentIncident {
@@ -59,10 +66,25 @@ interface CollectorStreetViewProps {
   expenses: RouteExpenseItem[];
   ledger: LedgerEntry[];
   activeCollectorBase?: CollectorBase | null;
-  onRegisterPayment: (loanId: string, amount: number, method: 'efectivo' | 'nequi' | 'daviplata', notes: string) => void;
-  onRegisterExpense: (category: RouteExpenseItem['category'], amount: number, description: string) => void;
-  onConfirmReconciliation: (routeId: string, actualCash: number, discrepancy: number, notes: string) => void;
+  onRegisterPayment: (
+    loanId: string,
+    amount: number,
+    method: 'efectivo' | 'nequi' | 'daviplata',
+    notes: string
+  ) => void;
+  onRegisterExpense: (
+    category: RouteExpenseItem['category'],
+    amount: number,
+    description: string
+  ) => void;
+  onConfirmReconciliation: (
+    routeId: string,
+    actualCash: number,
+    discrepancy: number,
+    notes: string
+  ) => void;
   onRegisterNewClient?: (client: ClientProfile, loan: LoanDetail) => void;
+  onCreateLoanForExistingClient?: (loan: LoanDetail) => void;
   onSyncDatabase?: () => Promise<void> | void;
 }
 
@@ -77,70 +99,98 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
   onRegisterExpense,
   onConfirmReconciliation,
   onRegisterNewClient,
-  onSyncDatabase
+  onCreateLoanForExistingClient,
+  onSyncDatabase,
 }) => {
-  const isOnline = useOnlineStatus();
+  const browserOnline = useOnlineStatus();
+  // Permite simular modo sin señal en zonas urbanas complejas o responder al estado real de red
+  const [simulatedOffline, setSimulatedOffline] = useState(false);
+  const isOnline = browserOnline && !simulatedOffline;
+
+  // Vista activa del cobrador: 'route_list' (Recorrido de Clientes) o 'shift_closing' (Resumen de Cierre de Turno)
+  const [collectorTab, setCollectorTab] = useState<'route_list' | 'shift_closing'>('route_list');
+
+  // Buscador instantáneo por Nombre o Teléfono
   const [searchTerm, setSearchTerm] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'collected' | 'incidents'>('all');
-  
-  // Modales
+  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'collected' | 'incidents'>(
+    'all'
+  );
+
+  // Modales operativos
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
   const [incidentModalOpen, setIncidentModalOpen] = useState(false);
   const [expenseModalOpen, setExpenseModalOpen] = useState(false);
   const [reconciliationModalOpen, setReconciliationModalOpen] = useState(false);
   const [quickRegisterModalOpen, setQuickRegisterModalOpen] = useState(false);
-  
-  const [selectedLoan, setSelectedLoan] = useState<LoanDetail | null>(null);
-  const [activeReceipt, setActiveReceipt] = useState<{ entry: LedgerEntry; client: ClientProfile; loan: LoanDetail } | null>(null);
 
-  // Registro de novedades (No Pagó) en memoria de la sesión
+  const [selectedLoan, setSelectedLoan] = useState<LoanDetail | null>(null);
+  const [activeReceipt, setActiveReceipt] = useState<{
+    entry: LedgerEntry;
+    client: ClientProfile;
+    loan: LoanDetail;
+  } | null>(null);
+
+  // Alerta de validación de pagos en calle
+  const [streetAlert, setStreetAlert] = useState<{
+    type: 'error' | 'success';
+    message: string;
+  } | null>(null);
+
+  // Registro de novedades (No Pagó)
   const [incidents, setIncidents] = useState<Record<string, NonPaymentIncident>>({});
 
   // Cola offline local
   const [offlineQueue, setOfflineQueue] = useState<OfflineQueueItem[]>(getOfflineQueue());
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Payment form states
-  const [paymentAmount, setPaymentAmount] = useState<number>(0);
-  const [paymentMethod, setPaymentMethod] = useState<'efectivo' | 'nequi' | 'daviplata'>('efectivo');
-  const [paymentNotes, setPaymentNotes] = useState('');
-
   // Incident form states
-  const [incidentReason, setIncidentReason] = useState<NonPaymentIncident['reason']>('sin_liquidez');
+  const [incidentReason, setIncidentReason] =
+    useState<NonPaymentIncident['reason']>('sin_liquidez');
   const [incidentNotes, setIncidentNotes] = useState('');
 
   // Expense form states
-  const [expenseCategory, setExpenseCategory] = useState<RouteExpenseItem['category']>('combustible_moto');
+  const [expenseCategory, setExpenseCategory] =
+    useState<RouteExpenseItem['category']>('combustible_moto');
   const [expenseAmount, setExpenseAmount] = useState<number>(20000);
   const [expenseDescription, setExpenseDescription] = useState('');
 
-  // EJECUTAR SELECT('*') DESDE LA BASE DE DATOS CADA VEZ QUE SE ABRE EL PANEL O CAMBIA LA RUTA
+  // Cargar datos desde Supabase / Cloud SQL con manejo de errores robusto
   useEffect(() => {
-    if (onSyncDatabase) {
-      onSyncDatabase();
-    }
+    const loadRouteData = async () => {
+      try {
+        if (onSyncDatabase) {
+          await onSyncDatabase();
+        }
+        setOfflineQueue(getOfflineQueue());
+      } catch (err) {
+        console.error('[Error sincronizando ruta en calle]:', err);
+      }
+    };
+    loadRouteData();
   }, [currentRoute.id]);
 
   // 1. FILTRADO ESTRICTO POR RUTA ASIGNADA Y VINCULACIÓN CON TABLA CLIENTS
-  const routeClients = clients.filter(c => c.routeId === currentRoute.id);
+  const routeClients = clients.filter((c) => c.routeId === currentRoute.id);
   const rawRouteLoans = loans
-    .filter(l => l.routeId === currentRoute.id)
-    .map(l => {
-      const matchedClient = routeClients.find(c => c.id === l.clientId);
-      return matchedClient
-        ? {
-            ...l,
-            clientName: matchedClient.name,
-            tradeName: matchedClient.tradeName || matchedClient.name,
-          }
-        : l;
+    .filter((l) => l.routeId === currentRoute.id)
+    .map((l) => {
+      const matchedClient = routeClients.find((c) => c.id === l.clientId);
+      return {
+        ...l,
+        clientName: matchedClient ? matchedClient.name : l.clientName,
+        tradeName: matchedClient ? matchedClient.tradeName || matchedClient.name : l.tradeName,
+        principal: roundCOP(l.principal),
+        totalDebt: roundCOP(l.totalDebt),
+        installmentAmount: roundCOP(l.installmentAmount),
+        remainingBalance: roundCOP(l.remainingBalance),
+      };
     });
 
-  // Garantizar que cualquier cliente en `clients` aparezca en la lista aunque se haya insertado solo en `clients`
-  const loanClientIds = new Set(rawRouteLoans.map(l => l.clientId));
+  // Garantizar que cualquier cliente en `clients` aparezca en la lista
+  const loanClientIds = new Set(rawRouteLoans.map((l) => l.clientId));
   const orphanClientLoans: LoanDetail[] = routeClients
-    .filter(c => !loanClientIds.has(c.id))
-    .map(c => ({
+    .filter((c) => !loanClientIds.has(c.id))
+    .map((c) => ({
       id: `loan-sync-${c.id}`,
       code: `PREST-${c.id.slice(-4).toUpperCase()}`,
       clientId: c.id,
@@ -163,16 +213,29 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
     }));
 
   const routeLoans = [...rawRouteLoans, ...orphanClientLoans];
-  
-  const filteredLoans = routeLoans.filter(l => {
-    const matchesSearch = 
-      l.clientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      l.tradeName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      l.code.toLowerCase().includes(searchTerm.toLowerCase());
-    
+
+  // 2. BUSCADOR INSTANTÁNEO POR NOMBRE, TELÉFONO, NEGOCIO O CÉDULA
+  const normalizedQuery = searchTerm.trim().toLowerCase();
+  const digitsOnlyQuery = searchTerm.replace(/\D/g, '');
+
+  const filteredLoans = routeLoans.filter((l) => {
+    const client = routeClients.find((c) => c.id === l.clientId);
+    const clientPhone = client?.phone || '';
+    const clientPhoneDigits = clientPhone.replace(/\D/g, '');
+    const clientDoc = client?.document || '';
+
+    const matchesSearch =
+      !normalizedQuery ||
+      l.clientName.toLowerCase().includes(normalizedQuery) ||
+      l.tradeName.toLowerCase().includes(normalizedQuery) ||
+      clientPhone.toLowerCase().includes(normalizedQuery) ||
+      (digitsOnlyQuery.length > 0 && clientPhoneDigits.includes(digitsOnlyQuery)) ||
+      clientDoc.toLowerCase().includes(normalizedQuery) ||
+      l.code.toLowerCase().includes(normalizedQuery);
+
     const hasIncident = Boolean(incidents[l.id]);
 
-    const matchesStatus = 
+    const matchesStatus =
       statusFilter === 'all' ||
       (statusFilter === 'collected' && l.todayPaid) ||
       (statusFilter === 'pending' && !l.todayPaid && !hasIncident) ||
@@ -181,58 +244,96 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
     return matchesSearch && matchesStatus;
   });
 
-  // Gastos de esta ruta hoy
-  const routeExpensesToday = expenses.filter(e => e.routeId === currentRoute.id);
-  const totalRouteExpenses = routeExpensesToday.reduce((acc, e) => acc + e.amount, 0);
+  // 3. MÉTRICAS FINANCIERAS DEL TURNO EN ENTEROS EXACTOS COP
+  const routeExpensesToday = expenses.filter((e) => e.routeId === currentRoute.id);
+  const totalRouteExpenses = roundCOP(
+    routeExpensesToday.reduce((acc, e) => acc + roundCOP(e.amount), 0)
+  );
 
-  // Recaudo en efectivo en mano
-  const cashCollectedToday = currentRoute.dailyGrossCollected;
-  const newDisbursementsToday = 0;
+  const routeLedgerToday = ledger.filter((entry) => entry.routeId === currentRoute.id);
+  const digitalCollectedToday = roundCOP(
+    routeLedgerToday
+      .filter((entry) => entry.paymentMethod !== 'efectivo')
+      .reduce((acc, entry) => acc + roundCOP(entry.amount), 0)
+  );
 
-  // Capital base activo asignado para esta semana (sincronizado con collector_bases)
-  const activeBaseAmount =
+  const cashCollectedToday = roundCOP(currentRoute.dailyGrossCollected);
+  const activeBaseAmount = roundCOP(
     activeCollectorBase && activeCollectorBase.status === 'ACTIVA'
       ? activeCollectorBase.amount
-      : currentRoute.baseFloatingCapital;
+      : currentRoute.baseFloatingCapital
+  );
 
-  // ARQUEO EN TIEMPO REAL: Efectivo Físico en Bolsillo
-  const cashInHand = activeBaseAmount + cashCollectedToday - newDisbursementsToday - totalRouteExpenses;
+  // Efectivo físico neto que el cobrador tiene en bolsillo para entregar al Administrador
+  const cashInHand = roundCOP(activeBaseAmount + cashCollectedToday - totalRouteExpenses);
 
-  // ACCIÓN 1: MARCAR PAGADO DIRECTO (CUOTA COMPLETA CON 1-TOQUE)
+  // ACCIÓN 1: COBRAR CUOTA EN EFECTIVO CON VALIDACIÓN ESTRICTA DE SALDO PENDIENTE
   const handleQuickPayFull = (loan: LoanDetail) => {
-    const client = clients.find(c => c.id === loan.clientId);
-    const amount = loan.installmentAmount;
-    
-    // Registrar el pago
-    onRegisterPayment(loan.id, amount, 'efectivo', 'Pago cuota completa en efectivo (1-Toque en calle)');
+    setStreetAlert(null);
+    const currentBalance = roundCOP(loan.remainingBalance);
 
-    // Remover incidente si existía
+    if (currentBalance <= 0) {
+      setStreetAlert({
+        type: 'error',
+        message: `El préstamo de ${loan.clientName} ya tiene saldo $0 COP (Liquidado). No se pueden registrar pagos adicionales.`,
+      });
+      return;
+    }
+
+    // Si la cuota pactada es mayor al saldo restante final, ajustar exactamente al saldo pendiente
+    const targetAmount = Math.min(roundCOP(loan.installmentAmount), currentBalance);
+    const validation = validatePaymentAmount(targetAmount, currentBalance);
+
+    if (!validation.isValid) {
+      setStreetAlert({
+        type: 'error',
+        message: validation.errorMessage || 'Monto de pago inválido.',
+      });
+      return;
+    }
+
+    const cleanAmount = validation.sanitizedAmount;
+    const client = clients.find((c) => c.id === loan.clientId);
+
+    onRegisterPayment(
+      loan.id,
+      cleanAmount,
+      'efectivo',
+      isOnline
+        ? 'Pago cuota en efectivo (Terminal de Calle)'
+        : 'Pago cuota en efectivo (Guardado localmente en Modo Offline)'
+    );
+
     if (incidents[loan.id]) {
       const nextIncidents = { ...incidents };
       delete nextIncidents[loan.id];
       setIncidents(nextIncidents);
     }
 
-    // Si está offline, encolar en localStorage
     if (!isOnline && client) {
-      const offlineItem: OfflineQueueItem = {
-        id: `offline-${Date.now()}`,
+      enqueueOfflinePayment({
         loanId: loan.id,
         clientId: client.id,
         clientName: client.name,
-        amount,
+        amount: cleanAmount,
         paymentMethod: 'efectivo',
-        notes: 'Pago en calle offline',
+        notes: 'Cobro en calle guardado localmente (Offline)',
         timestamp: new Date().toISOString(),
         gpsLocation: `${client.lat} N, ${client.lng} W`,
-        isSynced: false
-      };
-      enqueueOfflinePayment(offlineItem);
+      });
       setOfflineQueue(getOfflineQueue());
     }
 
-    // Generar recibo listo para WhatsApp
+    setStreetAlert({
+      type: 'success',
+      message: isOnline
+        ? `Pago de ${formatCOP(cleanAmount)} registrado para ${loan.clientName}. Nuevo saldo: ${formatCOP(currentBalance - cleanAmount)}.`
+        : `Pago de ${formatCOP(cleanAmount)} guardado localmente (Offline) para ${loan.clientName}.`,
+    });
+
     if (client) {
+      const principalPortion = roundCOP(cleanAmount * (loan.principal / Math.max(1, loan.totalDebt)));
+      const interestPortion = Math.max(0, cleanAmount - principalPortion);
       const entry: LedgerEntry = {
         id: `led-${Date.now()}`,
         receiptNumber: `REC-${Date.now().toString().slice(-6)}`,
@@ -240,25 +341,31 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
         clientId: client.id,
         clientName: client.name,
         routeId: loan.routeId,
-        amount,
-        principalPortion: amount * 0.8,
-        interestPortion: amount * 0.2,
+        amount: cleanAmount,
+        principalPortion,
+        interestPortion,
         paymentMethod: 'efectivo',
-        preBalance: loan.remainingBalance,
-        postBalance: Math.max(0, loan.remainingBalance - amount),
+        preBalance: currentBalance,
+        postBalance: Math.max(0, currentBalance - cleanAmount),
         timestamp: new Date().toISOString(),
         gpsLocation: '6.2518 N, -75.6142 W',
-        hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2)
+        hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2),
       };
       setActiveReceipt({ entry, client, loan });
     }
   };
 
-  // ACCIÓN 2: ABRIR MODAL DE ABONO PARCIAL
+  // ACCIÓN 2: ABRIR MODAL DE ABONO PARCIAL O PAGO PERSONALIZADO
   const openPartialPaymentModal = (loan: LoanDetail) => {
+    setStreetAlert(null);
+    if (roundCOP(loan.remainingBalance) <= 0) {
+      setStreetAlert({
+        type: 'error',
+        message: `El cliente ${loan.clientName} no tiene saldo pendiente por cobrar ($0 COP).`,
+      });
+      return;
+    }
     setSelectedLoan(loan);
-    setPaymentAmount(Math.round(loan.installmentAmount / 2));
-    setPaymentNotes('Abono parcial de cuota');
     setPaymentModalOpen(true);
   };
 
@@ -270,7 +377,6 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
     setIncidentModalOpen(true);
   };
 
-  // CONFIRMAR NOVEDAD (NO PAGÓ)
   const handleConfirmIncident = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedLoan) return;
@@ -279,73 +385,52 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
       loanId: selectedLoan.id,
       reason: incidentReason,
       notes: incidentNotes,
-      timestamp: new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' })
+      timestamp: new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }),
     };
 
-    setIncidents(prev => ({ ...prev, [selectedLoan.id]: newIncident }));
+    setIncidents((prev) => ({ ...prev, [selectedLoan.id]: newIncident }));
     setIncidentModalOpen(false);
   };
 
-  // SUBMIT DEL PAGO PERSONALIZADO
-  const submitCustomPayment = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedLoan || paymentAmount <= 0) return;
-
-    const client = clients.find(c => c.id === selectedLoan.clientId);
-    onRegisterPayment(selectedLoan.id, paymentAmount, paymentMethod, paymentNotes);
-
-    if (incidents[selectedLoan.id]) {
-      const nextIncidents = { ...incidents };
-      delete nextIncidents[selectedLoan.id];
-      setIncidents(nextIncidents);
-    }
-
-    if (client) {
-      const entry: LedgerEntry = {
-        id: `led-${Date.now()}`,
-        receiptNumber: `REC-${Date.now().toString().slice(-6)}`,
-        loanId: selectedLoan.id,
-        clientId: client.id,
-        clientName: client.name,
-        routeId: selectedLoan.routeId,
-        amount: paymentAmount,
-        principalPortion: paymentAmount * 0.8,
-        interestPortion: paymentAmount * 0.2,
-        paymentMethod,
-        preBalance: selectedLoan.remainingBalance,
-        postBalance: Math.max(0, selectedLoan.remainingBalance - paymentAmount),
-        timestamp: new Date().toISOString(),
-        gpsLocation: '6.2518 N, -75.6142 W',
-        hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2)
-      };
-      setActiveReceipt({ entry, client, loan: selectedLoan });
-    }
-
-    setPaymentModalOpen(false);
-  };
-
-  // SUBMIT DEL GASTO OPERATIVO
   const submitExpense = (e: React.FormEvent) => {
     e.preventDefault();
-    if (expenseAmount <= 0) return;
-    onRegisterExpense(expenseCategory, expenseAmount, expenseDescription || 'Gasto operacional registrado en calle');
+    const cleanExpense = roundCOP(expenseAmount);
+    if (cleanExpense <= 0) return;
+    onRegisterExpense(
+      expenseCategory,
+      cleanExpense,
+      expenseDescription || 'Gasto operacional registrado en calle'
+    );
     setExpenseModalOpen(false);
     setExpenseAmount(20000);
     setExpenseDescription('');
   };
 
-  // SINCRONIZAR COLA OFFLINE
   const handleSyncOfflineQueue = async () => {
     setIsSyncing(true);
-    await new Promise(r => setTimeout(r, 1200));
-    clearOfflineQueue();
-    setOfflineQueue([]);
-    setIsSyncing(false);
+    try {
+      const { syncedCount } = await syncOfflineQueueWithServer();
+      setOfflineQueue(getOfflineQueue());
+      setStreetAlert({
+        type: 'success',
+        message:
+          syncedCount > 0
+            ? `Se sincronizaron ${syncedCount} cobro(s) pendientes con el servidor.`
+            : 'Cola local sincronizada correctamente.',
+      });
+    } catch (err) {
+      console.error('Error sincronizando cola offline:', err);
+      setStreetAlert({
+        type: 'error',
+        message: 'No se pudo sincronizar la cola local. Se reintentará al recuperar señal.',
+      });
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
-  // Recordatorio matutino de WhatsApp
   const handleSendMorningReminder = (loan: LoanDetail) => {
-    const client = clients.find(c => c.id === loan.clientId);
+    const client = clients.find((c) => c.id === loan.clientId);
     if (!client) return;
     const reminder = buildMorningPaymentReminder(client, loan);
     window.open(reminder.whatsappUrl, '_blank');
@@ -354,547 +439,861 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
   const getIncidentLabel = (reason: NonPaymentIncident['reason']) => {
     switch (reason) {
       case 'sin_liquidez':
-        return 'Sin plata hoy · Pidió prórroga';
+        return 'Sin liquidez hoy · Pidió prórroga';
       case 'local_cerrado':
         return 'Local / Puesto cerrado';
       case 'cliente_ausente':
         return 'Cliente no se encontraba';
       case 'promesa_nequi':
-        return 'Prometió pagar por Nequi tarde';
+        return 'Prometió transferencia tarde';
       case 'rehuso_pago':
-        return 'Rehusó pagar / Conflicto';
+        return 'Rehusó pagar / Incidencia';
       default:
         return 'Novedad registrada';
     }
   };
 
-  return (
-    <div className="max-w-7xl mx-auto space-y-4 md:space-y-6 pb-20">
-      {/* BANNER VISUAL DE CONEXIÓN Y COLA OFFLINE EN CALLE */}
-      <OfflineNoticeBanner onSyncComplete={(count) => setOfflineQueue([])} />
+  const paidLoansCount = routeLoans.filter((l) => l.todayPaid).length;
+  const pendingLoansCount = routeLoans.filter((l) => !l.todayPaid && !incidents[l.id]).length;
 
-      {/* AVISO PROMINENTE DE BASE SEMANAL ACTIVA EN PODER DEL COBRADOR */}
-      <div className="bg-gradient-to-r from-indigo-950/90 via-slate-900 to-emerald-950/80 border-2 border-indigo-500/40 rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-2xl bg-indigo-500/20 border border-indigo-400/30 text-indigo-300 flex items-center justify-center shrink-0">
-            <Coins className="w-6 h-6 text-emerald-400" />
+  return (
+    <div className="max-w-7xl mx-auto space-y-5 pb-20">
+      {/* =====================================================================
+          1. BARRA DE ESTADO DE CONEXIÓN (ONLINE / OFFLINE GUARDADO LOCALMENTE)
+         ===================================================================== */}
+      <div
+        className={`rounded-xl border p-3.5 sm:p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-colors ${
+          isOnline
+            ? 'bg-slate-900 border-slate-800'
+            : 'bg-amber-950/40 border-amber-500/40'
+        }`}
+      >
+        <div className="flex items-center gap-3">
+          <div
+            className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+              isOnline
+                ? 'bg-emerald-500/15 border border-emerald-500/30 text-emerald-400'
+                : 'bg-amber-500/20 border border-amber-500/40 text-amber-300'
+            }`}
+          >
+            {isOnline ? <Wifi className="w-5 h-5" /> : <WifiOff className="w-5 h-5" />}
           </div>
           <div>
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                Base Activa Actual: {activeCollectorBase?.status || 'ACTIVA'}
+              <span
+                className={`text-xs font-bold ${
+                  isOnline ? 'text-emerald-400' : 'text-amber-300'
+                }`}
+              >
+                {isOnline ? 'Estado: Online' : 'Estado: Offline (Guardado localmente)'}
               </span>
-              {activeCollectorBase?.weekStartDate && (
-                <span className="text-[11px] text-slate-300 font-mono">
-                  Semana desde: {activeCollectorBase.weekStartDate}
-                </span>
-              )}
+              <span className="text-slate-600" aria-hidden="true">
+                ·
+              </span>
+              <span className="text-xs text-slate-300 font-medium">
+                {currentRoute.name} ({currentRoute.collectorName})
+              </span>
             </div>
-            <p className="text-base sm:text-lg font-black text-white mt-0.5 tracking-tight">
-              Base en poder:{' '}
-              <span className="text-emerald-400 font-mono">
-                {formatCOP(activeBaseAmount)} COP
-              </span>
-            </p>
-            <p className="text-[11px] text-slate-300">
-              Capital operativo semanal confiado por Administración a <strong className="text-white">{currentRoute.collectorName}</strong>. Responde por este monto en el arqueo de cierre.
+            <p className="text-xs text-slate-400 mt-0.5">
+              {isOnline
+                ? 'Sincronización en tiempo real activa con Supabase / PostgreSQL.'
+                : 'Zona sin cobertura móvil: Todos los pagos y clientes nuevos se guardan en la memoria del teléfono.'}
             </p>
           </div>
         </div>
 
-        <div className="flex sm:flex-col items-center sm:items-end justify-between border-t sm:border-t-0 border-slate-800 pt-2 sm:pt-0 shrink-0">
-          <span className="text-[10px] font-mono text-indigo-300 flex items-center gap-1">
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-            RLS: Solo tu base asignada
-          </span>
-          <span className="text-[10px] text-slate-400 font-mono mt-0.5">
-            Tabla: collector_bases
-          </span>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {offlineQueue.length > 0 && (
+            <button
+              type="button"
+              onClick={handleSyncOfflineQueue}
+              disabled={!isOnline || isSyncing}
+              className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-400 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span>Sincronizar ({offlineQueue.length})</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setSimulatedOffline((prev) => !prev)}
+            className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+              simulatedOffline
+                ? 'bg-amber-500 text-slate-950 border-amber-400'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+            }`}
+          >
+            {simulatedOffline ? 'Volver a Online' : 'Simular Zona Sin Señal'}
+          </button>
         </div>
       </div>
 
-      {/* DISPOSICIÓN RESPONSIVA: 1 COLUMNA EN MÓVIL, 2 COLUMNAS EN TABLETA/COMPUTADORA */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-6 items-start">
-        {/* COLUMNA IZQUIERDA: ARQUEO DE BOLSILLO EN CALLE & GASTOS */}
-        <div className="lg:col-span-5 space-y-4 lg:sticky lg:top-20">
-          <div className="bg-slate-900 border-2 border-slate-800 rounded-3xl p-4 sm:p-5 shadow-xl space-y-4">
-            <div className="flex items-center justify-between">
+      {/* ALERTA DE VALIDACIÓN O CONFIRMACIÓN DE COBRO */}
+      {streetAlert && (
+        <div
+          className={`p-3.5 rounded-xl border text-xs flex items-center justify-between gap-3 ${
+            streetAlert.type === 'error'
+              ? 'bg-rose-950/70 border-rose-500/50 text-rose-200'
+              : 'bg-emerald-950/60 border-emerald-500/40 text-emerald-200'
+          }`}
+        >
+          <div className="flex items-center gap-2 font-medium">
+            {streetAlert.type === 'error' ? (
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+            ) : (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            )}
+            <span>{streetAlert.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setStreetAlert(null)}
+            className="text-slate-400 hover:text-white p-1 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* =====================================================================
+          2. SELECTOR PRINCIPAL DE MODO OPERATIVO (RUTA DE CALLE VS CIERRE DE TURNO)
+         ===================================================================== */}
+      <div className="grid grid-cols-2 gap-2 bg-slate-900 p-1.5 rounded-xl border border-slate-800 shadow-sm">
+        <button
+          type="button"
+          onClick={() => setCollectorTab('route_list')}
+          className={`min-h-[46px] py-2.5 px-4 rounded-lg text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+            collectorTab === 'route_list'
+              ? 'bg-indigo-600 text-white shadow-sm'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+          }`}
+        >
+          <Wallet className="w-4 h-4" />
+          <span>Clientes en Ruta ({routeLoans.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setCollectorTab('shift_closing')}
+          className={`min-h-[46px] py-2.5 px-4 rounded-lg text-xs sm:text-sm font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+            collectorTab === 'shift_closing'
+              ? 'bg-emerald-600 text-white shadow-sm'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+          }`}
+        >
+          <ClipboardCheck className="w-4 h-4" />
+          <span>Resumen de Cierre de Turno</span>
+        </button>
+      </div>
+
+      {/* =====================================================================
+          VISTA A: RESUMEN DE CIERRE DE TURNO Y ARQUEO DE CAJA CON EL ADMINISTRADOR
+         ===================================================================== */}
+      {collectorTab === 'shift_closing' ? (
+        <div className="space-y-5">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 sm:p-6 shadow-sm space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
               <div>
-                <div className="flex items-center gap-2">
-                  <span className={`w-2.5 h-2.5 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
-                  <span className="text-xs font-black text-white tracking-wide uppercase">
-                    {currentRoute.name}
-                  </span>
+                <div className="flex items-center gap-2 text-xs text-slate-400">
+                  <span>Liquidación Diaria de Ruta</span>
+                  <span aria-hidden="true">·</span>
+                  <span>{currentRoute.name}</span>
+                  <span aria-hidden="true">·</span>
+                  <span className="font-mono text-emerald-400">Enteros Exactos COP</span>
                 </div>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Rutero: <strong className="text-emerald-300">{currentRoute.collectorName}</strong> ({currentRoute.code})
+                <h3 className="text-lg sm:text-xl font-bold text-white mt-1">
+                  Resumen de Cierre de Turno — {currentRoute.collectorName}
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Verificación del efectivo recaudado hoy, base semanal y gastos operativos antes de entregar el sobre al Administrador.
                 </p>
               </div>
 
-              <div>
-                {isOnline ? (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                    <Wifi className="w-3 h-3" />
-                    En Línea
-                  </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                    <WifiOff className="w-3 h-3" />
-                    Offline
-                  </span>
-                )}
-              </div>
+              <button
+                type="button"
+                onClick={() => setReconciliationModalOpen(true)}
+                className="min-h-[48px] px-5 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm rounded-xl shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer shrink-0"
+              >
+                <Calculator className="w-4 h-4" />
+                <span>Firmar Arqueo de Caja con Admin</span>
+              </button>
             </div>
 
-            {/* EFECTIVO FÍSICO EN MANO (BOLSILLO) */}
-            <div className="bg-gradient-to-r from-emerald-950/80 to-slate-950 border-2 border-emerald-500/40 rounded-2xl p-4 flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
-                  <Wallet className="w-6 h-6" />
-                </div>
-                <div>
-                  <span className="text-[10px] uppercase tracking-wider text-emerald-300 font-bold block">
-                    Efectivo Físico en Bolsillo
-                  </span>
-                  <span className="text-2xl sm:text-3xl font-black text-white font-mono">
-                    {formatCOP(cashInHand)}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* DESGLOSE RÁPIDO: BASE, COBRADO, GASTOS */}
-            <div className="grid grid-cols-3 gap-2 text-center text-xs">
-              <div className="bg-slate-950 p-2.5 rounded-xl border border-indigo-500/30">
-                <span className="text-[10px] text-indigo-300 block font-bold">Base en Poder</span>
-                <span className="text-xs sm:text-sm font-bold text-white font-mono mt-0.5 block">
+            {/* 4 TARJETAS DE LIQUIDACIÓN DEL TURNO */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4">
+                <span className="text-xs text-indigo-300 font-medium block">
+                  1. Base Semanal en Poder
+                </span>
+                <span className="text-xl font-bold text-white font-mono tabular-nums mt-1 block">
                   {formatCOP(activeBaseAmount)}
                 </span>
+                <span className="text-[11px] text-slate-400 mt-1 block">
+                  Capital inicial entregado por Admin
+                </span>
               </div>
-              <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
-                <span className="text-[10px] text-slate-400 block font-medium">Cobrado Hoy</span>
-                <span className="text-xs sm:text-sm font-bold text-emerald-400 font-mono mt-0.5 block">
+
+              <div className="bg-slate-950 border border-emerald-500/30 rounded-xl p-4">
+                <span className="text-xs text-emerald-300 font-medium block">
+                  2. Efectivo Recaudado Hoy
+                </span>
+                <span className="text-xl font-bold text-emerald-400 font-mono tabular-nums mt-1 block">
                   +{formatCOP(cashCollectedToday)}
                 </span>
+                <span className="text-[11px] text-slate-400 mt-1 block">
+                  {paidLoansCount} de {routeLoans.length} clientes cobrados
+                </span>
               </div>
-              <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
-                <span className="text-[10px] text-slate-400 block font-medium">Gastos Moto/Viático</span>
-                <span className="text-xs sm:text-sm font-bold text-amber-400 font-mono mt-0.5 block">
+
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4">
+                <span className="text-xs text-amber-300 font-medium block">
+                  3. Gastos de Ruta (OpEx)
+                </span>
+                <span className="text-xl font-bold text-amber-300 font-mono tabular-nums mt-1 block">
                   -{formatCOP(totalRouteExpenses)}
                 </span>
-              </div>
-            </div>
-
-            {/* BOTÓN PRINCIPAL GRANDE: NUEVO CLIENTE / REGISTRAR DEUDOR */}
-            <button
-              onClick={() => setQuickRegisterModalOpen(true)}
-              className="w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] text-white font-black text-xs sm:text-sm rounded-2xl shadow-xl shadow-emerald-950/60 flex items-center justify-center gap-2 transition-all border border-emerald-400/30"
-            >
-              <UserPlus className="w-5 h-5 stroke-[2.5]" />
-              <span>+ Nuevo Cliente (Registrar Deudor)</span>
-            </button>
-
-            {/* BOTONES DE OPERACIÓN LOGÍSTICA DE CALLE */}
-            <div className="flex gap-2 pt-1">
-              <button
-                onClick={() => setExpenseModalOpen(true)}
-                className="flex-1 py-2.5 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-all"
-              >
-                <Fuel className="w-4 h-4" />
-                + Registrar Gasto Moto
-              </button>
-              <button
-                onClick={() => setReconciliationModalOpen(true)}
-                className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all"
-              >
-                <Lock className="w-4 h-4 text-emerald-400" />
-                Arqueo de Turno
-              </button>
-            </div>
-
-            {/* BARRA DE AVANCE DE PARADAS */}
-            <div className="space-y-1.5 text-xs pt-2 border-t border-slate-800">
-              <div className="flex justify-between text-slate-300">
-                <span>Progreso del Recorrido:</span>
-                <span className="font-bold font-mono text-emerald-400">
-                  {routeLoans.filter(l => l.todayPaid).length} de {routeLoans.length} pagados
+                <span className="text-[11px] text-slate-400 mt-1 block">
+                  {routeExpensesToday.length} gasto(s) registrados hoy
                 </span>
               </div>
-              <div className="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden border border-slate-800">
-                <div 
-                  className="bg-emerald-500 h-full rounded-full transition-all duration-500"
-                  style={{ width: `${(routeLoans.filter(l => l.todayPaid).length / Math.max(1, routeLoans.length)) * 100}%` }}
-                />
+
+              <div className="bg-indigo-950/40 border border-indigo-500/40 rounded-xl p-4">
+                <span className="text-xs text-indigo-200 font-semibold block">
+                  4. Total Efectivo a Entregar
+                </span>
+                <span className="text-2xl font-bold text-white font-mono tabular-nums mt-1 block">
+                  {formatCOP(cashInHand)}
+                </span>
+                <span className="text-[11px] text-indigo-300 mt-1 block">
+                  Base + Cobrado − Gastos
+                </span>
               </div>
+            </div>
+
+            {/* ESTADÍSTICAS DEL RECORRIDO HOY */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 flex items-center justify-between">
+                <div>
+                  <span className="text-xs text-slate-400 block">Clientes Cobrados Hoy</span>
+                  <span className="text-lg font-bold text-emerald-400 font-mono tabular-nums">
+                    {paidLoansCount} clientes
+                  </span>
+                </div>
+                <CheckCircle2 className="w-6 h-6 text-emerald-400" />
+              </div>
+
+              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 flex items-center justify-between">
+                <div>
+                  <span className="text-xs text-slate-400 block">Clientes Pendientes</span>
+                  <span className="text-lg font-bold text-amber-300 font-mono tabular-nums">
+                    {pendingLoansCount} clientes
+                  </span>
+                </div>
+                <Clock className="w-6 h-6 text-amber-400" />
+              </div>
+
+              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4 flex items-center justify-between">
+                <div>
+                  <span className="text-xs text-slate-400 block">Transferencias (Nequi/Daviplata)</span>
+                  <span className="text-lg font-bold text-indigo-300 font-mono tabular-nums">
+                    {formatCOP(digitalCollectedToday)}
+                  </span>
+                </div>
+                <Smartphone className="w-6 h-6 text-indigo-400" />
+              </div>
+            </div>
+
+            {/* DETALLE DE RECAUDOS DEL DÍA */}
+            <div className="pt-2">
+              <h4 className="text-sm font-bold text-white mb-3">
+                Detalle de Pagos Recibidos en el Turno ({routeLedgerToday.length})
+              </h4>
+
+              {routeLedgerToday.length === 0 ? (
+                <div className="bg-slate-950/60 border border-slate-800 rounded-xl p-6 text-center text-xs text-slate-400">
+                  Aún no se han registrado cobros en esta ruta durante el turno actual.
+                </div>
+              ) : (
+                <div className="overflow-x-auto border border-slate-800 rounded-xl">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="bg-slate-950 text-slate-400 border-b border-slate-800">
+                      <tr>
+                        <th className="py-2.5 px-3">Recibo</th>
+                        <th className="py-2.5 px-3">Cliente</th>
+                        <th className="py-2.5 px-3">Método</th>
+                        <th className="py-2.5 px-3 text-right">Monto Recaudado</th>
+                        <th className="py-2.5 px-3 text-right">Saldo Posterior</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/70 bg-slate-900/60">
+                      {routeLedgerToday.map((item) => (
+                        <tr key={item.id} className="hover:bg-slate-800/40">
+                          <td className="py-2.5 px-3 font-mono text-slate-300">
+                            {item.receiptNumber}
+                          </td>
+                          <td className="py-2.5 px-3 font-semibold text-white">
+                            {item.clientName}
+                          </td>
+                          <td className="py-2.5 px-3 capitalize text-slate-300">
+                            {item.paymentMethod}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono font-bold text-emerald-400 tabular-nums">
+                            +{formatCOP(item.amount)}
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono text-slate-300 tabular-nums">
+                            {formatCOP(item.postBalance)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* BOTONES FINALES DE CIERRE */}
+            <div className="pt-3 border-t border-slate-800 flex flex-col sm:flex-row gap-3 justify-end">
+              <button
+                type="button"
+                onClick={() => setCollectorTab('route_list')}
+                className="min-h-[46px] px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <span>Volver al Listado de Clientes</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setReconciliationModalOpen(true)}
+                className="min-h-[46px] px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-colors cursor-pointer"
+              >
+                <Lock className="w-4 h-4" />
+                <span>Abrir Conteo de Billetes y Cerrar Turno</span>
+                <ArrowRight className="w-4 h-4" />
+              </button>
             </div>
           </div>
         </div>
+      ) : (
+        /* =====================================================================
+           VISTA B: RECORRIDO DE CALLE, BUSCADOR INSTANTÁNEO Y TARJETAS TÁCTILES
+           ===================================================================== */
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+          {/* COLUMNA IZQUIERDA: CAJA EN BOLSILLO Y ACCIONES DE RUTA */}
+          <div className="lg:col-span-4 space-y-4 lg:sticky lg:top-20">
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 sm:p-5 shadow-sm space-y-4">
+              {/* Efectivo Físico en Mano */}
+              <div className="bg-slate-950 border border-emerald-500/30 rounded-xl p-4 flex items-center justify-between">
+                <div>
+                  <span className="text-xs text-emerald-400 font-semibold block">
+                    Efectivo Físico en Bolsillo
+                  </span>
+                  <span className="text-2xl sm:text-3xl font-bold text-white font-mono tabular-nums mt-0.5 block">
+                    {formatCOP(cashInHand)}
+                  </span>
+                  <span className="text-[11px] text-slate-400 mt-0.5 block">
+                    Base ({formatCOP(activeBaseAmount)}) + Recaudo ({formatCOP(cashCollectedToday)})
+                  </span>
+                </div>
+                <div className="w-11 h-11 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
+                  <Wallet className="w-5 h-5" />
+                </div>
+              </div>
 
-        {/* COLUMNA DERECHA: LISTADO DE PARADAS POR ORDEN DE VISITA TERRITORIAL */}
-        <div className="lg:col-span-7 space-y-3.5">
-          {/* BUSCADOR RÁPIDO Y BOTÓN NUEVO CLIENTE */}
-          <div className="flex flex-col sm:flex-row gap-2">
-            <div className="relative flex-1">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
-              <input
-                type="text"
-                placeholder="Buscar cliente, comercio o dirección..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full bg-slate-900 border-2 border-slate-800 rounded-2xl pl-10 pr-4 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 font-medium"
-              />
-            </div>
+              {/* Resumen compacto */}
+              <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                  <span className="text-[11px] text-indigo-300 block font-medium">Base Activa</span>
+                  <span className="text-xs sm:text-sm font-bold text-white font-mono tabular-nums mt-0.5 block">
+                    {formatCOP(activeBaseAmount)}
+                  </span>
+                </div>
+                <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                  <span className="text-[11px] text-emerald-300 block font-medium">Cobrado Hoy</span>
+                  <span className="text-xs sm:text-sm font-bold text-emerald-400 font-mono tabular-nums mt-0.5 block">
+                    +{formatCOP(cashCollectedToday)}
+                  </span>
+                </div>
+                <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                  <span className="text-[11px] text-amber-300 block font-medium">Gastos Ruta</span>
+                  <span className="text-xs sm:text-sm font-bold text-amber-300 font-mono tabular-nums mt-0.5 block">
+                    -{formatCOP(totalRouteExpenses)}
+                  </span>
+                </div>
+              </div>
 
-            <button
-              onClick={() => setQuickRegisterModalOpen(true)}
-              className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs rounded-2xl shadow-md shadow-emerald-950 flex items-center justify-center gap-1.5 shrink-0 transition-all"
-            >
-              <UserPlus className="w-4 h-4" />
-              <span>+ Nuevo Cliente</span>
-            </button>
+              {/* Botón Principal Táctil: Nuevo Cliente / Préstamo */}
+              <button
+                type="button"
+                onClick={() => setQuickRegisterModalOpen(true)}
+                className="w-full min-h-[48px] py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm rounded-xl shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              >
+                <UserPlus className="w-4 h-4" />
+                <span>+ Nuevo Cliente o Préstamo en Ruta</span>
+              </button>
 
-            {/* FILTROS POR ESTADO DE COBRO */}
-            <div className="flex bg-slate-900 border-2 border-slate-800 rounded-2xl p-1 text-xs overflow-x-auto">
-              <button
-                onClick={() => setStatusFilter('all')}
-                className={`px-3 py-1.5 rounded-xl font-bold transition-all whitespace-nowrap ${
-                  statusFilter === 'all' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Todos ({routeLoans.length})
-              </button>
-              <button
-                onClick={() => setStatusFilter('pending')}
-                className={`px-3 py-1.5 rounded-xl font-bold transition-all whitespace-nowrap ${
-                  statusFilter === 'pending' ? 'bg-amber-500/20 text-amber-300' : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Pendientes ({routeLoans.filter(l => !l.todayPaid && !incidents[l.id]).length})
-              </button>
-              <button
-                onClick={() => setStatusFilter('collected')}
-                className={`px-3 py-1.5 rounded-xl font-bold transition-all whitespace-nowrap ${
-                  statusFilter === 'collected' ? 'bg-emerald-500/20 text-emerald-300' : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Pagados ({routeLoans.filter(l => l.todayPaid).length})
-              </button>
-              <button
-                onClick={() => setStatusFilter('incidents')}
-                className={`px-3 py-1.5 rounded-xl font-bold transition-all whitespace-nowrap ${
-                  statusFilter === 'incidents' ? 'bg-rose-500/20 text-rose-300' : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                No Pagó ({Object.keys(incidents).length})
-              </button>
+              {/* Botones secundarios grandes para celular */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setExpenseModalOpen(true)}
+                  className="min-h-[44px] py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Fuel className="w-4 h-4 text-amber-400" />
+                  <span>Registrar Gasto</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCollectorTab('shift_closing')}
+                  className="min-h-[44px] py-2.5 px-3 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-200 border border-indigo-500/30 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <ClipboardCheck className="w-4 h-4 text-indigo-400" />
+                  <span>Cierre de Turno</span>
+                </button>
+              </div>
+
+              {/* Progreso del Recorrido */}
+              <div className="space-y-1.5 text-xs pt-2 border-t border-slate-800">
+                <div className="flex justify-between text-slate-300">
+                  <span>Avance del Día:</span>
+                  <span className="font-bold font-mono text-emerald-400 tabular-nums">
+                    {paidLoansCount} de {routeLoans.length} cobrados
+                  </span>
+                </div>
+                <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-slate-800">
+                  <div
+                    className="bg-emerald-500 h-full rounded-full transition-all duration-300"
+                    style={{
+                      width: `${(paidLoansCount / Math.max(1, routeLoans.length)) * 100}%`,
+                    }}
+                  />
+                </div>
+              </div>
             </div>
           </div>
 
-          {/* LISTADO DE PARADAS CON ORDEN DE VISITA Y BOTONES GRANDES */}
-          <div className="space-y-3">
-            {filteredLoans.map((loan, index) => {
-              const client = clients.find(c => c.id === loan.clientId);
-              const incident = incidents[loan.id];
-              const visitNumber = index + 1;
+          {/* COLUMNA DERECHA: BUSCADOR INSTANTÁNEO Y TARJETAS DE CLIENTES */}
+          <div className="lg:col-span-8 space-y-4">
+            {/* BARRA DE BÚSQUEDA INSTANTÁNEA POR NOMBRE O TELÉFONO */}
+            <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5 shadow-sm space-y-3">
+              <div className="relative">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
+                <input
+                  type="text"
+                  placeholder="Buscar instantáneamente por nombre del cliente, teléfono (ej. 312...) o negocio..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-xl pl-10 pr-10 py-2.5 text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none"
+                />
+                {searchTerm && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchTerm('')}
+                    className="absolute right-3 top-2.5 p-1 text-slate-400 hover:text-white cursor-pointer"
+                    aria-label="Limpiar búsqueda"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
 
-              return (
-                <div
-                  key={loan.id}
-                  className={`border-2 rounded-3xl p-4 sm:p-5 transition-all shadow-md ${
-                    loan.todayPaid
-                      ? 'bg-slate-900/60 border-emerald-500/40 opacity-95'
-                      : incident
-                      ? 'bg-rose-950/20 border-rose-500/40'
-                      : loan.daysOverdue >= 2
-                      ? 'bg-amber-950/20 border-amber-500/50'
-                      : 'bg-slate-900 border-slate-800 hover:border-slate-700'
+              {/* Filtros rápidos de estado */}
+              <div className="flex items-center gap-1.5 overflow-x-auto">
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('all')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                    statusFilter === 'all'
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
                   }`}
                 >
-                  {/* ENCABEZADO DE LA PARADA CON ORDEN DE VISITA */}
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {/* INSIGNIA DE PARADA EN RUTA */}
-                        <span className="px-2.5 py-0.5 rounded-lg text-xs font-black bg-slate-800 text-white font-mono border border-slate-700">
-                          #{visitNumber} Parada
-                        </span>
-                        
-                        <span className="font-bold text-white text-base">
-                          {loan.clientName}
-                        </span>
+                  Todos ({routeLoans.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('pending')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                    statusFilter === 'pending'
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  Pendientes ({pendingLoansCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('collected')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                    statusFilter === 'collected'
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  Pagados Hoy ({paidLoansCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('incidents')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                    statusFilter === 'incidents'
+                      ? 'bg-rose-600 text-white'
+                      : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  Novedades ({Object.keys(incidents).length})
+                </button>
+              </div>
+            </div>
 
-                        {loan.todayPaid && (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded-full">
-                            <CheckCircle2 className="w-3 h-3" /> Cobrado Hoy
+            {/* LISTADO DE CLIENTES CON BOTONES TÁCTILES GRANDES */}
+            <div className="space-y-3">
+              {filteredLoans.map((loan, index) => {
+                const client = clients.find((c) => c.id === loan.clientId);
+                const incident = incidents[loan.id];
+                const visitNumber = index + 1;
+                const effectiveQuota = Math.min(
+                  roundCOP(loan.installmentAmount),
+                  roundCOP(loan.remainingBalance)
+                );
+
+                return (
+                  <div
+                    key={loan.id}
+                    className={`bg-slate-900 border rounded-xl p-4 sm:p-5 shadow-sm transition-colors ${
+                      loan.todayPaid
+                        ? 'border-emerald-500/40'
+                        : incident
+                        ? 'border-rose-500/40'
+                        : loan.daysOverdue >= 2
+                        ? 'border-amber-500/40'
+                        : 'border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    {/* Cabecera de la tarjeta */}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex items-center gap-2 text-xs text-slate-400 flex-wrap">
+                          <span className="font-mono font-semibold text-indigo-400">
+                            Parada #{visitNumber}
                           </span>
-                        )}
-
-                        {incident && (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-black bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2 py-0.5 rounded-full">
-                            <XCircle className="w-3 h-3" /> {getIncidentLabel(incident.reason)}
-                          </span>
-                        )}
-
-                        {!loan.todayPaid && !incident && loan.daysOverdue >= 2 && (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full">
-                            <AlertCircle className="w-3 h-3" /> Mora {loan.daysOverdue}d
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="text-xs text-slate-300 font-semibold flex items-center gap-1.5">
-                        <Store className="w-3.5 h-3.5 text-slate-400" />
-                        <span>{loan.tradeName}</span>
-                      </div>
-
-                      <div className="text-[11px] text-slate-400 flex items-center gap-1">
-                        <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                        <span>{client?.address || 'Sector de Calle'}</span>
-                        <span className="text-slate-500">· {client?.neighborhood}</span>
-                      </div>
-                    </div>
-
-                    <div className="text-right shrink-0 bg-slate-950/80 p-2.5 rounded-2xl border border-slate-800">
-                      <span className="text-[10px] text-slate-400 uppercase font-semibold block">Cuota Diaria</span>
-                      <span className="text-lg sm:text-xl font-black text-emerald-400 font-mono">
-                        {formatCOP(loan.installmentAmount)}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* DATOS DE AMORTIZACIÓN Y FIADOR */}
-                  <div className="mt-3 pt-2.5 border-t border-slate-800/80 grid grid-cols-3 gap-2 text-xs">
-                    <div>
-                      <span className="text-slate-400 block text-[10px]">Saldo Restante</span>
-                      <span className="font-bold text-slate-200 font-mono">
-                        {formatCOP(loan.remainingBalance)}
-                      </span>
-                    </div>
-                    <div>
-                      <span className="text-slate-400 block text-[10px]">Cuotas Pagadas</span>
-                      <span className="font-bold text-slate-300 font-mono">
-                        {loan.installmentsPaid} de {loan.termDays}
-                      </span>
-                    </div>
-                    <div className="text-right">
-                      <span className="text-slate-400 block text-[10px]">Fiador Solidario</span>
-                      <span className="text-slate-300 truncate block">
-                        {client?.guarantorName ? client.guarantorName.split(' ')[0] : 'Verificado'}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* NOTA SI HAY INCIDENTE REGISTRADO HOY */}
-                  {incident && (
-                    <div className="mt-2.5 p-2 rounded-xl bg-rose-950/40 border border-rose-500/30 text-[11px] text-rose-200 flex items-center justify-between">
-                      <span><strong>Novedad ({incident.timestamp}):</strong> {incident.notes || getIncidentLabel(incident.reason)}</span>
-                      <button
-                        onClick={() => openIncidentModal(loan)}
-                        className="text-xs text-rose-300 underline font-bold ml-2"
-                      >
-                        Cambiar
-                      </button>
-                    </div>
-                  )}
-
-                  {/* BOTONES DE ACCIÓN RÁPIDA DE CALLE (GRANDES Y ERGONÓMICOS) */}
-                  <div className="mt-3.5 pt-3 border-t border-slate-800/80 space-y-2">
-                    {loan.todayPaid ? (
-                      <div className="flex gap-2">
-                        <div className="flex-1 py-3 bg-emerald-950/60 border-2 border-emerald-500/40 text-emerald-300 rounded-2xl text-xs font-black flex items-center justify-center gap-2">
-                          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                          Cuota Cobrada con Éxito Hoy
+                          <span aria-hidden="true">·</span>
+                          <span>{loan.tradeName}</span>
+                          {loan.todayPaid && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="text-emerald-400 font-semibold">Cobrado Hoy</span>
+                            </>
+                          )}
+                          {!loan.todayPaid && loan.daysOverdue >= 2 && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="text-amber-400 font-semibold">
+                                Mora {loan.daysOverdue}d
+                              </span>
+                            </>
+                          )}
                         </div>
-                        <button
-                          onClick={() => {
-                            if (client) {
-                              const entry: LedgerEntry = {
-                                id: `led-${Date.now()}`,
-                                receiptNumber: `REC-${Date.now().toString().slice(-6)}`,
-                                loanId: loan.id,
-                                clientId: client.id,
-                                clientName: client.name,
-                                routeId: loan.routeId,
-                                amount: loan.installmentAmount,
-                                principalPortion: loan.installmentAmount * 0.8,
-                                interestPortion: loan.installmentAmount * 0.2,
-                                paymentMethod: 'efectivo',
-                                preBalance: loan.remainingBalance + loan.installmentAmount,
-                                postBalance: loan.remainingBalance,
-                                timestamp: new Date().toISOString(),
-                                gpsLocation: '6.2518 N, -75.6142 W',
-                                hash: Math.random().toString(36).substring(2)
-                              };
-                              setActiveReceipt({ entry, client, loan });
-                            }
-                          }}
-                          className="px-3.5 py-3 bg-emerald-700 hover:bg-emerald-600 text-white rounded-2xl text-xs font-black flex items-center gap-1.5 transition-all shadow-md"
-                          title="Volver a abrir o enviar comprobante WhatsApp"
-                        >
-                          <Receipt className="w-4 h-4" />
-                          <span className="hidden sm:inline">Comprobante</span>
-                        </button>
+
+                        <h4 className="text-base font-bold text-white truncate">
+                          {loan.clientName}
+                        </h4>
+
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400 pt-0.5">
+                          <span className="flex items-center gap-1">
+                            <MapPin className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                            <span>{client?.address || 'Sector asignado'}</span>
+                          </span>
+                          {client?.phone && (
+                            <span className="flex items-center gap-1 font-mono text-slate-300">
+                              <PhoneCall className="w-3 h-3 text-indigo-400 shrink-0" />
+                              <span>{client.phone}</span>
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    ) : (
-                      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
-                        {/* BOTÓN PRIMARIO 1-TOQUE: MARCAR PAGADO (CUOTA COMPLETA) */}
-                        <button
-                          onClick={() => handleQuickPayFull(loan)}
-                          className="sm:col-span-6 py-3.5 px-4 bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 active:scale-[0.98] text-white rounded-2xl text-xs font-black shadow-lg shadow-emerald-950 flex items-center justify-center gap-2 transition-all"
-                        >
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>Marcar Pagado ({formatCOP(loan.installmentAmount)})</span>
-                        </button>
 
-                        {/* BOTÓN 2: ABONO PARCIAL */}
-                        <button
-                          onClick={() => openPartialPaymentModal(loan)}
-                          className="sm:col-span-3 py-3.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-100 rounded-2xl text-xs font-bold border border-slate-700 flex items-center justify-center gap-1.5 transition-all"
-                        >
-                          <Coins className="w-4 h-4 text-emerald-400" />
-                          <span>Abono Parcial</span>
-                        </button>
+                      <div className="text-right shrink-0 bg-slate-950 px-3 py-2 rounded-xl border border-slate-800">
+                        <span className="text-[10px] text-slate-400 font-medium block">
+                          Valor Cuota
+                        </span>
+                        <span className="text-lg font-bold text-emerald-400 font-mono tabular-nums">
+                          {formatCOP(loan.installmentAmount)}
+                        </span>
+                      </div>
+                    </div>
 
-                        {/* BOTÓN 3: NO PAGÓ (REGISTRAR NOVEDAD) */}
+                    {/* Métricas de Saldo en enteros exactos COP */}
+                    <div className="mt-3 pt-3 border-t border-slate-800/80 grid grid-cols-3 gap-2 text-xs">
+                      <div>
+                        <span className="text-slate-400 block text-[11px]">Saldo Pendiente</span>
+                        <span className="font-bold text-white font-mono tabular-nums">
+                          {formatCOP(loan.remainingBalance)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 block text-[11px]">Progreso Cuotas</span>
+                        <span className="font-bold text-slate-200 font-mono tabular-nums">
+                          {loan.installmentsPaid} / {loan.termDays}
+                        </span>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-slate-400 block text-[11px]">Total Crédito</span>
+                        <span className="font-mono text-slate-300 tabular-nums">
+                          {formatCOP(loan.totalDebt)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {incident && (
+                      <div className="mt-3 p-2.5 rounded-lg bg-rose-950/40 border border-rose-500/30 text-xs text-rose-200 flex items-center justify-between">
+                        <span>
+                          <strong>Novedad ({incident.timestamp}):</strong>{' '}
+                          {incident.notes || getIncidentLabel(incident.reason)}
+                        </span>
                         <button
+                          type="button"
                           onClick={() => openIncidentModal(loan)}
-                          className="sm:col-span-3 py-3.5 px-3 bg-rose-950/40 hover:bg-rose-900/50 text-rose-300 rounded-2xl text-xs font-bold border border-rose-500/30 flex items-center justify-center gap-1.5 transition-all"
+                          className="text-xs text-rose-300 underline font-semibold ml-2 cursor-pointer"
                         >
-                          <XCircle className="w-4 h-4 text-rose-400" />
-                          <span>No Pagó</span>
+                          Editar
                         </button>
                       </div>
                     )}
 
-                    {/* BARRA DE COMUNICACIÓN RÁPIDA (WHATSAPP + LLAMADA) */}
-                    <div className="flex items-center gap-2 pt-1 text-xs">
-                      <button
-                        onClick={() => handleSendMorningReminder(loan)}
-                        className="flex-1 py-2 bg-emerald-950/30 hover:bg-emerald-950/50 text-emerald-300 border border-emerald-500/20 rounded-xl font-bold flex items-center justify-center gap-1.5 transition-colors"
-                      >
-                        <MessageCircle className="w-3.5 h-3.5" />
-                        <span>Enviar Recordatorio WhatsApp</span>
-                      </button>
+                    {/* BOTONES DE ACCIÓN GRANDES Y TÁCTILES PARA USO EN CELULAR */}
+                    <div className="mt-3.5 pt-3 border-t border-slate-800/80 space-y-2">
+                      {loan.todayPaid || loan.remainingBalance <= 0 ? (
+                        <div className="flex gap-2">
+                          <div className="flex-1 min-h-[46px] py-2.5 px-3 bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 rounded-xl text-xs font-bold flex items-center justify-center gap-2">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                            <span>
+                              {loan.remainingBalance <= 0
+                                ? 'Crédito Liquidado ($0 COP)'
+                                : 'Pago Registrado Hoy'}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (client) {
+                                const entry: LedgerEntry = {
+                                  id: `led-${Date.now()}`,
+                                  receiptNumber: `REC-${Date.now().toString().slice(-6)}`,
+                                  loanId: loan.id,
+                                  clientId: client.id,
+                                  clientName: client.name,
+                                  routeId: loan.routeId,
+                                  amount: roundCOP(loan.installmentAmount),
+                                  principalPortion: roundCOP(loan.installmentAmount * 0.8),
+                                  interestPortion: roundCOP(loan.installmentAmount * 0.2),
+                                  paymentMethod: 'efectivo',
+                                  preBalance: roundCOP(loan.remainingBalance + loan.installmentAmount),
+                                  postBalance: roundCOP(loan.remainingBalance),
+                                  timestamp: new Date().toISOString(),
+                                  gpsLocation: '6.2518 N, -75.6142 W',
+                                  hash: Math.random().toString(36).substring(2),
+                                };
+                                setActiveReceipt({ entry, client, loan });
+                              }
+                            }}
+                            className="min-h-[46px] px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-white border border-slate-700 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
+                          >
+                            <Receipt className="w-4 h-4 text-emerald-400" />
+                            <span>Recibo</span>
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                          {/* Botón Primario Táctil: Cobrar Cuota */}
+                          <button
+                            type="button"
+                            onClick={() => handleQuickPayFull(loan)}
+                            className="sm:col-span-6 min-h-[48px] py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs sm:text-sm font-bold shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Cobrar Cuota ({formatCOP(effectiveQuota)})</span>
+                          </button>
 
-                      {client?.phone && (
-                        <a
-                          href={`tel:${client.phone}`}
-                          className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl font-semibold flex items-center gap-1 transition-colors"
-                        >
-                          <PhoneCall className="w-3.5 h-3.5 text-slate-400" />
-                          <span className="hidden sm:inline">Llamar</span>
-                        </a>
+                          {/* Botón 2: Abono / Otro Monto */}
+                          <button
+                            type="button"
+                            onClick={() => openPartialPaymentModal(loan)}
+                            className="sm:col-span-3 min-h-[48px] py-3 px-3 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-200 border border-indigo-500/30 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                          >
+                            <Coins className="w-4 h-4 text-indigo-400" />
+                            <span>Otro Monto</span>
+                          </button>
+
+                          {/* Botón 3: No Pagó */}
+                          <button
+                            type="button"
+                            onClick={() => openIncidentModal(loan)}
+                            className="sm:col-span-3 min-h-[48px] py-3 px-3 bg-slate-800 hover:bg-rose-950/50 text-slate-300 hover:text-rose-200 border border-slate-700 hover:border-rose-500/40 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                          >
+                            <XCircle className="w-4 h-4 text-rose-400" />
+                            <span>No Pagó</span>
+                          </button>
+                        </div>
                       )}
+
+                      {/* Acciones de contacto directo */}
+                      <div className="flex items-center gap-2 pt-1 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => handleSendMorningReminder(loan)}
+                          className="flex-1 min-h-[40px] py-2 bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-lg font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <MessageCircle className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>WhatsApp</span>
+                        </button>
+
+                        {client?.phone && (
+                          <a
+                            href={`tel:${client.phone}`}
+                            className="min-h-[40px] px-3.5 py-2 bg-slate-950 hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-lg font-medium flex items-center gap-1.5 transition-colors"
+                          >
+                            <PhoneCall className="w-3.5 h-3.5 text-indigo-400" />
+                            <span>Llamar</span>
+                          </a>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
 
-            {filteredLoans.length === 0 && (
-              <div className="text-center py-12 bg-slate-900/60 border-2 border-slate-800 rounded-3xl p-6 sm:p-8 space-y-3">
-                <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 mx-auto flex items-center justify-center">
-                  <UserPlus className="w-6 h-6 stroke-[2.2]" />
+              {filteredLoans.length === 0 && (
+                <div className="text-center py-10 bg-slate-900 border border-slate-800 rounded-xl p-6 space-y-3">
+                  <Search className="w-8 h-8 text-slate-500 mx-auto" />
+                  <h4 className="text-sm font-bold text-white">
+                    {searchTerm
+                      ? `Sin resultados para "${searchTerm}"`
+                      : 'No hay clientes en este filtro'}
+                  </h4>
+                  <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                    {searchTerm
+                      ? 'Verifica el nombre o número de teléfono buscado o limpia el filtro.'
+                      : 'Puedes registrar un nuevo cliente en esta ruta haciendo clic en el botón inferior.'}
+                  </p>
+                  {searchTerm ? (
+                    <button
+                      type="button"
+                      onClick={() => setSearchTerm('')}
+                      className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold rounded-lg cursor-pointer"
+                    >
+                      Limpiar Búsqueda
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setQuickRegisterModalOpen(true)}
+                      className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl inline-flex items-center gap-2 cursor-pointer"
+                    >
+                      <UserPlus className="w-4 h-4" />
+                      <span>+ Registrar Cliente en Ruta</span>
+                    </button>
+                  )}
                 </div>
-                <h4 className="text-base font-black text-white">No hay deudores en esta ruta todavía</h4>
-                <p className="text-xs text-slate-400 max-w-sm mx-auto">
-                  Registra el primer cliente de {currentRoute.name}. Se asignará de inmediato a tu lista diaria de cobros.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setQuickRegisterModalOpen(true)}
-                  className="px-5 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs rounded-2xl shadow-xl shadow-emerald-950 flex items-center justify-center gap-2 mx-auto transition-all"
-                >
-                  <UserPlus className="w-4 h-4" />
-                  <span>+ Registrar Primer Deudor en Ruta</span>
-                </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* MODAL 1: REGISTRO DE NOVEDAD (NO PAGÓ HOY) */}
       {incidentModalOpen && selectedLoan && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border-2 border-rose-500/40 rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-4">
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-5 shadow-xl space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-xl bg-rose-500/20 text-rose-400 flex items-center justify-center">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-400 flex items-center justify-center">
                   <XCircle className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-white text-sm">Registrar Novedad: No Pagó Hoy</h3>
+                  <h3 className="font-bold text-white text-sm">Registrar Novedad de Cobro</h3>
                   <p className="text-xs text-slate-400">{selectedLoan.clientName}</p>
                 </div>
               </div>
-              <button 
+              <button
+                type="button"
                 onClick={() => setIncidentModalOpen(false)}
-                className="text-slate-400 hover:text-white text-base p-1"
+                className="text-slate-400 hover:text-white p-1 cursor-pointer"
               >
-                ✕
+                <X className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={handleConfirmIncident} className="space-y-4 text-xs">
-              <div>
-                <label className="text-slate-300 font-bold block mb-2">
-                  Selecciona el motivo del impago:
-                </label>
-                <div className="space-y-2">
-                  {[
-                    { id: 'sin_liquidez', label: 'Sin dinero hoy · Pidió prórroga para mañana', icon: Coins },
-                    { id: 'local_cerrado', label: 'Local comercial o puesto cerrado', icon: Store },
-                    { id: 'cliente_ausente', label: 'Cliente ausente · No se encontraba en el sitio', icon: UserX },
-                    { id: 'promesa_nequi', label: 'Prometió pagar vía Nequi/Daviplata más tarde', icon: Smartphone },
-                    { id: 'rehuso_pago', label: 'Rehusó pagar o presentó conflicto', icon: AlertCircle },
-                  ].map((item) => {
-                    const Icon = item.icon;
-                    return (
-                      <button
-                        type="button"
-                        key={item.id}
-                        onClick={() => setIncidentReason(item.id as NonPaymentIncident['reason'])}
-                        className={`w-full p-3 rounded-xl border-2 text-left flex items-center gap-3 transition-all ${
-                          incidentReason === item.id
-                            ? 'bg-rose-950/50 border-rose-500 text-white font-bold'
-                            : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
-                        }`}
-                      >
-                        <Icon className="w-4 h-4 text-rose-400 shrink-0" />
-                        <span className="text-xs">{item.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
+              <div className="space-y-2">
+                <label className="text-slate-300 font-semibold block">Motivo del impago:</label>
+                {[
+                  {
+                    id: 'sin_liquidez',
+                    label: 'Sin liquidez hoy · Pidió prórroga para mañana',
+                    icon: Coins,
+                  },
+                  { id: 'local_cerrado', label: 'Local comercial o puesto cerrado', icon: Store },
+                  {
+                    id: 'cliente_ausente',
+                    label: 'Cliente ausente en el momento de visita',
+                    icon: UserX,
+                  },
+                  {
+                    id: 'promesa_nequi',
+                    label: 'Prometió transferencia Nequi/Daviplata más tarde',
+                    icon: Smartphone,
+                  },
+                  {
+                    id: 'rehuso_pago',
+                    label: 'Rehusó pagar o presentó inconformidad',
+                    icon: AlertCircle,
+                  },
+                ].map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button
+                      type="button"
+                      key={item.id}
+                      onClick={() => setIncidentReason(item.id as NonPaymentIncident['reason'])}
+                      className={`w-full p-3 rounded-xl border text-left flex items-center gap-3 transition-colors cursor-pointer ${
+                        incidentReason === item.id
+                          ? 'bg-rose-950/50 border-rose-500 text-white font-semibold'
+                          : 'bg-slate-950 border-slate-800 text-slate-300 hover:border-slate-700'
+                      }`}
+                    >
+                      <Icon className="w-4 h-4 text-rose-400 shrink-0" />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
               </div>
 
               <div>
-                <label className="text-slate-300 font-bold block mb-1">
-                  Nota / Compromiso adicional (Opcional):
+                <label className="text-slate-300 font-semibold block mb-1">
+                  Observación adicional (Opcional):
                 </label>
                 <textarea
                   value={incidentNotes}
                   onChange={(e) => setIncidentNotes(e.target.value)}
-                  placeholder="Ej: Dijo que pasa a las 5pm o paga doble mañana..."
+                  placeholder="Ej: Pasar nuevamente a las 5:00 PM..."
                   rows={2}
-                  className="w-full bg-slate-950 border-2 border-slate-800 rounded-xl p-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-rose-500"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-rose-500"
                 />
               </div>
 
-              <div className="flex gap-2 pt-2">
+              <div className="flex gap-2 pt-1">
                 <button
                   type="button"
                   onClick={() => setIncidentModalOpen(false)}
-                  className="flex-1 py-3 rounded-xl bg-slate-800 text-slate-300 font-bold text-xs"
+                  className="flex-1 min-h-[44px] py-2.5 rounded-xl bg-slate-800 text-slate-300 font-semibold cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs shadow-lg shadow-rose-950"
+                  className="flex-1 min-h-[44px] py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold cursor-pointer"
                 >
-                  Confirmar Novedad
+                  Guardar Novedad
                 </button>
               </div>
             </form>
@@ -902,16 +1301,16 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
         </div>
       )}
 
-      {/* MODAL 2: ABONO PARCIAL O PERSONALIZADO */}
-      {/* MODAL 2: ABONO PARCIAL O PRÓRROGA CON MOTOR FINANCIERO */}
+      {/* MODAL 2: ABONO PARCIAL O PAGO PERSONALIZADO CON VALIDACIÓN DE SALDO */}
       {paymentModalOpen && selectedLoan && (
         <PartialPaymentModal
           loan={selectedLoan}
-          client={clients.find(c => c.id === selectedLoan.clientId)}
+          client={clients.find((c) => c.id === selectedLoan.clientId)}
           onClose={() => setPaymentModalOpen(false)}
-          onConfirmPayment={(loanId, amount, distribution, notes, extensionDays) => {
-            const client = clients.find(c => c.id === selectedLoan.clientId);
-            onRegisterPayment(loanId, amount, 'efectivo', notes);
+          onConfirmPayment={(loanId, amount, distribution, notes) => {
+            const cleanAmount = roundCOP(amount);
+            const client = clients.find((c) => c.id === selectedLoan.clientId);
+            onRegisterPayment(loanId, cleanAmount, 'efectivo', notes);
 
             if (incidents[loanId]) {
               const nextIncidents = { ...incidents };
@@ -927,15 +1326,17 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
                 clientId: client.id,
                 clientName: client.name,
                 routeId: selectedLoan.routeId,
-                amount,
-                principalPortion: distribution.principalPortionCovered,
-                interestPortion: distribution.interestPortionCovered,
+                amount: cleanAmount,
+                principalPortion: roundCOP(distribution.principalPortionCovered),
+                interestPortion: roundCOP(distribution.interestPortionCovered),
                 paymentMethod: 'efectivo',
-                preBalance: distribution.preBalance,
-                postBalance: distribution.postBalance,
+                preBalance: roundCOP(distribution.preBalance),
+                postBalance: roundCOP(distribution.postBalance),
                 timestamp: new Date().toISOString(),
                 gpsLocation: '6.2518 N, -75.6142 W',
-                hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2)
+                hash:
+                  Math.random().toString(36).substring(2) +
+                  Math.random().toString(36).substring(2),
               };
               setActiveReceipt({ entry, client, loan: selectedLoan });
             }
@@ -945,81 +1346,86 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
         />
       )}
 
-      {/* MODAL 3: REGISTRO DE GASTO DE CALLE (GASOLINA / VIÁTICO) */}
+      {/* MODAL 3: REGISTRO DE GASTO OPERATIVO DE RUTA */}
       {expenseModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border-2 border-slate-800 rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-4">
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-md p-5 shadow-xl space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center">
                   <Fuel className="w-5 h-5" />
                 </div>
-                <h3 className="font-bold text-white text-base">Registrar Gasto de Ruta (OpEx)</h3>
+                <h3 className="font-bold text-white text-sm">Registrar Gasto de Ruta (OpEx)</h3>
               </div>
-              <button 
+              <button
+                type="button"
                 onClick={() => setExpenseModalOpen(false)}
-                className="text-slate-400 hover:text-white text-base p-1"
+                className="text-slate-400 hover:text-white p-1 cursor-pointer"
               >
-                ✕
+                <X className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={submitExpense} className="space-y-4 text-xs">
               <div>
-                <label className="text-slate-300 font-bold block mb-1">
+                <label className="text-slate-300 font-semibold block mb-1">
                   Categoría del Gasto
                 </label>
                 <select
                   value={expenseCategory}
-                  onChange={(e) => setExpenseCategory(e.target.value as RouteExpenseItem['category'])}
+                  onChange={(e) =>
+                    setExpenseCategory(e.target.value as RouteExpenseItem['category'])
+                  }
                   className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-white"
                 >
                   <option value="combustible_moto">Combustible Moto (Gasolina)</option>
                   <option value="mantenimiento_moto">Mantenimiento Moto (Pinchazo / Aceite)</option>
                   <option value="alimentacion_viaticos">Alimentación / Viático Diario</option>
-                  <option value="telefonia_datos">Plan de Datos Móviles (Claro/Tigo)</option>
-                  <option value="peajes_parqueaderos">Parqueadero / Peaje Urbano</option>
+                  <option value="telefonia_datos">Plan de Datos Móviles</option>
+                  <option value="peajes_parqueaderos">Parqueadero / Peaje</option>
                   <option value="contingencia_territorial">Contingencia Territorial</option>
                 </select>
               </div>
 
               <div>
-                <label className="text-slate-300 font-bold block mb-1">
-                  Monto Pagado en Efectivo (COP)
+                <label className="text-slate-300 font-semibold block mb-1">
+                  Monto en Efectivo (COP Enteros)
                 </label>
                 <input
                   type="number"
+                  min={1000}
+                  step={500}
                   value={expenseAmount}
-                  onChange={(e) => setExpenseAmount(Number(e.target.value))}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-white font-mono font-bold text-base"
+                  onChange={(e) => setExpenseAmount(roundCOP(e.target.value))}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-white font-mono tabular-nums font-bold text-base"
                   required
                 />
               </div>
 
               <div>
-                <label className="text-slate-300 font-bold block mb-1">
-                  Descripción o Establecimiento
+                <label className="text-slate-300 font-semibold block mb-1">
+                  Descripción o Comprobante
                 </label>
                 <input
                   type="text"
                   value={expenseDescription}
                   onChange={(e) => setExpenseDescription(e.target.value)}
-                  placeholder="Ej: Tanqueada Terpel San Javier..."
-                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white"
+                  placeholder="Ej: Tanqueada estación San Javier..."
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-white"
                 />
               </div>
 
-              <div className="flex gap-2 pt-2">
+              <div className="flex gap-2 pt-1">
                 <button
                   type="button"
                   onClick={() => setExpenseModalOpen(false)}
-                  className="flex-1 py-3 rounded-xl bg-slate-800 text-slate-300 font-bold text-xs"
+                  className="flex-1 min-h-[44px] py-2.5 rounded-xl bg-slate-800 text-slate-300 font-semibold cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-3 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-black text-xs shadow-lg shadow-amber-950"
+                  className="flex-1 min-h-[44px] py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold cursor-pointer"
                 >
                   Guardar Gasto
                 </button>
@@ -1029,7 +1435,7 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
         </div>
       )}
 
-      {/* MODAL 4: ARQUEO DE CAJA */}
+      {/* MODAL 4: ARQUEO DE CAJA FORMAL */}
       {reconciliationModalOpen && (
         <DailyCashReconciliationModal
           route={currentRoute}
@@ -1039,7 +1445,7 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
         />
       )}
 
-      {/* MODAL 5: RECIBO DIGITAL WHATSAPP LISTO PARA ENVIAR TRAS EL PAGO */}
+      {/* MODAL 5: RECIBO DIGITAL WHATSAPP */}
       {activeReceipt && (
         <DigitalReceiptModal
           entry={activeReceipt.entry}
@@ -1049,14 +1455,20 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
         />
       )}
 
-      {/* MODAL 6: REGISTRO RÁPIDO DE NUEVO DEUDOR EN RUTA */}
+      {/* MODAL 6: REGISTRO RÁPIDO DE NUEVO DEUDOR O PRÉSTAMO EN RUTA */}
       {quickRegisterModalOpen && (
         <QuickClientRouteRegistrationModal
           currentRoute={currentRoute}
+          routeClients={routeClients}
           onClose={() => setQuickRegisterModalOpen(false)}
           onClientRegistered={(newClient, newLoan) => {
             if (onRegisterNewClient) {
               onRegisterNewClient(newClient, newLoan);
+            }
+          }}
+          onLoanCreatedForExistingClient={(newLoan) => {
+            if (onCreateLoanForExistingClient) {
+              onCreateLoanForExistingClient(newLoan);
             }
           }}
         />
@@ -1064,3 +1476,4 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
     </div>
   );
 };
+
