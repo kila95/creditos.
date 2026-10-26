@@ -5,12 +5,8 @@ import {
   LogOut, 
   MapPin, 
   ShieldAlert, 
-  AlertCircle, 
-  RefreshCw, 
-  CheckCircle2, 
-  ChevronRight,
-  User,
-  Sliders
+  RefreshCw,
+  Crown
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { CollectorLoginView } from './CollectorLoginView';
@@ -27,7 +23,7 @@ export const CollectorRouteGuard: React.FC<CollectorRouteGuardProps> = ({
   routes,
   onSelectSupervisedRoute
 }) => {
-  const { isAuthenticated, role, profile, loading, logout, switchDemoUser } = useAuth();
+  const { isAuthenticated, role, isSuperAdmin, isAdmin, isSocio, isCollector, profile, loading, logout, switchDemoUser } = useAuth();
   const [supervisedRouteId, setSupervisedRouteId] = React.useState<string>('route-1');
 
   if (loading) {
@@ -36,8 +32,8 @@ export const CollectorRouteGuard: React.FC<CollectorRouteGuardProps> = ({
         <div className="w-12 h-12 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 animate-spin">
           <RefreshCw className="w-6 h-6" />
         </div>
-        <p className="text-sm font-bold text-white">Validando Credenciales y Ruta Asignada...</p>
-        <p className="text-xs text-slate-400 font-mono">SELECT assigned_route_id FROM public.collectors WHERE user_id = auth.uid()</p>
+        <p className="text-sm font-bold text-white">Validando Credenciales y Ruta Asignada (Rol: collector)...</p>
+        <p className="text-xs text-slate-400 font-mono">SELECT assigned_route_id, organization_id FROM public.profiles WHERE id = auth.uid()</p>
       </div>
     );
   }
@@ -46,7 +42,7 @@ export const CollectorRouteGuard: React.FC<CollectorRouteGuardProps> = ({
   if (!isAuthenticated) {
     return (
       <div className="py-2">
-        <CollectorLoginView message="Debes identificarte con tu usuario de rutero para iniciar el recorrido de cobro." />
+        <CollectorLoginView message="Debes identificarte con tu usuario 'collector' para iniciar el recorrido de cobro." />
       </div>
     );
   }
@@ -63,7 +59,7 @@ export const CollectorRouteGuard: React.FC<CollectorRouteGuardProps> = ({
             <span className="px-2.5 py-0.5 rounded text-[10px] font-bold uppercase bg-rose-500/20 text-rose-300">
               Acceso No Autorizado (Rol: Cliente)
             </span>
-            <h3 className="text-lg font-bold text-white mt-1">Terminal Exclusiva para Cobradores</h3>
+            <h3 className="text-lg font-bold text-white mt-1">Terminal Exclusiva para Cobradores ('collector')</h3>
             <p className="text-xs text-slate-300 mt-1">
               Tu cuenta de deudor no tiene permisos para acceder al sistema operativo de cobro en calle.
             </p>
@@ -72,7 +68,7 @@ export const CollectorRouteGuard: React.FC<CollectorRouteGuardProps> = ({
             onClick={() => switchDemoUser('cobrador@rutacapital.co')}
             className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs"
           >
-            Iniciar como Cobrador Autorizado
+            Iniciar como Collector Autorizado
           </button>
         </div>
       </div>
@@ -80,9 +76,9 @@ export const CollectorRouteGuard: React.FC<CollectorRouteGuardProps> = ({
   }
 
   // DETERMINACIÓN DE LA RUTA ACTIVA:
-  // Si es cobrador: ESTRICTAMENTE su ruta asignada (imposible ver otra ruta por RLS)
-  // Si es admin/socio: Puede supervisar cualquier ruta
-  const isSupervisingAdmin = role === 'admin' || role === 'socio';
+  // Si es collector / cobrador: ESTRICTAMENTE su ruta asignada (imposible ver otra ruta por RLS)
+  // Si es super_admin / admin / socio: Puede supervisar las rutas de su organización
+  const isSupervisingAdmin = isSuperAdmin || isAdmin || isSocio;
   const effectiveRouteId = isSupervisingAdmin
     ? supervisedRouteId 
     : (profile?.assignedRouteId || 'route-1');
@@ -98,13 +94,18 @@ export const CollectorRouteGuard: React.FC<CollectorRouteGuardProps> = ({
             <Bike className="w-6 h-6 stroke-[2.2]" />
           </div>
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="text-xs sm:text-sm font-black text-white truncate">
                 {profile?.fullName}
               </span>
               <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                {role === 'cobrador' ? 'RUTERO ACTIVO' : 'SUPERVISIÓN CFO'}
+                {isCollector ? `NIVEL 3: COLLECTOR` : isSuperAdmin ? 'NIVEL 1: SUPER_ADMIN' : 'NIVEL 2: ADMIN'}
               </span>
+              {profile?.organizationId && (
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+                  Org: {profile.organizationId}
+                </span>
+              )}
             </div>
             <div className="flex items-center gap-1.5 text-[11px] text-slate-300 mt-0.5">
               <MapPin className="w-3 h-3 text-emerald-400" />
@@ -136,10 +137,10 @@ export const CollectorRouteGuard: React.FC<CollectorRouteGuardProps> = ({
             </div>
           )}
 
-          {role === 'cobrador' && (
+          {isCollector && (
             <div className="bg-slate-950 px-2.5 py-1 rounded-xl border border-slate-800 text-[11px] font-mono text-emerald-400 flex items-center gap-1">
               <Lock className="w-3 h-3 text-emerald-400" />
-              <span>RLS Aislado</span>
+              <span>Ruta Aislada RLS</span>
             </div>
           )}
 

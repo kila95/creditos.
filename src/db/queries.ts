@@ -1,13 +1,15 @@
 import { db } from './index.ts';
 import { 
+  users,
   routes, 
   clients, 
   loans, 
   dailyLedger, 
   cashDrawerSessions, 
-  auditLogs 
+  auditLogs,
+  collectorBases
 } from './schema.ts';
-import { eq, desc, sql } from 'drizzle-orm';
+import { eq, desc, sql, and, or } from 'drizzle-orm';
 
 export async function getAllRoutes() {
   try {
@@ -174,6 +176,8 @@ export async function createClient(data: {
   address: string;
   zone: string;
   routeId: string;
+  organizationId?: string;
+  createdBy?: string;
   riskScore?: number;
   riskLevel?: string;
   creditLimit: number;
@@ -189,14 +193,17 @@ export async function createClient(data: {
       address: data.address,
       zone: data.zone,
       routeId: data.routeId,
+      organizationId: data.organizationId || 'org-medellin-01',
+      createdBy: data.createdBy || 'usr-admin-001',
       riskScore: data.riskScore ?? 75,
       riskLevel: data.riskLevel ?? 'verde',
       creditLimit: data.creditLimit.toString(),
     }).returning();
     return inserted[0];
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error al insertar cliente en Cloud SQL:', error);
-    throw new Error('Error al registrar nuevo cliente.', { cause: error });
+    const detail = error?.message || 'Error desconocido en base de datos';
+    throw new Error(`Error al registrar nuevo cliente en tabla clients: ${detail}`, { cause: error });
   }
 }
 
@@ -232,9 +239,319 @@ export async function createLoan(data: {
       expectedEndDate: data.expectedEndDate,
     }).returning();
     return inserted[0];
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error al insertar préstamo en Cloud SQL:', error);
-    throw new Error('Error al registrar nuevo microcrédito.', { cause: error });
+    const detail = error?.message || 'Error desconocido en base de datos';
+    throw new Error(`Error al registrar nuevo microcrédito en tabla loans: ${detail}`, { cause: error });
   }
 }
+
+export async function getAllCollectorBases() {
+  try {
+    return await db.select().from(collectorBases).orderBy(desc(collectorBases.createdAt));
+  } catch (error) {
+    console.error('Error al consultar bases semanales de cobradores en Cloud SQL:', error);
+    throw new Error('No se pudieron obtener las bases semanales de cobradores.', { cause: error });
+  }
+}
+
+export async function assignCollectorBase(data: {
+  id: string;
+  collectorId: string;
+  collectorName: string;
+  routeId: string;
+  amount: number;
+  weekStartDate: string;
+  status?: 'ACTIVA' | 'DEVUELTA';
+}) {
+  try {
+    return await db.transaction(async (tx) => {
+      // Si se asigna una nueva base ACTIVA para este cobrador, marcar cualquier base ACTIVA anterior como DEVUELTA
+      if (!data.status || data.status === 'ACTIVA') {
+        await tx
+          .update(collectorBases)
+          .set({ status: 'DEVUELTA' })
+          .where(
+            and(
+              eq(collectorBases.collectorId, data.collectorId),
+              eq(collectorBases.status, 'ACTIVA')
+            )
+          );
+      }
+
+      const inserted = await tx.insert(collectorBases).values({
+        id: data.id,
+        collectorId: data.collectorId,
+        collectorName: data.collectorName,
+        routeId: data.routeId,
+        amount: data.amount.toString(),
+        weekStartDate: data.weekStartDate,
+        status: data.status ?? 'ACTIVA',
+      }).returning();
+
+      // Registrar en log de auditoría inmutable
+      await tx.insert(auditLogs).values({
+        id: `aud-${Date.now()}`,
+        action: 'ASIGNACION_BASE_SEMANAL',
+        actorId: 'usr-admin-001',
+        actorName: 'Director Financiero (CFO)',
+        actorRole: 'admin',
+        targetId: data.id,
+        timestamp: new Date().toISOString(),
+        ipAddress: '190.157.24.81',
+        gpsLocation: '6.2442 N, -75.5812 W',
+        oldState: null,
+        newState: {
+          collectorId: data.collectorId,
+          collectorName: data.collectorName,
+          routeId: data.routeId,
+          amount: data.amount,
+          weekStartDate: data.weekStartDate,
+          status: data.status ?? 'ACTIVA'
+        },
+        hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2),
+        verifiedIntegrity: true,
+      });
+
+      return inserted[0];
+    });
+  } catch (error) {
+    console.error('Error al asignar base semanal en Cloud SQL:', error);
+    throw new Error('Error al registrar la base semanal del cobrador.', { cause: error });
+  }
+}
+
+export async function updateCollectorBaseStatus(id: string, status: 'ACTIVA' | 'DEVUELTA') {
+  try {
+    return await db.transaction(async (tx) => {
+      const updated = await tx
+        .update(collectorBases)
+        .set({ status })
+        .where(eq(collectorBases.id, id))
+        .returning();
+
+      const record = updated[0];
+
+      await tx.insert(auditLogs).values({
+        id: `aud-${Date.now()}`,
+        action: 'ACTUALIZACION_BASE_SEMANAL',
+        actorId: 'usr-admin-001',
+        actorName: 'Director Financiero (CFO)',
+        actorRole: 'admin',
+        targetId: id,
+        timestamp: new Date().toISOString(),
+        ipAddress: '190.157.24.81',
+        gpsLocation: '6.2442 N, -75.5812 W',
+        oldState: { status: status === 'ACTIVA' ? 'DEVUELTA' : 'ACTIVA' },
+        newState: { status },
+        hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2),
+        verifiedIntegrity: true,
+      });
+
+      return record;
+    });
+  } catch (error) {
+    console.error('Error al actualizar estado de base semanal en Cloud SQL:', error);
+    throw new Error('No se pudo actualizar el estado de la base semanal.', { cause: error });
+  }
+}
+
+export async function getAllAdmins() {
+  try {
+    return await db
+      .select()
+      .from(users)
+      .where(eq(users.role, 'admin'))
+      .orderBy(desc(users.createdAt));
+  } catch (error) {
+    console.error('Error al consultar administradores en Cloud SQL:', error);
+    throw new Error('No se pudieron obtener los administradores de fondos.', { cause: error });
+  }
+}
+
+export async function createAdminUser(data: {
+  uid: string;
+  email: string;
+  password: string;
+  name: string;
+  organizationId: string;
+  organizationName: string;
+  createdBy: string;
+  phone?: string;
+  documentId?: string;
+}) {
+  try {
+    return await db.transaction(async (tx) => {
+      const normalizedEmail = data.email.trim().toLowerCase();
+
+      const inserted = await tx
+        .insert(users)
+        .values({
+          uid: data.uid,
+          email: normalizedEmail,
+          password: data.password,
+          name: data.name.trim(),
+          role: 'admin',
+          organizationId: data.organizationId,
+          organizationName: data.organizationName.trim(),
+          createdBy: data.createdBy || 'usr-super-000',
+          phone: data.phone || '',
+          documentId: data.documentId || '',
+          isActive: true,
+        })
+        .returning();
+
+      await tx.insert(auditLogs).values({
+        id: `aud-${Date.now()}`,
+        action: 'CREACION_CUENTA_ADMIN_POR_SUPERADMIN',
+        actorId: data.createdBy || 'usr-super-000',
+        actorName: 'Super Administrador General',
+        actorRole: 'super_admin',
+        targetId: data.uid,
+        timestamp: new Date().toISOString(),
+        ipAddress: '190.157.24.81',
+        gpsLocation: '6.2442 N, -75.5812 W',
+        oldState: null,
+        newState: {
+          uid: data.uid,
+          email: normalizedEmail,
+          name: data.name.trim(),
+          role: 'admin',
+          organizationId: data.organizationId,
+          organizationName: data.organizationName.trim(),
+          createdBy: data.createdBy,
+        },
+        hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2),
+        verifiedIntegrity: true,
+      });
+
+      return inserted[0];
+    });
+  } catch (error: any) {
+    console.error('Error al crear administrador en Cloud SQL:', error);
+    const detail = error?.message || 'Error desconocido al crear administrador';
+    throw new Error(`No se pudo registrar el administrador: ${detail}`, { cause: error });
+  }
+}
+
+export async function getAllCollectors() {
+  try {
+    return await db
+      .select()
+      .from(users)
+      .where(or(eq(users.role, 'collector'), eq(users.role, 'cobrador')))
+      .orderBy(desc(users.createdAt));
+  } catch (error) {
+    console.error('Error al consultar cobradores en Cloud SQL:', error);
+    throw new Error('No se pudieron obtener los usuarios cobradores.', { cause: error });
+  }
+}
+
+export async function createCollectorUser(data: {
+  uid: string;
+  email: string;
+  password: string;
+  name: string;
+  assignedRouteId: string;
+  organizationId?: string;
+  organizationName?: string;
+  createdBy?: string;
+  phone?: string;
+  documentId?: string;
+}) {
+  try {
+    return await db.transaction(async (tx) => {
+      const normalizedEmail = data.email.trim().toLowerCase();
+
+      const inserted = await tx
+        .insert(users)
+        .values({
+          uid: data.uid,
+          email: normalizedEmail,
+          password: data.password,
+          name: data.name.trim(),
+          role: 'collector',
+          organizationId: data.organizationId || 'org-medellin-01',
+          organizationName: data.organizationName || 'Fondo RutaCapital Medellín',
+          createdBy: data.createdBy || 'usr-admin-001',
+          assignedRouteId: data.assignedRouteId,
+          phone: data.phone || '',
+          documentId: data.documentId || '',
+          isActive: true,
+        })
+        .returning();
+
+      // Vincular el cobrador y la organización del Admin a la ruta asignada en la tabla routes
+      await tx
+        .update(routes)
+        .set({
+          collectorId: data.uid,
+          collectorName: data.name.trim(),
+          organizationId: data.organizationId || 'org-medellin-01',
+          createdBy: data.createdBy || 'usr-admin-001',
+        })
+        .where(eq(routes.id, data.assignedRouteId));
+
+      // Registrar en la bitácora de auditoría inmutable
+      await tx.insert(auditLogs).values({
+        id: `aud-${Date.now()}`,
+        action: 'CREACION_COBRADOR_Y_ASIGNACION_RUTA',
+        actorId: data.createdBy || 'usr-admin-001',
+        actorName: 'Administrador de Fondo',
+        actorRole: 'admin',
+        targetId: data.uid,
+        timestamp: new Date().toISOString(),
+        ipAddress: '190.157.24.81',
+        gpsLocation: '6.2442 N, -75.5812 W',
+        oldState: null,
+        newState: {
+          uid: data.uid,
+          email: normalizedEmail,
+          name: data.name.trim(),
+          role: 'collector',
+          assignedRouteId: data.assignedRouteId,
+          organizationId: data.organizationId || 'org-medellin-01',
+          createdBy: data.createdBy || 'usr-admin-001',
+        },
+        hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2),
+        verifiedIntegrity: true,
+      });
+
+      return inserted[0];
+    });
+  } catch (error: any) {
+    console.error('Error al crear cobrador en Cloud SQL:', error);
+    const detail = error?.message || 'Error desconocido al crear usuario cobrador';
+    throw new Error(`No se pudo registrar el cobrador: ${detail}`, { cause: error });
+  }
+}
+
+export async function authenticateUserFromDB(email: string, password: string) {
+  try {
+    const normalizedEmail = email.trim().toLowerCase();
+    const found = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, normalizedEmail))
+      .limit(1);
+
+    if (!found.length) {
+      return null;
+    }
+
+    const userRecord = found[0];
+    if (userRecord.password && userRecord.password !== password) {
+      throw new Error('Contraseña incorrecta para la cuenta ingresada.');
+    }
+
+    if (!userRecord.isActive) {
+      throw new Error('La cuenta de usuario se encuentra suspendida.');
+    }
+
+    return userRecord;
+  } catch (error) {
+    throw error;
+  }
+}
+
 

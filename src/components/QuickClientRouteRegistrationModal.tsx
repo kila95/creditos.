@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { RouteData, ClientProfile, LoanDetail } from '../data/mockData';
 import { formatCOP } from '../utils/financialCalculations';
+import { insertClientAndLoanToDB } from '../services/clientSyncService';
 
 interface QuickClientRouteRegistrationModalProps {
   currentRoute: RouteData;
@@ -38,9 +39,10 @@ export const QuickClientRouteRegistrationModal: React.FC<QuickClientRouteRegistr
   const [interestRate, setInterestRate] = useState<number>(20); // 20% flat estándar en Medellín
   const [termDays, setTermDays] = useState<number>(24); // 24 días hábiles
 
-  // Estados de carga y error
+  // Estados de carga y error detallado de Base de Datos / RLS
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorDetails, setErrorDetails] = useState<{ code?: string; hint?: string } | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // Cálculos financieros automáticos
@@ -50,131 +52,52 @@ export const QuickClientRouteRegistrationModal: React.FC<QuickClientRouteRegistr
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
+    setErrorDetails(null);
 
     if (!name.trim() || !phone.trim() || !address.trim()) {
-      setErrorMessage('Por favor ingresa Nombre, Teléfono/WhatsApp y Dirección.');
+      setErrorMessage('Por favor ingresa Nombre Completo, Teléfono/WhatsApp y Dirección.');
       return;
     }
 
     setIsSubmitting(true);
 
-    const clientId = `cli-${Date.now().toString().slice(-6)}`;
-    const loanId = `loan-${Date.now().toString().slice(-6)}`;
-    const loanCode = `PREST-${currentRoute.code.slice(-3)}-${Date.now().toString().slice(-4)}`;
-    const todayStr = new Date().toISOString().split('T')[0];
-
-    const dueDateObj = new Date();
-    dueDateObj.setDate(dueDateObj.getDate() + termDays);
-    const dueDateStr = dueDateObj.toISOString().split('T')[0];
-
-    const clientDocument = document.trim() || `CC ${Math.floor(1000000000 + Math.random() * 900000000)}`;
-
-    const newClient: ClientProfile = {
-      id: clientId,
+    const { data, error } = await insertClientAndLoanToDB({
       name: name.trim(),
       tradeName: tradeName.trim() || name.trim(),
-      category: 'Micronegocio Local',
-      document: clientDocument,
+      document: document.trim(),
       phone: phone.trim(),
+      category: 'Micronegocio Local',
       address: address.trim(),
       neighborhood: currentRoute.zone,
       routeId: currentRoute.id,
-      riskTier: 'A_excelente',
-      daysOverdue: 0,
-      hasPreventiveBlock: false,
-      guarantorName: 'Fiador de Ruta',
-      guarantorPhone: phone.trim(),
-      lat: 6.2518,
-      lng: -75.6142
-    };
-
-    const newLoan: LoanDetail = {
-      id: loanId,
-      code: loanCode,
-      clientId,
-      clientName: name.trim(),
-      tradeName: tradeName.trim() || name.trim(),
-      routeId: currentRoute.id,
       principal,
       interestRate,
-      totalDebt,
-      installmentAmount: dailyInstallment,
       termDays,
-      installmentsPaid: 0,
-      totalCollected: 0,
-      remainingBalance: totalDebt,
-      disbursedDate: todayStr,
-      dueDate: dueDateStr,
-      daysOverdue: 0,
-      status: 'activo',
-      todayPaid: false
-    };
+    });
 
-    try {
-      // 1. Enviar cliente en tiempo real a la API / Cloud SQL (tabla clients)
-      const clientRes = await fetch('/api/clients', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: clientId,
-          documentId: clientDocument,
-          name: name.trim(),
-          alias: tradeName.trim() || null,
-          phone: phone.trim(),
-          businessType: 'Micronegocio Local',
-          address: address.trim(),
-          zone: currentRoute.zone,
-          routeId: currentRoute.id,
-          riskScore: 80,
-          riskLevel: 'verde',
-          creditLimit: principal * 2
-        })
+    setIsSubmitting(false);
+
+    // Captura estricta de errores de Supabase / RLS / Base de Datos
+    if (error || !data) {
+      console.error('❌ [Error al insertar cliente en tabla clients]:', error);
+      setErrorMessage(
+        error?.message ||
+          'La base de datos rechazó el registro. Verifica las políticas RLS (INSERT) en la tabla clients.'
+      );
+      setErrorDetails({
+        code: error?.code,
+        hint: error?.hint,
       });
-
-      if (!clientRes.ok) {
-        console.warn('Advertencia al guardar cliente en Cloud SQL, aplicando persistencia optimista');
-      }
-
-      // 2. Enviar préstamo inicial en tiempo real (tabla loans)
-      const loanRes = await fetch('/api/loans', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: loanId,
-          clientId,
-          routeId: currentRoute.id,
-          principalAmount: principal,
-          interestRate,
-          totalAmount: totalDebt,
-          dailyQuota: dailyInstallment,
-          remainingBalance: totalDebt,
-          totalDays: termDays,
-          paidDays: 0,
-          status: 'active',
-          startDate: todayStr,
-          expectedEndDate: dueDateStr
-        })
-      });
-
-      if (!loanRes.ok) {
-        console.warn('Advertencia al guardar préstamo en Cloud SQL, aplicando persistencia optimista');
-      }
-
-      setSuccessMessage(`¡${name.trim()} guardado e integrado a ${currentRoute.name}!`);
-
-      setTimeout(() => {
-        onClientRegistered(newClient, newLoan);
-        onClose();
-      }, 700);
-
-    } catch (err: any) {
-      console.error('Error registrando cliente en calle:', err);
-      // Persistencia local instantánea para que el rutero no se detenga en la calle
-      onClientRegistered(newClient, newLoan);
-      onClose();
-    } finally {
-      setIsSubmitting(false);
+      return;
     }
+
+    // Inserción confirmada en Base de Datos -> Actualizar listado en tiempo real sin recargar la página
+    onClientRegistered(data.client, data.loan);
+    setSuccessMessage(`¡${data.client.name} guardado en la base de datos e integrado a ${currentRoute.name}!`);
+
+    setTimeout(() => {
+      onClose();
+    }, 650);
   };
 
   return (
@@ -205,11 +128,23 @@ export const QuickClientRouteRegistrationModal: React.FC<QuickClientRouteRegistr
           </button>
         </div>
 
-        {/* MENSAJES DE ESTADO */}
+        {/* MENSAJES DE ESTADO Y DIAGNÓSTICO RLS / SUPABASE */}
         {errorMessage && (
-          <div className="mx-4 mt-3 p-3 rounded-2xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span>{errorMessage}</span>
+          <div className="mx-4 mt-3 p-3.5 rounded-2xl bg-rose-950/70 border border-rose-500/50 text-rose-200 text-xs space-y-1.5">
+            <div className="flex items-start gap-2 font-bold text-rose-300">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{errorMessage}</span>
+            </div>
+            {errorDetails?.code && (
+              <div className="text-[11px] font-mono text-rose-300/90 pl-6">
+                Código SQL/Supabase: {errorDetails.code}
+              </div>
+            )}
+            {errorDetails?.hint && (
+              <div className="text-[11px] text-rose-200/80 pl-6">
+                Sugerencia: {errorDetails.hint}
+              </div>
+            )}
           </div>
         )}
 

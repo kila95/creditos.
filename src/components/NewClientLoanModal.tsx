@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { RouteData, ClientProfile, LoanDetail } from '../data/mockData';
 import { formatCOP } from '../utils/financialCalculations';
+import { insertClientAndLoanToDB } from '../services/clientSyncService';
 
 interface NewClientLoanModalProps {
   routes: RouteData[];
@@ -46,6 +47,7 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
   // Estados de interfaz
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [errorDetails, setErrorDetails] = useState<{ code?: string; hint?: string } | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   // Cálculos automáticos del crédito
@@ -56,6 +58,7 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    setErrorDetails(null);
 
     if (!name.trim() || !document.trim() || !phone.trim() || !address.trim()) {
       setErrorMsg('Por favor completa todos los campos obligatorios del cliente (Nombre, Cédula, Teléfono y Dirección).');
@@ -69,126 +72,43 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
 
     setIsSubmitting(true);
 
-    const clientId = `cli-${Date.now().toString().slice(-6)}`;
-    const loanId = `loan-${Date.now().toString().slice(-6)}`;
-    const loanCode = `PREST-MED-${Date.now().toString().slice(-4)}`;
-    const todayStr = new Date().toISOString().split('T')[0];
-
-    // Fecha esperada de fin sumando días
-    const dueDateObj = new Date();
-    dueDateObj.setDate(dueDateObj.getDate() + termDays);
-    const dueDateStr = dueDateObj.toISOString().split('T')[0];
-
-    const clientPayload: ClientProfile = {
-      id: clientId,
+    const { data, error } = await insertClientAndLoanToDB({
       name: name.trim(),
       tradeName: tradeName.trim() || name.trim(),
-      category,
       document: document.trim(),
       phone: phone.trim(),
+      category,
       address: address.trim(),
       neighborhood: neighborhood.trim(),
       routeId,
-      riskTier: 'A_excelente',
-      daysOverdue: 0,
-      hasPreventiveBlock: false,
-      guarantorName: guarantorName.trim() || 'Sin fiador registrado',
-      guarantorPhone: guarantorPhone.trim() || phone.trim(),
-      lat: 6.2518,
-      lng: -75.6142
-    };
-
-    const loanPayload: LoanDetail = {
-      id: loanId,
-      code: loanCode,
-      clientId,
-      clientName: name.trim(),
-      tradeName: tradeName.trim() || name.trim(),
-      routeId,
+      guarantorName: guarantorName.trim(),
+      guarantorPhone: guarantorPhone.trim(),
       principal,
       interestRate,
-      totalDebt,
-      installmentAmount: dailyInstallment,
       termDays,
-      installmentsPaid: 0,
-      totalCollected: 0,
-      remainingBalance: totalDebt,
-      disbursedDate: todayStr,
-      dueDate: dueDateStr,
-      daysOverdue: 0,
-      status: 'activo',
-      todayPaid: false
-    };
+    });
 
-    try {
-      // 1. Guardar cliente en Cloud SQL
-      const clientRes = await fetch('/api/clients', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: clientId,
-          documentId: document.trim(),
-          name: name.trim(),
-          alias: tradeName.trim() || null,
-          phone: phone.trim(),
-          businessType: category,
-          address: address.trim(),
-          zone: neighborhood.trim(),
-          routeId,
-          riskScore: 80,
-          riskLevel: 'verde',
-          creditLimit: principal * 2
-        })
+    setIsSubmitting(false);
+
+    if (error || !data) {
+      console.error('❌ [Error al insertar cliente en tabla clients]:', error);
+      setErrorMsg(
+        error?.message ||
+          'La base de datos rechazó el registro. Verifica las políticas RLS (INSERT) en la tabla clients.'
+      );
+      setErrorDetails({
+        code: error?.code,
+        hint: error?.hint,
       });
-
-      if (!clientRes.ok) {
-        const errorData = await clientRes.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Error al persistir cliente en Cloud SQL');
-      }
-
-      // 2. Guardar crédito en Cloud SQL
-      const loanRes = await fetch('/api/loans', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: loanId,
-          clientId,
-          routeId,
-          principalAmount: principal,
-          interestRate,
-          totalAmount: totalDebt,
-          dailyQuota: dailyInstallment,
-          remainingBalance: totalDebt,
-          totalDays: termDays,
-          paidDays: 0,
-          status: 'active',
-          startDate: todayStr,
-          expectedEndDate: dueDateStr
-        })
-      });
-
-      if (!loanRes.ok) {
-        const errorData = await loanRes.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Error al persistir préstamo en Cloud SQL');
-      }
-
-      setSuccessMsg(`¡Cliente ${name} y Crédito ${loanCode} creados exitosamente en Cloud SQL!`);
-      setTimeout(() => {
-        onClientCreated(clientPayload, loanPayload);
-        onClose();
-      }, 900);
-
-    } catch (err: any) {
-      console.error('Error creando cliente/crédito:', err);
-      // Fallback local optimista
-      onClientCreated(clientPayload, loanPayload);
-      setSuccessMsg(`Cliente creado localmente (${err.message})`);
-      setTimeout(() => {
-        onClose();
-      }, 1000);
-    } finally {
-      setIsSubmitting(false);
+      return;
     }
+
+    // Actualizar el estado en tiempo real tras confirmar la inserción en base de datos
+    onClientCreated(data.client, data.loan);
+    setSuccessMsg(`¡Cliente ${data.client.name} y Crédito ${data.loan.code} guardados exitosamente en la base de datos!`);
+    setTimeout(() => {
+      onClose();
+    }, 700);
   };
 
   return (
@@ -206,7 +126,7 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
                 Vincular Nuevo Cliente & Microcrédito
               </h2>
               <p className="text-xs text-slate-400">
-                Apertura formal de crédito con persistencia directa en Cloud SQL
+                Apertura formal de crédito con validación de inserción en Base de Datos y RLS
               </p>
             </div>
           </div>
@@ -220,9 +140,21 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
 
         {/* MENSAJES DE ESTADO */}
         {errorMsg && (
-          <div className="mx-5 mt-4 p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span>{errorMsg}</span>
+          <div className="mx-5 mt-4 p-3.5 rounded-xl bg-rose-950/70 border border-rose-500/50 text-rose-200 text-xs space-y-1.5">
+            <div className="flex items-start gap-2 font-bold text-rose-300">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{errorMsg}</span>
+            </div>
+            {errorDetails?.code && (
+              <div className="text-[11px] font-mono text-rose-300/90 pl-6">
+                Código SQL/Supabase: {errorDetails.code}
+              </div>
+            )}
+            {errorDetails?.hint && (
+              <div className="text-[11px] text-rose-200/80 pl-6">
+                Sugerencia: {errorDetails.hint}
+              </div>
+            )}
           </div>
         )}
 

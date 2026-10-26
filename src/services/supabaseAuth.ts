@@ -20,22 +20,60 @@ export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKe
 });
 
 // ==============================================================================
-// USUARIOS DEMO PRE-CONFIGURADOS PARA VALIDACIÓN INMEDIATA DEL SISTEMA RBAC
+// JERARQUÍA DE 3 NIVELES PRE-CONFIGURADA (super_admin -> admin -> collector)
 // ==============================================================================
 export const DEMO_USERS: Record<string, { password: string; profile: UserProfile }> = {
+  'superadmin@rutacapital.co': {
+    password: 'super123@Medellin',
+    profile: {
+      id: 'usr-super-000',
+      email: 'superadmin@rutacapital.co',
+      fullName: 'Esteban Ochoa (Super Admin Global)',
+      role: 'super_admin',
+      organizationId: 'org-global-hq',
+      organizationName: 'RutaCapital Holding Matriz',
+      phone: '+57 312 890 1234',
+      partnerEquityPct: 100.0,
+      capitalInvestedCop: 100000000,
+      documentId: 'CC 71.392.810',
+      isActive: true,
+      createdAt: '2025-01-01T08:00:00Z',
+    }
+  },
   'admin@rutacapital.co': {
     password: 'admin123@Medellin',
     profile: {
       id: 'usr-admin-001',
       email: 'admin@rutacapital.co',
-      fullName: 'Esteban Ochoa (CFO & Arquitecto)',
+      fullName: 'Carlos Andrés Vélez (Admin Fondo Medellín)',
       role: 'admin',
-      phone: '+57 312 890 1234',
+      organizationId: 'org-medellin-01',
+      organizationName: 'Fondo RutaCapital Medellín Central',
+      createdBy: 'usr-super-000',
+      phone: '+57 310 411 2233',
       partnerEquityPct: 40.0,
       capitalInvestedCop: 40000000,
-      documentId: 'CC 71.392.810',
+      documentId: 'CC 71.882.104',
       isActive: true,
-      createdAt: '2025-01-01T08:00:00Z',
+      createdAt: '2025-01-02T08:00:00Z',
+    }
+  },
+  'admin2@rutacapital.co': {
+    password: 'admin123@Medellin',
+    profile: {
+      id: 'usr-admin-002',
+      email: 'admin2@rutacapital.co',
+      fullName: 'Jorge Iván Montoya (Admin Fondo Norte)',
+      role: 'admin',
+      organizationId: 'org-norte-02',
+      organizationName: 'Fondo Microcrédito Bello & Norte',
+      createdBy: 'usr-super-000',
+      phone: '+57 311 522 8899',
+      partnerEquityPct: 30.0,
+      capitalInvestedCop: 30000000,
+      documentId: 'CC 98.541.220',
+      isActive: true,
+      createdAt: '2025-01-03T08:00:00Z',
     }
   },
   'socio1@rutacapital.co': {
@@ -45,6 +83,9 @@ export const DEMO_USERS: Record<string, { password: string; profile: UserProfile
       email: 'socio1@rutacapital.co',
       fullName: 'Dr. Alejandro Restrepo (Socio Inversionista A)',
       role: 'socio',
+      organizationId: 'org-medellin-01',
+      organizationName: 'Fondo RutaCapital Medellín Central',
+      createdBy: 'usr-admin-001',
       phone: '+57 300 456 7890',
       partnerEquityPct: 35.0,
       capitalInvestedCop: 35000000,
@@ -60,6 +101,9 @@ export const DEMO_USERS: Record<string, { password: string; profile: UserProfile
       email: 'socio2@rutacapital.co',
       fullName: 'Dra. Valentina Giraldo (Socio Inversionista B)',
       role: 'socio',
+      organizationId: 'org-medellin-01',
+      organizationName: 'Fondo RutaCapital Medellín Central',
+      createdBy: 'usr-admin-001',
       phone: '+57 311 234 5678',
       partnerEquityPct: 25.0,
       capitalInvestedCop: 25000000,
@@ -73,8 +117,11 @@ export const DEMO_USERS: Record<string, { password: string; profile: UserProfile
     profile: {
       id: 'usr-collector-004',
       email: 'cobrador@rutacapital.co',
-      fullName: 'Jhon Alexander Zapata (Cobrador San Javier)',
-      role: 'cobrador',
+      fullName: 'Jhon Alexander Zapata (Collector San Javier)',
+      role: 'collector',
+      organizationId: 'org-medellin-01',
+      organizationName: 'Fondo RutaCapital Medellín Central',
+      createdBy: 'usr-admin-001',
       phone: '+57 314 555 9012',
       assignedRouteId: 'route-1',
       documentId: 'CC 1.017.543.210',
@@ -87,8 +134,11 @@ export const DEMO_USERS: Record<string, { password: string; profile: UserProfile
     profile: {
       id: 'usr-collector-005',
       email: 'cobrador2@rutacapital.co',
-      fullName: 'Carlos Mario Henao (Cobrador Manrique)',
-      role: 'cobrador',
+      fullName: 'Carlos Mario Henao (Collector Manrique)',
+      role: 'collector',
+      organizationId: 'org-medellin-01',
+      organizationName: 'Fondo RutaCapital Medellín Central',
+      createdBy: 'usr-admin-001',
       phone: '+57 301 445 9932',
       assignedRouteId: 'route-2',
       documentId: 'CC 70.892.411',
@@ -103,6 +153,8 @@ export const DEMO_USERS: Record<string, { password: string; profile: UserProfile
       email: 'cliente@ejemplo.com',
       fullName: 'Doña Gloria Inés Montoya (Cliente - Peluquería)',
       role: 'cliente',
+      organizationId: 'org-medellin-01',
+      createdBy: 'usr-admin-001',
       phone: '+57 310 987 6543',
       documentId: 'CC 43.876.543',
       isActive: true,
@@ -115,14 +167,13 @@ const LOCAL_STORAGE_SESSION_KEY = 'rutacapital_auth_session';
 const LOCAL_STORAGE_REMEMBER_KEY = 'rutacapital_remember_collector';
 
 /**
- * Autenticación de usuario con Correo y Contraseña
+ * Autenticación de usuario con Correo y Contraseña (3 niveles: super_admin, admin, collector)
  */
 export async function signInWithEmailPassword(
   email: string, 
   password: string,
   rememberMe: boolean = true
 ): Promise<{ session: AuthSession | null; error: string | null }> {
-  // Si Supabase real está configurado en producción con llaves válidas
   if (isLiveSupabaseConfigured) {
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -135,7 +186,6 @@ export async function signInWithEmailPassword(
       }
 
       if (data.user) {
-        // Consultar el perfil y rol desde la tabla public.profiles en Supabase
         const { data: profileData, error: profileErr } = await supabase
           .from('profiles')
           .select('*')
@@ -156,6 +206,10 @@ export async function signInWithEmailPassword(
             email: profileData.email,
             fullName: profileData.full_name,
             role: profileData.role as UserRole,
+            organizationId: profileData.organization_id || data.user.user_metadata?.organization_id || 'org-medellin-01',
+            organizationName: profileData.organization_name || data.user.user_metadata?.organization_name || 'Fondo RutaCapital',
+            createdBy: profileData.created_by || data.user.user_metadata?.created_by,
+            assignedRouteId: profileData.assigned_route_id || data.user.user_metadata?.assigned_route_id || 'route-1',
             phone: profileData.phone,
             partnerEquityPct: profileData.partner_equity_pct,
             capitalInvestedCop: profileData.capital_invested_cop,
@@ -170,12 +224,63 @@ export async function signInWithEmailPassword(
         return { session, error: null };
       }
     } catch (err: unknown) {
-      console.warn('Error conectando a Supabase Live, usando motor RBAC local:', err);
+      console.warn('Error conectando a Supabase Live, usando motor RBAC / Cloud SQL:', err);
     }
   }
 
-  // Fallback / Entorno de Demostración Local de Alta Precisión
   const normalizedEmail = email.trim().toLowerCase();
+
+  // 2. Verificar contra la tabla `users` en Cloud SQL PostgreSQL
+  try {
+    const dbAuthRes = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: normalizedEmail, password }),
+    });
+
+    if (dbAuthRes.ok) {
+      const dbUser = await dbAuthRes.json();
+      const dbProfile: UserProfile = {
+        id: dbUser.id,
+        email: dbUser.email,
+        fullName: dbUser.fullName,
+        role: (dbUser.role as UserRole) || 'collector',
+        organizationId: dbUser.organizationId || 'org-medellin-01',
+        organizationName: dbUser.organizationName || 'Fondo RutaCapital Medellín',
+        createdBy: dbUser.createdBy || 'usr-admin-001',
+        assignedRouteId: dbUser.assignedRouteId || 'route-1',
+        phone: dbUser.phone || '',
+        documentId: dbUser.documentId || '',
+        isActive: dbUser.isActive ?? true,
+        createdAt: dbUser.createdAt || new Date().toISOString(),
+        lastLoginAt: new Date().toISOString(),
+      };
+
+      DEMO_USERS[normalizedEmail] = {
+        password,
+        profile: dbProfile,
+      };
+
+      const session: AuthSession = {
+        user: { id: dbProfile.id, email: dbProfile.email },
+        profile: dbProfile,
+        token: `token-rbac-db-${Date.now()}`,
+      };
+
+      localStorage.setItem(LOCAL_STORAGE_SESSION_KEY, JSON.stringify(session));
+      return { session, error: null };
+    } else if (dbAuthRes.status === 401) {
+      const errData = await dbAuthRes.json().catch(() => ({}));
+      return {
+        session: null,
+        error: errData.error || 'Contraseña incorrecta para la cuenta ingresada.',
+      };
+    }
+  } catch (dbErr) {
+    console.warn('Aviso consultando /api/auth/login, verificando usuarios preconfigurados:', dbErr);
+  }
+
+  // 3. Fallback / Usuarios preconfigurados del sistema RBAC
   const foundUser = DEMO_USERS[normalizedEmail];
 
   if (!foundUser) {
@@ -188,7 +293,7 @@ export async function signInWithEmailPassword(
   if (foundUser.password !== password) {
     return { 
       session: null, 
-      error: 'Contraseña incorrecta. Verifique su clave o solicite restablecimiento al CFO.' 
+      error: 'Contraseña incorrecta. Verifique su clave o solicite restablecimiento al Super Admin / Admin.' 
     };
   }
 
@@ -220,15 +325,275 @@ export async function signInWithEmailPassword(
 }
 
 /**
- * Obtener el correo guardado para recordar sesión de cobrador
+ * NIVEL 1 -> NIVEL 2: Creación de Nueva Cuenta de Administrador ('admin') por el 'super_admin'
  */
+export async function registerNewAdminAccount(input: {
+  email: string;
+  password: string;
+  fullName: string;
+  organizationName: string;
+  createdBySuperAdminId: string;
+  phone?: string;
+  documentId?: string;
+}): Promise<{ profile: UserProfile | null; error: string | null }> {
+  const normalizedEmail = input.email.trim().toLowerCase();
+  let generatedUid = `usr-adm-${Date.now().toString().slice(-6)}`;
+  const generatedOrgId = `org-${input.organizationName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .slice(0, 16)}-${Date.now().toString().slice(-4)}`;
+
+  try {
+    if (isLiveSupabaseConfigured) {
+      const superProvisionClient = createClient(supabaseUrl, supabaseAnonKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+
+      const { data: signUpData, error: signUpError } = await superProvisionClient.auth.signUp({
+        email: normalizedEmail,
+        password: input.password,
+        options: {
+          data: {
+            full_name: input.fullName.trim(),
+            role: 'admin',
+            organization_id: generatedOrgId,
+            organization_name: input.organizationName.trim(),
+            created_by: input.createdBySuperAdminId,
+          },
+        },
+      });
+
+      if (signUpError) {
+        console.error('❌ [Supabase Auth SignUp Error - Admin]:', signUpError);
+        return {
+          profile: null,
+          error: `Error en Supabase Auth (auth.users): ${signUpError.message}`,
+        };
+      }
+
+      if (signUpData.user?.id) {
+        generatedUid = signUpData.user.id;
+      }
+
+      const { error: profileError } = await supabase.from('profiles').upsert([
+        {
+          id: generatedUid,
+          email: normalizedEmail,
+          full_name: input.fullName.trim(),
+          role: 'admin',
+          organization_id: generatedOrgId,
+          organization_name: input.organizationName.trim(),
+          created_by: input.createdBySuperAdminId,
+          phone: input.phone?.trim() || null,
+          document_id: input.documentId?.trim() || null,
+          is_active: true,
+        },
+      ]);
+
+      if (profileError) {
+        console.error('❌ [Supabase Profiles Upsert Error - Admin]:', profileError);
+        return {
+          profile: null,
+          error: `Error al vincular perfil Admin en tabla profiles (RLS): ${profileError.message}`,
+        };
+      }
+    }
+
+    const apiRes = await fetch('/api/admins', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        uid: generatedUid,
+        email: normalizedEmail,
+        password: input.password,
+        name: input.fullName.trim(),
+        organizationId: generatedOrgId,
+        organizationName: input.organizationName.trim(),
+        createdBy: input.createdBySuperAdminId,
+        phone: input.phone?.trim() || '',
+        documentId: input.documentId?.trim() || '',
+      }),
+    });
+
+    if (!apiRes.ok) {
+      const errBody = await apiRes.json().catch(() => ({}));
+      return {
+        profile: null,
+        error: errBody.error || 'No se pudo registrar la cuenta de Administrador en la base de datos.',
+      };
+    }
+
+    const newAdminProfile: UserProfile = {
+      id: generatedUid,
+      email: normalizedEmail,
+      fullName: input.fullName.trim(),
+      role: 'admin',
+      organizationId: generatedOrgId,
+      organizationName: input.organizationName.trim(),
+      createdBy: input.createdBySuperAdminId,
+      phone: input.phone?.trim() || '',
+      documentId: input.documentId?.trim() || '',
+      isActive: true,
+      createdAt: new Date().toISOString(),
+    };
+
+    DEMO_USERS[normalizedEmail] = {
+      password: input.password,
+      profile: newAdminProfile,
+    };
+
+    return { profile: newAdminProfile, error: null };
+  } catch (err: any) {
+    console.error('❌ [Excepción creando administrador]:', err);
+    return {
+      profile: null,
+      error: err?.message || 'Error inesperado al crear la cuenta de Administrador.',
+    };
+  }
+}
+
+/**
+ * NIVEL 2 -> NIVEL 3: Creación de Nuevo Usuario Cobrador ('collector') por un 'admin'
+ */
+export async function registerNewCollectorAccount(input: {
+  email: string;
+  password: string;
+  fullName: string;
+  assignedRouteId: string;
+  organizationId?: string;
+  organizationName?: string;
+  createdByAdminId?: string;
+  phone?: string;
+  documentId?: string;
+}): Promise<{ profile: UserProfile | null; error: string | null }> {
+  const normalizedEmail = input.email.trim().toLowerCase();
+  let generatedUid = `usr-col-${Date.now().toString().slice(-6)}`;
+  const orgId = input.organizationId || 'org-medellin-01';
+  const orgName = input.organizationName || 'Fondo RutaCapital Medellín';
+  const creatorId = input.createdByAdminId || 'usr-admin-001';
+
+  try {
+    if (isLiveSupabaseConfigured) {
+      const adminProvisionClient = createClient(supabaseUrl, supabaseAnonKey, {
+        auth: {
+          persistSession: false,
+          autoRefreshToken: false,
+        },
+      });
+
+      const { data: signUpData, error: signUpError } = await adminProvisionClient.auth.signUp({
+        email: normalizedEmail,
+        password: input.password,
+        options: {
+          data: {
+            full_name: input.fullName.trim(),
+            role: 'collector',
+            assigned_route_id: input.assignedRouteId,
+            organization_id: orgId,
+            organization_name: orgName,
+            created_by: creatorId,
+          },
+        },
+      });
+
+      if (signUpError) {
+        console.error('❌ [Supabase Auth SignUp Error]:', signUpError);
+        return {
+          profile: null,
+          error: `Error en Supabase Auth (auth.users): ${signUpError.message}`,
+        };
+      }
+
+      if (signUpData.user?.id) {
+        generatedUid = signUpData.user.id;
+      }
+
+      const { error: profileError } = await supabase.from('profiles').upsert([
+        {
+          id: generatedUid,
+          email: normalizedEmail,
+          full_name: input.fullName.trim(),
+          role: 'collector',
+          assigned_route_id: input.assignedRouteId,
+          organization_id: orgId,
+          organization_name: orgName,
+          created_by: creatorId,
+          phone: input.phone?.trim() || null,
+          document_id: input.documentId?.trim() || null,
+          is_active: true,
+        },
+      ]);
+
+      if (profileError) {
+        console.error('❌ [Supabase Profiles Upsert Error]:', profileError);
+        return {
+          profile: null,
+          error: `Error al vincular perfil en tabla profiles (RLS): ${profileError.message}`,
+        };
+      }
+    }
+
+    const apiRes = await fetch('/api/collectors', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        uid: generatedUid,
+        email: normalizedEmail,
+        password: input.password,
+        name: input.fullName.trim(),
+        assignedRouteId: input.assignedRouteId,
+        organizationId: orgId,
+        organizationName: orgName,
+        createdBy: creatorId,
+        phone: input.phone?.trim() || '',
+        documentId: input.documentId?.trim() || '',
+      }),
+    });
+
+    if (!apiRes.ok) {
+      const errBody = await apiRes.json().catch(() => ({}));
+      console.error('❌ [Error creando cobrador en /api/collectors]:', errBody);
+      return {
+        profile: null,
+        error: errBody.error || 'No se pudo registrar el cobrador en la base de datos.',
+      };
+    }
+
+    const newProfile: UserProfile = {
+      id: generatedUid,
+      email: normalizedEmail,
+      fullName: input.fullName.trim(),
+      role: 'collector',
+      organizationId: orgId,
+      organizationName: orgName,
+      createdBy: creatorId,
+      assignedRouteId: input.assignedRouteId,
+      phone: input.phone?.trim() || '',
+      documentId: input.documentId?.trim() || '',
+      isActive: true,
+      createdAt: new Date().toISOString(),
+    };
+
+    DEMO_USERS[normalizedEmail] = {
+      password: input.password,
+      profile: newProfile,
+    };
+
+    return { profile: newProfile, error: null };
+  } catch (err: any) {
+    console.error('❌ [Excepción creando cobrador]:', err);
+    return {
+      profile: null,
+      error: err?.message || 'Error inesperado al crear la cuenta del cobrador.',
+    };
+  }
+}
+
 export function getRememberedCollectorEmail(): string | null {
   return localStorage.getItem(LOCAL_STORAGE_REMEMBER_KEY);
 }
 
-/**
- * Cerrar sesión del usuario
- */
 export async function signOutUser(): Promise<void> {
   if (isLiveSupabaseConfigured) {
     try {
@@ -240,9 +605,6 @@ export async function signOutUser(): Promise<void> {
   localStorage.removeItem(LOCAL_STORAGE_SESSION_KEY);
 }
 
-/**
- * Obtener la sesión almacenada actualmente
- */
 export function getStoredSession(): AuthSession | null {
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_SESSION_KEY);
@@ -255,8 +617,8 @@ export function getStoredSession(): AuthSession | null {
 }
 
 /**
- * Validar si un rol tiene autorización ejecutiva ('admin' o 'socio')
+ * Validar si un rol tiene autorización ejecutiva ('super_admin', 'admin' o 'socio')
  */
 export function hasExecutiveClearance(role: UserRole | undefined): boolean {
-  return role === 'admin' || role === 'socio';
+  return role === 'super_admin' || role === 'admin' || role === 'socio';
 }

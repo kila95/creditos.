@@ -23,7 +23,8 @@ import {
   ClientProfile, 
   LoanDetail, 
   RouteExpenseItem,
-  LedgerEntry 
+  LedgerEntry,
+  CollectorBase
 } from '../data/mockData';
 import { 
   formatCOP, 
@@ -36,6 +37,9 @@ import { RiskIntelligenceModal } from './RiskIntelligenceModal';
 import { DynamicRouteAssignment } from './DynamicRouteAssignment';
 import { DailyCashReconciliationModal } from './DailyCashReconciliationModal';
 import { AiNegotiationAssistantModal } from './AiNegotiationAssistantModal';
+import { CollectorWeeklyBaseManager } from './CollectorWeeklyBaseManager';
+import { AdminCollectorUsersManager, CollectorUserRecord } from './AdminCollectorUsersManager';
+import { SuperAdminTenantsManager } from './SuperAdminTenantsManager';
 import { NegotiationProposal } from '../utils/aiNegotiator';
 
 interface AdminDashboardProps {
@@ -44,6 +48,10 @@ interface AdminDashboardProps {
   loans: LoanDetail[];
   expenses: RouteExpenseItem[];
   ledger: LedgerEntry[];
+  collectorBases?: CollectorBase[];
+  onAssignCollectorBase?: (newBase: CollectorBase) => Promise<void> | void;
+  onUpdateCollectorBaseStatus?: (baseId: string, status: 'ACTIVA' | 'DEVUELTA') => Promise<void> | void;
+  onCollectorCreated?: (collector: CollectorUserRecord) => void;
   onRestructureLoan: (loanId: string) => void;
   onToggleClientBlock: (clientId: string) => void;
   onReassignClientRoute: (clientId: string, newRouteId: string) => void;
@@ -58,6 +66,10 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
   loans,
   expenses,
   ledger,
+  collectorBases = [],
+  onAssignCollectorBase,
+  onUpdateCollectorBaseStatus,
+  onCollectorCreated,
   onRestructureLoan,
   onToggleClientBlock,
   onReassignClientRoute,
@@ -282,6 +294,26 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
           </div>
         </div>
       </div>
+
+      {/* NIVEL 1 (EXCLUSIVO SUPER_ADMIN): PANEL DE CREACIÓN DE ADMINISTRADORES Y FONDOS */}
+      <SuperAdminTenantsManager />
+
+      {/* NIVEL 2 (ADMIN & SUPER_ADMIN): MÓDULO DE GESTIÓN DE COBRADORES (CREACIÓN DE USUARIOS Y ASIGNACIÓN DE RUTAS) */}
+      <AdminCollectorUsersManager
+        routes={routes}
+        onCollectorCreated={onCollectorCreated}
+        onSwitchToCollectorView={() => onNavigateToTab && onNavigateToTab('collector_street')}
+      />
+
+      {/* MÓDULO DE GESTIÓN DE BASES SEMANALES PARA COBRADORES (collector_bases) */}
+      {onAssignCollectorBase && onUpdateCollectorBaseStatus && (
+        <CollectorWeeklyBaseManager
+          routes={routes}
+          collectorBases={collectorBases}
+          onAssignBase={onAssignCollectorBase}
+          onUpdateBaseStatus={onUpdateCollectorBaseStatus}
+        />
+      )}
 
       {/* ALERTAS TEMPRANAS DE RIESGO: MORA >= 2 DÍAS (BLOQUEO Y REESTRUCTURACIÓN) */}
       <div className="bg-rose-950/20 border border-rose-900/40 rounded-2xl p-5">

@@ -10,14 +10,21 @@ import {
   jsonb 
 } from 'drizzle-orm/pg-core';
 
-// 1. USUARIOS Y PERFILES (RBAC)
+// 1. USUARIOS Y PERFILES JERÁRQUICOS (3 NIVELES: super_admin -> admin -> collector)
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
-  uid: text('uid').notNull().unique(), // Firebase Auth UID
-  email: text('email').notNull(),
+  uid: text('uid').notNull().unique(), // Supabase Auth UID / RBAC UID
+  email: text('email').notNull().unique(),
+  password: text('password'), // Contraseña temporal / hash RBAC
   name: text('name').notNull(),
-  role: text('role').notNull().default('cobrador'), // 'admin' | 'socio' | 'cobrador' | 'cliente'
+  role: text('role').notNull().default('collector'), // 'super_admin' | 'admin' | 'collector' | 'socio' | 'cobrador' | 'cliente'
+  organizationId: text('organization_id').default('org-medellin-01'), // ID del fondo/negocio del admin
+  organizationName: text('organization_name').default('Fondo RutaCapital Medellín'),
+  createdBy: text('created_by'), // UID del super_admin o admin que creó esta cuenta
   assignedRouteId: text('assigned_route_id'),
+  phone: text('phone'),
+  documentId: text('document_id'),
+  isActive: boolean('is_active').notNull().default(true),
   partnerEquityPct: numeric('partner_equity_pct', { precision: 5, scale: 2 }),
   createdAt: timestamp('created_at').defaultNow(),
 });
@@ -29,6 +36,8 @@ export const routes = pgTable('routes', {
   zone: text('zone').notNull(), // ej. 'Comuna 13 San Javier'
   collectorId: text('collector_id'),
   collectorName: text('collector_name').notNull(),
+  organizationId: text('organization_id').default('org-medellin-01'),
+  createdBy: text('created_by').default('usr-admin-001'),
   status: text('status').notNull().default('active'),
   targetDailyCollection: numeric('target_daily_collection', { precision: 12, scale: 2 }).notNull(),
   operatingExpenseBudget: numeric('operating_expense_budget', { precision: 12, scale: 2 }).notNull(),
@@ -46,6 +55,8 @@ export const clients = pgTable('clients', {
   address: text('address').notNull(),
   zone: text('zone').notNull(),
   routeId: text('route_id').notNull().references(() => routes.id),
+  organizationId: text('organization_id').default('org-medellin-01'),
+  createdBy: text('created_by').default('usr-admin-001'),
   riskScore: integer('risk_score').notNull().default(75),
   riskLevel: text('risk_level').notNull().default('verde'), // 'verde' | 'amarillo' | 'rojo'
   creditLimit: numeric('credit_limit', { precision: 12, scale: 2 }).notNull(),
@@ -127,6 +138,18 @@ export const auditLogs = pgTable('audit_logs', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+// 8. GESTIÓN DE BASES SEMANALES PARA COBRADORES (COLLECTOR BASES)
+export const collectorBases = pgTable('collector_bases', {
+  id: text('id').primaryKey(), // UUID
+  collectorId: text('collector_id').notNull(), // ID del usuario cobrador
+  collectorName: text('collector_name').notNull(),
+  routeId: text('route_id').notNull(),
+  amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+  weekStartDate: text('week_start_date').notNull(), // DATE (YYYY-MM-DD)
+  status: text('status').notNull().default('ACTIVA'), // 'ACTIVA' | 'DEVUELTA'
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 // RELACIONES RELACIONALES
 export const clientsRelations = relations(clients, ({ one, many }) => ({
   route: one(routes, {
@@ -153,3 +176,4 @@ export const routesRelations = relations(routes, ({ many }) => ({
   loans: many(loans),
   cashDrawerSessions: many(cashDrawerSessions),
 }));
+

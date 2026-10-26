@@ -24,9 +24,12 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- ==============================================================================
--- 1. TIPOS ENUMERADOS & ROLES DE USUARIO
+-- 1. TIPOS ENUMERADOS & JERARQUÍA DE ROLES DE 3 NIVELES
 -- ==============================================================================
-CREATE TYPE user_role AS ENUM ('admin', 'socio', 'cobrador', 'cliente');
+-- Nivel 1: 'super_admin' (Administrador General del Sistema - Visibilidad Total y crea Admins)
+-- Nivel 2: 'admin'       (Administrador de Fondo/Negocio - Crea sus propios Collectors y Clientes)
+-- Nivel 3: 'collector'   (Cobrador de Ruta - Solo ve clientes y registra pagos de su ruta asignada)
+CREATE TYPE user_role AS ENUM ('super_admin', 'admin', 'collector', 'socio', 'cobrador', 'cliente');
 CREATE TYPE route_status AS ENUM ('activa', 'suspendida', 'en_auditoria');
 CREATE TYPE client_risk_tier AS ENUM ('A_excelente', 'B_promedio', 'C_alto_riesgo', 'D_mora_critica', 'X_vetado');
 CREATE TYPE loan_status AS ENUM ('activo', 'liquidado', 'mora_severa', 'castigado', 'refinanciado');
@@ -44,13 +47,17 @@ CREATE TYPE expense_category AS ENUM (
 );
 
 -- ==============================================================================
--- 2. TABLA DE PERFILES VINCULADA A AUTH.USERS (RBAC)
+-- 2. TABLA DE PERFILES VINCULADA A AUTH.USERS (JERARQUÍA DE 3 NIVELES + MULTI-TENANT)
 -- ==============================================================================
 CREATE TABLE public.profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   email TEXT NOT NULL UNIQUE,
   full_name TEXT NOT NULL,
-  role user_role NOT NULL DEFAULT 'cliente',
+  role user_role NOT NULL DEFAULT 'collector',
+  organization_id TEXT NOT NULL DEFAULT 'org-medellin-01', -- Vincula a cada 'admin' con su grupo de cobradores y clientes
+  organization_name TEXT DEFAULT 'Fondo RutaCapital',
+  created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL, -- Jerarquía directa: quién creó esta cuenta
+  assigned_route_id TEXT,                                 -- Ej: 'route-1' (Ruta asignada al collector)
   phone TEXT,
   partner_equity_pct NUMERIC(5, 2) DEFAULT 0.00 CHECK (partner_equity_pct >= 0 AND partner_equity_pct <= 100),
   capital_invested_cop NUMERIC(14, 2) DEFAULT 0.00 CHECK (capital_invested_cop >= 0),
@@ -61,45 +68,91 @@ CREATE TABLE public.profiles (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- FUNCIÓN HELPER: OBTENER EL ROL DEL USUARIO ACTUAL (SECURITY DEFINER)
+-- FUNCIÓN HELPER 1: OBTENER EL ROL DEL USUARIO ACTUAL (SECURITY DEFINER)
 CREATE OR REPLACE FUNCTION public.get_current_user_role()
 RETURNS user_role AS $$
   SELECT role FROM public.profiles WHERE id = auth.uid();
 $$ LANGUAGE sql STABLE SECURITY DEFINER;
 
--- FUNCIÓN HELPER: VALIDAR SI ES ADMINISTRADOR O SOCIO (ALTA DIRECCIÓN)
-CREATE OR REPLACE FUNCTION public.is_admin_or_socio()
+-- FUNCIÓN HELPER 2: VALIDAR SI ES SUPER_ADMIN (NIVEL 1 - VISIBILIDAD TOTAL)
+CREATE OR REPLACE FUNCTION public.is_super_admin()
 RETURNS BOOLEAN AS $$
   SELECT EXISTS (
     SELECT 1 FROM public.profiles 
     WHERE id = auth.uid() 
-      AND role IN ('admin', 'socio') 
+      AND role = 'super_admin' 
       AND is_active = TRUE
   );
 $$ LANGUAGE sql STABLE SECURITY DEFINER;
 
--- FUNCIÓN HELPER: VALIDAR SI ES ADMINISTRADOR EXCLUSIVO
+-- FUNCIÓN HELPER 3: VALIDAR SI ES ADMIN DE FONDO (NIVEL 2)
 CREATE OR REPLACE FUNCTION public.is_admin()
 RETURNS BOOLEAN AS $$
   SELECT EXISTS (
     SELECT 1 FROM public.profiles 
     WHERE id = auth.uid() 
-      AND role = 'admin' 
+      AND role IN ('super_admin', 'admin') 
       AND is_active = TRUE
   );
 $$ LANGUAGE sql STABLE SECURITY DEFINER;
 
--- TRIGGER AUTOMÁTICO PARA SINCRONIZAR AUTH.USERS -> PUBLIC.PROFILES
+-- FUNCIÓN HELPER 4: OBTENER EL ORGANIZATION_ID DEL USUARIO AUTENTICADO
+CREATE OR REPLACE FUNCTION public.get_current_user_org_id()
+RETURNS TEXT AS $$
+  SELECT organization_id FROM public.profiles WHERE id = auth.uid() AND is_active = TRUE;
+$$ LANGUAGE sql STABLE SECURITY DEFINER;
+
+-- FUNCIÓN HELPER 5: OBTENER LA RUTA ASIGNADA AL COLLECTOR AUTENTICADO (NIVEL 3)
+CREATE OR REPLACE FUNCTION public.get_collector_assigned_route()
+RETURNS TEXT AS $$
+  SELECT assigned_route_id FROM public.profiles 
+  WHERE id = auth.uid() 
+    AND role IN ('collector', 'cobrador') 
+    AND is_active = TRUE;
+$$ LANGUAGE sql STABLE SECURITY DEFINER;
+
+-- FUNCIÓN HELPER 6: VALIDAR SI ES SUPER_ADMIN, ADMIN O SOCIO
+CREATE OR REPLACE FUNCTION public.is_admin_or_socio()
+RETURNS BOOLEAN AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.profiles 
+    WHERE id = auth.uid() 
+      AND role IN ('super_admin', 'admin', 'socio') 
+      AND is_active = TRUE
+  );
+$$ LANGUAGE sql STABLE SECURITY DEFINER;
+
+-- TRIGGER AUTOMÁTICO PARA SINCRONIZAR AUTH.USERS -> PUBLIC.PROFILES CON JERARQUÍA DE 3 NIVELES
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
-  INSERT INTO public.profiles (id, email, full_name, role)
+  INSERT INTO public.profiles (
+    id,
+    email,
+    full_name,
+    role,
+    organization_id,
+    organization_name,
+    created_by,
+    assigned_route_id
+  )
   VALUES (
     NEW.id,
     NEW.email,
     COALESCE(NEW.raw_user_meta_data->>'full_name', split_part(NEW.email, '@', 1)),
-    COALESCE((NEW.raw_user_meta_data->>'role')::user_role, 'cliente'::user_role)
-  );
+    COALESCE((NEW.raw_user_meta_data->>'role')::user_role, 'collector'::user_role),
+    COALESCE(NEW.raw_user_meta_data->>'organization_id', 'org-medellin-01'),
+    COALESCE(NEW.raw_user_meta_data->>'organization_name', 'Fondo RutaCapital'),
+    NULLIF(NEW.raw_user_meta_data->>'created_by', '')::uuid,
+    NEW.raw_user_meta_data->>'assigned_route_id'
+  )
+  ON CONFLICT (id) DO UPDATE SET
+    full_name = EXCLUDED.full_name,
+    role = EXCLUDED.role,
+    organization_id = EXCLUDED.organization_id,
+    organization_name = EXCLUDED.organization_name,
+    created_by = EXCLUDED.created_by,
+    assigned_route_id = EXCLUDED.assigned_route_id;
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
@@ -109,7 +162,7 @@ CREATE OR REPLACE TRIGGER on_auth_user_created
   FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
 
 -- ==============================================================================
--- 3. RUTAS OPERATIVAS (Comunas / Sectores)
+-- 3. RUTAS OPERATIVAS (Comunas / Sectores vinculados a organization_id y created_by)
 -- ==============================================================================
 CREATE TABLE public.routes (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -117,8 +170,10 @@ CREATE TABLE public.routes (
   name VARCHAR(100) NOT NULL,                             -- Ej: 'Comuna 13 - San Javier'
   city VARCHAR(50) NOT NULL DEFAULT 'Medellín',
   zone_sector VARCHAR(100) NOT NULL,
+  organization_id TEXT NOT NULL DEFAULT 'org-medellin-01',
+  created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   base_floating_capital NUMERIC(12, 2) NOT NULL DEFAULT 0.00 CHECK (base_floating_capital >= 0),
-  fixed_daily_opex NUMERIC(12, 2) NOT NULL DEFAULT 45000.00, -- Gasolina + Viático diario fijo
+  fixed_daily_opex NUMERIC(12, 2) NOT NULL DEFAULT 45000.00,
   max_portfolio_limit NUMERIC(14, 2) NOT NULL DEFAULT 50000000.00,
   target_recovery_rate NUMERIC(5, 2) NOT NULL DEFAULT 95.00,
   status route_status NOT NULL DEFAULT 'activa',
@@ -126,12 +181,14 @@ CREATE TABLE public.routes (
 );
 
 -- ==============================================================================
--- 4. OPERADORES Y COBRADORES DE RUTA
+-- 4. OPERADORES Y COBRADORES DE RUTA (Vinculados al Admin que los creó)
 -- ==============================================================================
 CREATE TABLE public.collectors (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   assigned_route_id UUID REFERENCES public.routes(id) ON DELETE RESTRICT,
+  organization_id TEXT NOT NULL DEFAULT 'org-medellin-01',
+  created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   document_id VARCHAR(20) NOT NULL UNIQUE,
   full_name VARCHAR(120) NOT NULL,
   phone VARCHAR(20) NOT NULL,
@@ -142,12 +199,14 @@ CREATE TABLE public.collectors (
 );
 
 -- ==============================================================================
--- 5. CLIENTES / DEUDORES
+-- 5. CLIENTES / DEUDORES (Vinculados a organization_id, created_by y route_id)
 -- ==============================================================================
 CREATE TABLE public.clients (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   route_id UUID NOT NULL REFERENCES public.routes(id) ON DELETE RESTRICT,
   user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  organization_id TEXT NOT NULL DEFAULT 'org-medellin-01',
+  created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   document_type VARCHAR(10) NOT NULL DEFAULT 'CC',
   document_number VARCHAR(30) NOT NULL UNIQUE,
   first_name VARCHAR(60) NOT NULL,
@@ -204,6 +263,8 @@ CREATE TABLE public.loans (
   route_id UUID NOT NULL REFERENCES public.routes(id) ON DELETE RESTRICT,
   client_id UUID NOT NULL REFERENCES public.clients(id) ON DELETE RESTRICT,
   collector_id UUID NOT NULL REFERENCES public.collectors(id) ON DELETE RESTRICT,
+  organization_id TEXT NOT NULL DEFAULT 'org-medellin-01',
+  created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   principal_amount NUMERIC(12, 2) NOT NULL CHECK (principal_amount > 0),
   interest_rate_percent NUMERIC(5, 2) NOT NULL CHECK (interest_rate_percent >= 0),
   total_interest_amount NUMERIC(12, 2) NOT NULL CHECK (total_interest_amount >= 0),
@@ -282,136 +343,188 @@ CREATE TABLE public.audit_logs (
 );
 
 -- ==============================================================================
--- 11. POLÍTICAS DE ROW LEVEL SECURITY (RLS) - EXCLUSIVO ADMIN & SOCIOS
+-- 11. POLÍTICAS DE ROW LEVEL SECURITY (RLS) - JERARQUÍA DE 3 NIVELES
 -- ==============================================================================
 
 -- ACTIVAR RLS EN TODAS LAS TABLAS
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.routes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.collectors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.clients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.loans ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.route_expenses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.daily_cash_shifts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.daily_ledger ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.loans ENABLE ROW LEVEL SECURITY;
 
 -- ------------------------------------------------------------------------------
--- A. POLÍTICAS PARA PROFILES
+-- A. POLÍTICAS PARA PROFILES (JERARQUÍA 3 NIVELES: super_admin -> admin -> collector)
 -- ------------------------------------------------------------------------------
--- Cada usuario puede leer su propio perfil
-CREATE POLICY "profiles_read_own" ON public.profiles
-  FOR SELECT USING (auth.uid() = id);
-
--- El Administrador y los Socios pueden ver todos los perfiles de la empresa
-CREATE POLICY "profiles_admin_socio_select" ON public.profiles
-  FOR SELECT USING (public.is_admin_or_socio());
-
--- Solo el Administrador puede crear, actualizar o modificar roles
-CREATE POLICY "profiles_admin_all" ON public.profiles
-  FOR ALL USING (public.is_admin());
-
--- ------------------------------------------------------------------------------
--- B. POLÍTICAS PARA GASTOS OPERATIVOS (TABLA SENSIBLE: route_expenses)
--- Garantiza que solo 'admin' o 'socio' puedan leer los gastos y flujos netos
--- ------------------------------------------------------------------------------
--- Lectura: Exclusiva para Administrador y Socios (Alta Dirección)
-CREATE POLICY "expenses_select_admin_socio" ON public.route_expenses
-  FOR SELECT USING (public.is_admin_or_socio());
-
--- El cobrador solo puede ver los gastos de su turno activo hoy
-CREATE POLICY "expenses_select_collector_own" ON public.route_expenses
+-- 1. Lectura:
+--    - 'super_admin' ve todos los perfiles del sistema.
+--    - 'admin' ve su propio perfil y los perfiles de los cobradores/clientes que él creó o de su organization_id.
+--    - 'collector' solo ve su propio perfil.
+CREATE POLICY "profiles_select_hierarchy" ON public.profiles
   FOR SELECT USING (
-    collector_id IN (SELECT id FROM public.collectors WHERE user_id = auth.uid())
+    public.is_super_admin() OR
+    id = auth.uid() OR
+    (
+      public.get_current_user_role() = 'admin' AND (
+        created_by = auth.uid() OR
+        organization_id = public.get_current_user_org_id()
+      )
+    )
   );
 
--- Inserción: Cobradores (para reportar en calle) y Administradores
-CREATE POLICY "expenses_insert_authorized" ON public.route_expenses
+-- 2. Creación (INSERT):
+--    - 'super_admin' puede crear cuentas con rol 'admin' o 'collector'.
+--    - 'admin' SOLO puede crear usuarios con rol 'collector' atados a su propio auth.uid() y organization_id.
+CREATE POLICY "profiles_insert_hierarchy" ON public.profiles
   FOR INSERT WITH CHECK (
-    public.is_admin() OR 
-    collector_id IN (SELECT id FROM public.collectors WHERE user_id = auth.uid())
+    public.is_super_admin() OR
+    (
+      public.get_current_user_role() = 'admin' AND
+      role IN ('collector', 'cobrador') AND
+      created_by = auth.uid() AND
+      organization_id = public.get_current_user_org_id()
+    )
   );
 
--- Modificación / Aprobación: Solo el Administrador (CFO)
-CREATE POLICY "expenses_update_admin_only" ON public.route_expenses
-  FOR UPDATE USING (public.is_admin());
-
--- ------------------------------------------------------------------------------
--- C. POLÍTICAS PARA TURNOS Y ARQUEOS DE CAJA (daily_cash_shifts)
--- ------------------------------------------------------------------------------
--- Lectura de arqueos y consolidados: Exclusiva para Admin y Socios
-CREATE POLICY "shifts_select_admin_socio" ON public.daily_cash_shifts
-  FOR SELECT USING (public.is_admin_or_socio());
-
--- El cobrador solo puede consultar su turno asignado
-CREATE POLICY "shifts_select_collector_own" ON public.daily_cash_shifts
-  FOR SELECT USING (
-    collector_id IN (SELECT id FROM public.collectors WHERE user_id = auth.uid())
-  );
-
--- Cierre auditado o edición: Exclusiva para Admin
-CREATE POLICY "shifts_admin_all" ON public.daily_cash_shifts
-  FOR ALL USING (public.is_admin());
-
--- ------------------------------------------------------------------------------
--- D. POLÍTICAS PARA CONSOLIDADO DE RUTAS & CAPITAL FLOTANTE (routes)
--- ------------------------------------------------------------------------------
--- Lectura del margen de cartera y capital flotante: Exclusiva para Admin y Socios
-CREATE POLICY "routes_select_admin_socio" ON public.routes
-  FOR SELECT USING (public.is_admin_or_socio());
-
--- Cobradores solo leen la ruta a la que están asignados
-CREATE POLICY "routes_select_collector_assigned" ON public.routes
-  FOR SELECT USING (
-    id IN (SELECT assigned_route_id FROM public.collectors WHERE user_id = auth.uid())
-  );
-
--- ------------------------------------------------------------------------------
--- E. POLÍTICAS PARA CLIENTES (clients - AISLAMIENTO ESTRICTO DE RUTA)
--- ------------------------------------------------------------------------------
-CREATE POLICY "clients_select_collector_route" ON public.clients
-  FOR SELECT USING (
-    public.is_admin_or_socio() OR
-    route_id IN (SELECT assigned_route_id FROM public.collectors WHERE user_id = auth.uid())
-  );
-
--- ------------------------------------------------------------------------------
--- F. POLÍTICAS PARA PRÉSTAMOS (loans - AISLAMIENTO ESTRICTO DE RUTA)
--- ------------------------------------------------------------------------------
-CREATE POLICY "loans_select_collector_route" ON public.loans
-  FOR SELECT USING (
-    public.is_admin_or_socio() OR
-    route_id IN (SELECT assigned_route_id FROM public.collectors WHERE user_id = auth.uid())
-  );
-
--- ------------------------------------------------------------------------------
--- G. POLÍTICAS PARA EL LIBRO MAYOR (daily_ledger - AISLAMIENTO ESTRICTO)
--- ------------------------------------------------------------------------------
-CREATE POLICY "ledger_select_collector_route" ON public.daily_ledger
-  FOR SELECT USING (
-    public.is_admin_or_socio() OR
-    route_id IN (SELECT assigned_route_id FROM public.collectors WHERE user_id = auth.uid())
-  );
-
-CREATE POLICY "ledger_insert_collector_route" ON public.daily_ledger
-  FOR INSERT WITH CHECK (
-    public.is_admin() OR (
-      collector_id IN (SELECT id FROM public.collectors WHERE user_id = auth.uid()) AND
-      route_id IN (SELECT assigned_route_id FROM public.collectors WHERE user_id = auth.uid())
+-- 3. Modificación (UPDATE / DELETE):
+--    - 'super_admin' tiene control total.
+--    - 'admin' solo puede modificar los datos de los cobradores que él mismo creó (created_by = auth.uid()).
+CREATE POLICY "profiles_update_hierarchy" ON public.profiles
+  FOR UPDATE USING (
+    public.is_super_admin() OR
+    (
+      public.get_current_user_role() = 'admin' AND
+      role IN ('collector', 'cobrador') AND
+      (created_by = auth.uid() OR organization_id = public.get_current_user_org_id())
     )
   );
 
 -- ------------------------------------------------------------------------------
--- H. POLÍTICAS PARA BITÁCORA DE AUDITORÍA (audit_logs)
+-- B. POLÍTICAS PARA COLLECTORS (AISLAMIENTO POR ADMIN / ORGANIZACIÓN)
 -- ------------------------------------------------------------------------------
--- Lectura: Exclusiva para Administrador y Socios
+CREATE POLICY "collectors_select_hierarchy" ON public.collectors
+  FOR SELECT USING (
+    public.is_super_admin() OR
+    user_id = auth.uid() OR
+    (
+      public.get_current_user_role() = 'admin' AND
+      (created_by = auth.uid() OR organization_id = public.get_current_user_org_id())
+    )
+  );
+
+CREATE POLICY "collectors_modify_hierarchy" ON public.collectors
+  FOR ALL USING (
+    public.is_super_admin() OR
+    (
+      public.get_current_user_role() = 'admin' AND
+      (created_by = auth.uid() OR organization_id = public.get_current_user_org_id())
+    )
+  );
+
+-- ------------------------------------------------------------------------------
+-- C. POLÍTICAS PARA CLIENTES (clients - AISLAMIENTO DE 3 NIVELES)
+-- ------------------------------------------------------------------------------
+-- 1. Lectura:
+--    - 'super_admin' ve todos los clientes.
+--    - 'admin' ve los clientes de su organización o creados por él / su equipo.
+--    - 'collector' solo ve los clientes de su ruta asignada (assigned_route_id).
+CREATE POLICY "clients_select_hierarchy" ON public.clients
+  FOR SELECT USING (
+    public.is_super_admin() OR
+    (
+      public.get_current_user_role() = 'admin' AND
+      (created_by = auth.uid() OR organization_id = public.get_current_user_org_id())
+    ) OR
+    (
+      public.get_current_user_role() IN ('collector', 'cobrador') AND
+      route_id::text = public.get_collector_assigned_route()
+    )
+  );
+
+-- 2. Inserción y Modificación:
+--    - 'super_admin' puede modificar cualquier cliente.
+--    - 'admin' solo puede crear/modificar clientes de su propio fondo (created_by = auth.uid() o organization_id).
+--    - 'collector' puede registrar clientes nuevos en su ruta asignada.
+CREATE POLICY "clients_insert_hierarchy" ON public.clients
+  FOR INSERT WITH CHECK (
+    public.is_super_admin() OR
+    (
+      public.get_current_user_role() = 'admin' AND
+      organization_id = public.get_current_user_org_id()
+    ) OR
+    (
+      public.get_current_user_role() IN ('collector', 'cobrador') AND
+      route_id::text = public.get_collector_assigned_route()
+    )
+  );
+
+CREATE POLICY "clients_update_hierarchy" ON public.clients
+  FOR UPDATE USING (
+    public.is_super_admin() OR
+    (
+      public.get_current_user_role() = 'admin' AND
+      (created_by = auth.uid() OR organization_id = public.get_current_user_org_id())
+    )
+  );
+
+-- ------------------------------------------------------------------------------
+-- D. POLÍTICAS PARA RUTAS Y PRÉSTAMOS (routes & loans - AISLAMIENTO DE 3 NIVELES)
+-- ------------------------------------------------------------------------------
+CREATE POLICY "routes_select_hierarchy" ON public.routes
+  FOR SELECT USING (
+    public.is_super_admin() OR
+    (
+      public.get_current_user_role() IN ('admin', 'socio') AND
+      organization_id = public.get_current_user_org_id()
+    ) OR
+    id::text = public.get_collector_assigned_route()
+  );
+
+CREATE POLICY "loans_select_hierarchy" ON public.loans
+  FOR SELECT USING (
+    public.is_super_admin() OR
+    (
+      public.get_current_user_role() IN ('admin', 'socio') AND
+      organization_id = public.get_current_user_org_id()
+    ) OR
+    route_id::text = public.get_collector_assigned_route()
+  );
+
+-- ------------------------------------------------------------------------------
+-- E. POLÍTICAS PARA EL LIBRO MAYOR DE PAGOS (daily_ledger)
+-- ------------------------------------------------------------------------------
+CREATE POLICY "ledger_select_hierarchy" ON public.daily_ledger
+  FOR SELECT USING (
+    public.is_super_admin() OR
+    public.is_admin_or_socio() OR
+    route_id::text = public.get_collector_assigned_route()
+  );
+
+CREATE POLICY "ledger_insert_collector_route" ON public.daily_ledger
+  FOR INSERT WITH CHECK (
+    public.is_super_admin() OR
+    public.is_admin() OR
+    route_id::text = public.get_collector_assigned_route()
+  );
+
+-- ------------------------------------------------------------------------------
+-- F. POLÍTICAS PARA GASTOS, TURNOS Y BITÁCORA DE AUDITORÍA
+-- ------------------------------------------------------------------------------
+CREATE POLICY "expenses_select_admin_socio" ON public.route_expenses
+  FOR SELECT USING (public.is_admin_or_socio());
+
+CREATE POLICY "shifts_select_admin_socio" ON public.daily_cash_shifts
+  FOR SELECT USING (public.is_admin_or_socio());
+
 CREATE POLICY "audit_select_admin_socio" ON public.audit_logs
   FOR SELECT USING (public.is_admin_or_socio());
 
--- Inserción: Cualquier usuario autenticado vía trigger o servicio
 CREATE POLICY "audit_insert_authenticated" ON public.audit_logs
   FOR INSERT WITH CHECK (auth.role() = 'authenticated');
-
--- MODIFICACIÓN O BORRADO PROHIBIDOS (INMUTABILIDAD ESTRICTA)
--- (No se crean políticas de UPDATE o DELETE para audit_logs)
 
 -- ==============================================================================
 -- 12. TRIGGER ATÓMICO: LIQUIDACIÓN DE COBRO EN EL LEDGER
@@ -599,6 +712,40 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 CREATE OR REPLACE TRIGGER trg_prevent_audit_logs_tampering
 BEFORE UPDATE OR DELETE ON public.audit_logs
 FOR EACH ROW EXECUTE FUNCTION public.fn_prevent_audit_logs_tampering();
+
+-- ==============================================================================
+-- 15. GESTIÓN DE BASES SEMANALES PARA COBRADORES (COLLECTOR_BASES & RLS)
+-- ==============================================================================
+CREATE TABLE public.collector_bases (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  collector_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  amount NUMERIC(12, 2) NOT NULL CHECK (amount >= 0),
+  week_start_date DATE NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ACTIVA' CHECK (status IN ('ACTIVA', 'DEVUELTA')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- HABILITAR ROW LEVEL SECURITY (RLS) EN COLLECTOR_BASES
+ALTER TABLE public.collector_bases ENABLE ROW LEVEL SECURITY;
+
+-- POLÍTICA 1 (SELECT): El Administrador/Socio ve todas las bases; el Cobrador solo ve la base asignada a su usuario
+CREATE POLICY "collector_bases_select_policy" ON public.collector_bases
+  FOR SELECT USING (
+    public.is_admin_or_socio() OR
+    collector_id = auth.uid()
+  );
+
+-- POLÍTICA 2 (INSERT): Exclusivamente el Administrador puede crear y asignar bases semanales
+CREATE POLICY "collector_bases_insert_admin" ON public.collector_bases
+  FOR INSERT WITH CHECK (
+    public.is_admin()
+  );
+
+-- POLÍTICA 3 (UPDATE): Exclusivamente el Administrador puede cambiar el estado ('ACTIVA' -> 'DEVUELTA')
+CREATE POLICY "collector_bases_update_admin" ON public.collector_bases
+  FOR UPDATE USING (
+    public.is_admin()
+  );
 `;
 
 export const SupabaseSqlViewer: React.FC = () => {

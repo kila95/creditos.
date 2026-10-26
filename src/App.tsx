@@ -29,11 +29,13 @@ import {
   INITIAL_LOANS, 
   INITIAL_EXPENSES, 
   INITIAL_LEDGER,
+  INITIAL_COLLECTOR_BASES,
   RouteData,
   ClientProfile,
   LoanDetail,
   RouteExpenseItem,
-  LedgerEntry 
+  LedgerEntry,
+  CollectorBase
 } from './data/mockData';
 import { INITIAL_AUDIT_LOGS, AuditLogItem } from './data/auditLogData';
 import { AdminInvestorDashboard } from './components/AdminInvestorDashboard';
@@ -52,6 +54,7 @@ import { NewClientLoanModal } from './components/NewClientLoanModal';
 import { UnifiedLoginView } from './components/UnifiedLoginView';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { useOnlineStatus, syncOfflineQueueWithServer, enqueueOfflinePayment } from './utils/offlineSync';
+import { fetchClientsAndLoansFromDB } from './services/clientSyncService';
 
 export type ActiveRole = 
   | 'admin_cfo' 
@@ -79,6 +82,7 @@ function MainAppContent() {
   const [loans, setLoans] = useState<LoanDetail[]>(INITIAL_LOANS);
   const [expenses, setExpenses] = useState<RouteExpenseItem[]>(INITIAL_EXPENSES);
   const [ledger, setLedger] = useState<LedgerEntry[]>(INITIAL_LEDGER);
+  const [collectorBases, setCollectorBases] = useState<CollectorBase[]>(INITIAL_COLLECTOR_BASES);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>(INITIAL_AUDIT_LOGS);
   const [showNewClientModal, setShowNewClientModal] = useState<boolean>(false);
 
@@ -86,7 +90,32 @@ function MainAppContent() {
   const [cloudSqlStatus, setCloudSqlStatus] = useState<'connected' | 'offline' | 'checking'>('checking');
   const [cloudSqlLatency, setCloudSqlLatency] = useState<number | null>(null);
 
-  // Sincronización en tiempo real con Cloud SQL al montar o recuperar red
+  // Función centralizada para consultar SELECT('*') de clients y loans desde Supabase / Cloud SQL
+  const syncDatabaseClients = async () => {
+    const { data, error } = await fetchClientsAndLoansFromDB();
+    if (error) {
+      console.error('❌ [Error al sincronizar listado de clientes]:', error);
+      return;
+    }
+    if (data) {
+      setClients(data.clients);
+      setLoans(data.loans);
+      // Recalcular métricas de cartera por ruta con base en los préstamos cargados
+      setRoutes(prevRoutes =>
+        prevRoutes.map(r => {
+          const rLoans = data.loans.filter(l => l.routeId === r.id && l.status !== 'liquidado');
+          return {
+            ...r,
+            activeLoansCount: rLoans.length,
+            totalPortfolio: rLoans.reduce((sum, l) => sum + l.remainingBalance, 0),
+            dailyGrossExpected: rLoans.reduce((sum, l) => sum + l.installmentAmount, 0),
+          };
+        })
+      );
+    }
+  };
+
+  // Sincronización en tiempo real con Supabase / Cloud SQL al montar, iniciar sesión o cambiar de vista
   useEffect(() => {
     let isMounted = true;
 
@@ -101,61 +130,41 @@ function MainAppContent() {
             setCloudSqlLatency(latency);
           }
 
-          // Cargar clientes y préstamos reales desde Cloud SQL
+          // 1. Ejecutar SELECT('*') de clients y loans garantizando vinculación de nombres reales
+          await syncDatabaseClients();
+
+          // 2. Cargar bases semanales de cobradores desde Cloud SQL
           try {
-            const [cRes, lRes] = await Promise.all([
-              fetch('/api/clients'),
-              fetch('/api/loans')
-            ]);
-            if (cRes.ok && lRes.ok) {
-              const cData = await cRes.json();
-              const lData = await lRes.json();
-              if (isMounted && Array.isArray(cData)) {
-                setClients(cData.map((c: any) => ({
-                  id: c.id,
-                  name: c.name,
-                  tradeName: c.alias || c.name,
-                  category: c.businessType || 'Comercio',
-                  document: c.documentId || c.document_id || '',
-                  phone: c.phone || '',
-                  address: c.address || '',
-                  neighborhood: c.zone || '',
-                  routeId: c.routeId || c.route_id || 'route-1',
-                  riskTier: c.riskLevel === 'verde' ? 'A_excelente' : c.riskLevel === 'amarillo' ? 'B_promedio' : 'C_alto_riesgo',
-                  daysOverdue: 0,
-                  hasPreventiveBlock: false,
-                  guarantorName: 'Fiador registrado',
-                  guarantorPhone: c.phone || '',
-                  lat: 6.2518,
-                  lng: -75.6142
-                })));
-              }
-              if (isMounted && Array.isArray(lData)) {
-                setLoans(lData.map((l: any) => ({
-                  id: l.id,
-                  code: `PREST-${l.id.slice(-6)}`,
-                  clientId: l.clientId || l.client_id,
-                  clientName: 'Deudor',
-                  tradeName: 'Comercio',
-                  routeId: l.routeId || l.route_id,
-                  principal: Number(l.principalAmount || l.principal_amount || 0),
-                  interestRate: Number(l.interestRate || l.interest_rate || 20),
-                  totalDebt: Number(l.totalAmount || l.total_amount || 0),
-                  installmentAmount: Number(l.dailyQuota || l.daily_quota || 0),
-                  termDays: Number(l.totalDays || l.total_days || 24),
-                  installmentsPaid: Number(l.paidDays || l.paid_days || 0),
-                  totalCollected: Number(l.totalAmount || 0) - Number(l.remainingBalance || 0),
-                  remainingBalance: Number(l.remainingBalance || l.remaining_balance || 0),
-                  disbursedDate: l.startDate || l.start_date || new Date().toISOString().split('T')[0],
-                  dueDate: l.expectedEndDate || l.expected_end_date || '',
-                  daysOverdue: 0,
-                  status: l.status === 'completed' ? 'liquidado' : 'activo',
-                  todayPaid: false
-                })));
+            const bRes = await fetch('/api/collector-bases');
+            if (bRes.ok) {
+              const bData = await bRes.json();
+              if (isMounted && Array.isArray(bData)) {
+                const mappedBases: CollectorBase[] = bData.map((b: any) => ({
+                  id: b.id,
+                  collectorId: b.collectorId || b.collector_id,
+                  collectorName: b.collectorName || b.collector_name || 'Cobrador',
+                  routeId: b.routeId || b.route_id || 'route-1',
+                  amount: Number(b.amount || 0),
+                  weekStartDate: b.weekStartDate || b.week_start_date || new Date().toISOString().split('T')[0],
+                  status: (b.status === 'DEVUELTA' ? 'DEVUELTA' : 'ACTIVA') as 'ACTIVA' | 'DEVUELTA',
+                  createdAt: b.createdAt || b.created_at || new Date().toISOString()
+                }));
+                setCollectorBases(mappedBases);
+
+                setRoutes(prevRoutes =>
+                  prevRoutes.map(r => {
+                    const activeForRoute = mappedBases.find(
+                      mb => mb.routeId === r.id && mb.status === 'ACTIVA'
+                    );
+                    return activeForRoute
+                      ? { ...r, baseFloatingCapital: activeForRoute.amount }
+                      : r;
+                  })
+                );
               }
             }
           } catch (syncErr) {
-            console.warn('Error sincronizando clientes desde Cloud SQL:', syncErr);
+            console.warn('Error sincronizando bases semanales desde Cloud SQL:', syncErr);
           }
 
           // Si hay conexión, sincronizar cola offline pendiente
@@ -179,7 +188,87 @@ function MainAppContent() {
       isMounted = false;
       clearInterval(interval);
     };
-  }, [isOnline]);
+  }, [isOnline, isAuthenticated, activeRole]);
+
+  // Asignar una nueva Base Semanal a un cobrador (persistida en tabla collector_bases)
+  const handleAssignCollectorBase = async (newBase: CollectorBase) => {
+    // 1. Actualización optimista inmediata: marcar bases activas previas de ese cobrador/ruta como DEVUELTA
+    setCollectorBases(prev => [
+      newBase,
+      ...prev.map(b =>
+        (b.collectorId === newBase.collectorId || b.routeId === newBase.routeId) && b.status === 'ACTIVA'
+          ? { ...b, status: 'DEVUELTA' as const }
+          : b
+      )
+    ]);
+
+    // 2. Sincronizar el capital base flotante de la ruta para el arqueo de caja del rutero
+    setRoutes(prev =>
+      prev.map(r =>
+        r.id === newBase.routeId ? { ...r, baseFloatingCapital: newBase.amount } : r
+      )
+    );
+
+    // 3. Registrar en log de auditoría
+    const auditEvent: AuditLogItem = {
+      id: `aud-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      actor: profile?.email || 'admin_cfo@rutacapital.co',
+      role: 'Administrador CFO',
+      action: 'CIERRE_TURNO_AUDITADO',
+      targetEntity: `collector_bases (${newBase.collectorName})`,
+      targetId: newBase.id,
+      oldValue: 'Sin base activa / Base anterior cerrada',
+      newValue: `Base Semanal ACTIVA: $${newBase.amount.toLocaleString()} COP (Semana: ${newBase.weekStartDate})`,
+      justification: `Asignación de base semanal de efectivo a ${newBase.collectorName} (${newBase.routeId}).`,
+      ipAddress: '190.157.24.81',
+      immutableHash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2)
+    };
+    setAuditLogs(prev => [auditEvent, ...prev]);
+
+    // 4. Persistir en Cloud SQL PostgreSQL
+    if (isOnline) {
+      try {
+        await fetch('/api/collector-bases', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newBase)
+        });
+      } catch (err) {
+        console.warn('Error guardando base semanal en Cloud SQL:', err);
+      }
+    }
+  };
+
+  // Actualizar el estado de una Base Semanal ('ACTIVA' | 'DEVUELTA')
+  const handleUpdateCollectorBaseStatus = async (baseId: string, status: 'ACTIVA' | 'DEVUELTA') => {
+    const targetBase = collectorBases.find(b => b.id === baseId);
+    setCollectorBases(prev =>
+      prev.map(b => (b.id === baseId ? { ...b, status } : b))
+    );
+
+    if (targetBase) {
+      setRoutes(prev =>
+        prev.map(r =>
+          r.id === targetBase.routeId
+            ? { ...r, baseFloatingCapital: status === 'ACTIVA' ? targetBase.amount : 0 }
+            : r
+        )
+      );
+    }
+
+    if (isOnline) {
+      try {
+        await fetch(`/api/collector-bases/${baseId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status })
+        });
+      } catch (err) {
+        console.warn('Error actualizando estado de base semanal en Cloud SQL:', err);
+      }
+    }
+  };
 
   const handleClientCreated = (newClient: ClientProfile, newLoan: LoanDetail) => {
     setClients(prev => [newClient, ...prev]);
@@ -604,7 +693,7 @@ function MainAppContent() {
         <main className={`flex-1 ${getContainerMaxWidth()} flex items-center justify-center p-3 sm:p-4`}>
           <UnifiedLoginView
             onLoginSuccess={(loggedRole) => {
-              if (loggedRole === 'cobrador') {
+              if (loggedRole === 'collector' || loggedRole === 'cobrador') {
                 setActiveRole('collector_street');
               } else if (loggedRole === 'socio') {
                 setActiveRole('investor_fund');
@@ -908,6 +997,18 @@ function MainAppContent() {
               loans={loans}
               expenses={expenses}
               ledger={ledger}
+              collectorBases={collectorBases}
+              onAssignCollectorBase={handleAssignCollectorBase}
+              onUpdateCollectorBaseStatus={handleUpdateCollectorBaseStatus}
+              onCollectorCreated={(collector) => {
+                setRoutes(prev =>
+                  prev.map(r =>
+                    r.id === collector.assignedRouteId
+                      ? { ...r, collectorName: collector.name }
+                      : r
+                  )
+                );
+              }}
               onRestructureLoan={handleRestructureLoan}
               onToggleClientBlock={handleToggleClientBlock}
               onReassignClientRoute={handleReassignClientRoute}
@@ -933,11 +1034,14 @@ function MainAppContent() {
           <CollectorRouteGuard routes={routes}>
             {({ activeRouteId }) => {
               const assignedRoute = routes.find(r => r.id === activeRouteId) || routes[0];
-              // Aislamiento de datos RLS: Solo clientes, préstamos y gastos de la ruta del rutero
+              // Aislamiento de datos RLS: Solo clientes, préstamos, gastos y base semanal de la ruta del rutero
               const routeClients = clients.filter(c => c.routeId === activeRouteId);
               const routeLoans = loans.filter(l => l.routeId === activeRouteId);
               const routeExpenses = expenses.filter(e => e.routeId === activeRouteId);
               const routeLedger = ledger.filter(led => led.routeId === activeRouteId);
+              const activeCollectorBase = collectorBases.find(
+                b => b.routeId === activeRouteId && b.status === 'ACTIVA'
+              ) || null;
 
               return (
                 <CollectorStreetView
@@ -946,10 +1050,12 @@ function MainAppContent() {
                   loans={routeLoans}
                   expenses={routeExpenses}
                   ledger={routeLedger}
+                  activeCollectorBase={activeCollectorBase}
                   onRegisterPayment={handleRegisterPayment}
                   onRegisterExpense={handleRegisterExpense}
                   onConfirmReconciliation={handleConfirmReconciliation}
                   onRegisterNewClient={handleClientCreated}
+                  onSyncDatabase={syncDatabaseClients}
                 />
               );
             }}

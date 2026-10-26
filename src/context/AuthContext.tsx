@@ -3,7 +3,6 @@ import { UserProfile, UserRole, AuthSession } from '../types/auth';
 import { 
   signInWithEmailPassword, 
   signOutUser, 
-  getStoredSession, 
   hasExecutiveClearance,
   DEMO_USERS
 } from '../services/supabaseAuth';
@@ -14,9 +13,12 @@ interface AuthContextType {
   profile: UserProfile | null;
   role: UserRole | null;
   isAuthenticated: boolean;
+  isSuperAdmin: boolean;
   isAdmin: boolean;
   isSocio: boolean;
   isCollector: boolean;
+  organizationId: string | undefined;
+  organizationName: string | undefined;
   assignedRouteId: string | undefined;
   isAdminOrSocio: boolean;
   loading: boolean;
@@ -63,7 +65,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const switchDemoUser = (email: string) => {
-    const user = DEMO_USERS[email];
+    const normalized = email.trim().toLowerCase();
+    const user = DEMO_USERS[normalized];
     if (user) {
       const newSession: AuthSession = {
         user: { id: user.profile.id, email: user.profile.email },
@@ -79,9 +82,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const profile = session?.profile || null;
   const role = profile?.role || null;
   const isAuthenticated = Boolean(session && profile);
-  const isAdmin = role === 'admin';
+  const isSuperAdmin = role === 'super_admin';
+  const isAdmin = role === 'admin' || role === 'super_admin';
   const isSocio = role === 'socio';
-  const isCollector = role === 'cobrador';
+  const isCollector = role === 'collector' || role === 'cobrador';
+  const organizationId = profile?.organizationId;
+  const organizationName = profile?.organizationName;
   const assignedRouteId = profile?.assignedRouteId;
   const isAdminOrSocio = hasExecutiveClearance(role || undefined);
 
@@ -93,9 +99,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         profile,
         role,
         isAuthenticated,
+        isSuperAdmin,
         isAdmin,
         isSocio,
         isCollector,
+        organizationId,
+        organizationName,
         assignedRouteId,
         isAdminOrSocio,
         loading,

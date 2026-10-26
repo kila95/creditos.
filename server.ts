@@ -10,7 +10,15 @@ import {
   getDailyLedger, 
   recordPayment, 
   recordCashReconciliation, 
-  getAuditLogs 
+  getAuditLogs,
+  getAllCollectorBases,
+  assignCollectorBase,
+  updateCollectorBaseStatus,
+  getAllAdmins,
+  createAdminUser,
+  getAllCollectors,
+  createCollectorUser,
+  authenticateUserFromDB
 } from './src/db/queries.ts';
 
 const app = express();
@@ -119,6 +127,103 @@ app.get('/api/audit-logs', requireAuth, async (req: AuthRequest, res) => {
     res.json(data);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Bases Semanales de Cobradores (collector_bases)
+app.get('/api/collector-bases', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const data = await getAllCollectorBases();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/collector-bases', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const created = await assignCollectorBase(req.body);
+    res.status(201).json(created);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/collector-bases/:id', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { status } = req.body;
+    const updated = await updateCollectorBaseStatus(req.params.id, status);
+    res.json(updated);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Gestión de Administradores por el Super Admin (Nivel 1 -> Nivel 2)
+app.get('/api/admins', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const data = await getAllAdmins();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admins', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const created = await createAdminUser(req.body);
+    res.status(201).json(created);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Gestión de Usuarios Cobradores (Ruteros) y Asignación de Rutas (Nivel 2 -> Nivel 3)
+app.get('/api/collectors', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const data = await getAllCollectors();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/collectors', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const created = await createCollectorUser(req.body);
+    res.status(201).json(created);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Autenticación de Usuarios Creados en Base de Datos (Jerarquía 3 Niveles RBAC)
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Correo y contraseña requeridos.' });
+    }
+    const userRecord = await authenticateUserFromDB(email, password);
+    if (!userRecord) {
+      return res.status(404).json({ error: 'Usuario no encontrado en base de datos.' });
+    }
+    res.json({
+      id: userRecord.uid,
+      email: userRecord.email,
+      fullName: userRecord.name,
+      role: userRecord.role,
+      organizationId: userRecord.organizationId,
+      organizationName: userRecord.organizationName,
+      createdBy: userRecord.createdBy,
+      assignedRouteId: userRecord.assignedRouteId,
+      phone: userRecord.phone,
+      documentId: userRecord.documentId,
+      isActive: userRecord.isActive,
+      createdAt: userRecord.createdAt
+    });
+  } catch (err: any) {
+    res.status(401).json({ error: err.message });
   }
 });
 

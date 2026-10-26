@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Navigation, 
   Wallet, 
@@ -33,7 +33,8 @@ import {
   ClientProfile, 
   LoanDetail, 
   RouteExpenseItem, 
-  LedgerEntry 
+  LedgerEntry,
+  CollectorBase
 } from '../data/mockData';
 import { formatCOP } from '../utils/financialCalculations';
 import { buildMorningPaymentReminder, buildDigitalReceiptWhatsAppMessage } from '../utils/whatsappMessaging';
@@ -57,10 +58,12 @@ interface CollectorStreetViewProps {
   loans: LoanDetail[];
   expenses: RouteExpenseItem[];
   ledger: LedgerEntry[];
+  activeCollectorBase?: CollectorBase | null;
   onRegisterPayment: (loanId: string, amount: number, method: 'efectivo' | 'nequi' | 'daviplata', notes: string) => void;
   onRegisterExpense: (category: RouteExpenseItem['category'], amount: number, description: string) => void;
   onConfirmReconciliation: (routeId: string, actualCash: number, discrepancy: number, notes: string) => void;
   onRegisterNewClient?: (client: ClientProfile, loan: LoanDetail) => void;
+  onSyncDatabase?: () => Promise<void> | void;
 }
 
 export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
@@ -69,10 +72,12 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
   loans,
   expenses,
   ledger,
+  activeCollectorBase,
   onRegisterPayment,
   onRegisterExpense,
   onConfirmReconciliation,
-  onRegisterNewClient
+  onRegisterNewClient,
+  onSyncDatabase
 }) => {
   const isOnline = useOnlineStatus();
   const [searchTerm, setSearchTerm] = useState('');
@@ -109,8 +114,55 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
   const [expenseAmount, setExpenseAmount] = useState<number>(20000);
   const [expenseDescription, setExpenseDescription] = useState('');
 
-  // 1. FILTRADO ESTRICTO POR RUTA ASIGNADA (AISLAMIENTO DE RUTA)
-  const routeLoans = loans.filter(l => l.routeId === currentRoute.id);
+  // EJECUTAR SELECT('*') DESDE LA BASE DE DATOS CADA VEZ QUE SE ABRE EL PANEL O CAMBIA LA RUTA
+  useEffect(() => {
+    if (onSyncDatabase) {
+      onSyncDatabase();
+    }
+  }, [currentRoute.id]);
+
+  // 1. FILTRADO ESTRICTO POR RUTA ASIGNADA Y VINCULACIÓN CON TABLA CLIENTS
+  const routeClients = clients.filter(c => c.routeId === currentRoute.id);
+  const rawRouteLoans = loans
+    .filter(l => l.routeId === currentRoute.id)
+    .map(l => {
+      const matchedClient = routeClients.find(c => c.id === l.clientId);
+      return matchedClient
+        ? {
+            ...l,
+            clientName: matchedClient.name,
+            tradeName: matchedClient.tradeName || matchedClient.name,
+          }
+        : l;
+    });
+
+  // Garantizar que cualquier cliente en `clients` aparezca en la lista aunque se haya insertado solo en `clients`
+  const loanClientIds = new Set(rawRouteLoans.map(l => l.clientId));
+  const orphanClientLoans: LoanDetail[] = routeClients
+    .filter(c => !loanClientIds.has(c.id))
+    .map(c => ({
+      id: `loan-sync-${c.id}`,
+      code: `PREST-${c.id.slice(-4).toUpperCase()}`,
+      clientId: c.id,
+      clientName: c.name,
+      tradeName: c.tradeName || c.name,
+      routeId: c.routeId,
+      principal: 500000,
+      interestRate: 20,
+      totalDebt: 600000,
+      installmentAmount: 25000,
+      termDays: 24,
+      installmentsPaid: 0,
+      totalCollected: 0,
+      remainingBalance: 600000,
+      disbursedDate: new Date().toISOString().split('T')[0],
+      dueDate: '',
+      daysOverdue: 0,
+      status: 'activo',
+      todayPaid: false,
+    }));
+
+  const routeLoans = [...rawRouteLoans, ...orphanClientLoans];
   
   const filteredLoans = routeLoans.filter(l => {
     const matchesSearch = 
@@ -137,8 +189,14 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
   const cashCollectedToday = currentRoute.dailyGrossCollected;
   const newDisbursementsToday = 0;
 
+  // Capital base activo asignado para esta semana (sincronizado con collector_bases)
+  const activeBaseAmount =
+    activeCollectorBase && activeCollectorBase.status === 'ACTIVA'
+      ? activeCollectorBase.amount
+      : currentRoute.baseFloatingCapital;
+
   // ARQUEO EN TIEMPO REAL: Efectivo Físico en Bolsillo
-  const cashInHand = currentRoute.baseFloatingCapital + cashCollectedToday - newDisbursementsToday - totalRouteExpenses;
+  const cashInHand = activeBaseAmount + cashCollectedToday - newDisbursementsToday - totalRouteExpenses;
 
   // ACCIÓN 1: MARCAR PAGADO DIRECTO (CUOTA COMPLETA CON 1-TOQUE)
   const handleQuickPayFull = (loan: LoanDetail) => {
@@ -315,6 +373,46 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
       {/* BANNER VISUAL DE CONEXIÓN Y COLA OFFLINE EN CALLE */}
       <OfflineNoticeBanner onSyncComplete={(count) => setOfflineQueue([])} />
 
+      {/* AVISO PROMINENTE DE BASE SEMANAL ACTIVA EN PODER DEL COBRADOR */}
+      <div className="bg-gradient-to-r from-indigo-950/90 via-slate-900 to-emerald-950/80 border-2 border-indigo-500/40 rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-3.5">
+          <div className="w-11 h-11 rounded-2xl bg-indigo-500/20 border border-indigo-400/30 text-indigo-300 flex items-center justify-center shrink-0">
+            <Coins className="w-6 h-6 text-emerald-400" />
+          </div>
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                Base Activa Actual: {activeCollectorBase?.status || 'ACTIVA'}
+              </span>
+              {activeCollectorBase?.weekStartDate && (
+                <span className="text-[11px] text-slate-300 font-mono">
+                  Semana desde: {activeCollectorBase.weekStartDate}
+                </span>
+              )}
+            </div>
+            <p className="text-base sm:text-lg font-black text-white mt-0.5 tracking-tight">
+              Base en poder:{' '}
+              <span className="text-emerald-400 font-mono">
+                {formatCOP(activeBaseAmount)} COP
+              </span>
+            </p>
+            <p className="text-[11px] text-slate-300">
+              Capital operativo semanal confiado por Administración a <strong className="text-white">{currentRoute.collectorName}</strong>. Responde por este monto en el arqueo de cierre.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex sm:flex-col items-center sm:items-end justify-between border-t sm:border-t-0 border-slate-800 pt-2 sm:pt-0 shrink-0">
+          <span className="text-[10px] font-mono text-indigo-300 flex items-center gap-1">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+            RLS: Solo tu base asignada
+          </span>
+          <span className="text-[10px] text-slate-400 font-mono mt-0.5">
+            Tabla: collector_bases
+          </span>
+        </div>
+      </div>
+
       {/* DISPOSICIÓN RESPONSIVA: 1 COLUMNA EN MÓVIL, 2 COLUMNAS EN TABLETA/COMPUTADORA */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-6 items-start">
         {/* COLUMNA IZQUIERDA: ARQUEO DE BOLSILLO EN CALLE & GASTOS */}
@@ -367,10 +465,10 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
 
             {/* DESGLOSE RÁPIDO: BASE, COBRADO, GASTOS */}
             <div className="grid grid-cols-3 gap-2 text-center text-xs">
-              <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
-                <span className="text-[10px] text-slate-400 block font-medium">Base Inicial</span>
-                <span className="text-xs sm:text-sm font-bold text-slate-200 font-mono mt-0.5 block">
-                  {formatCOP(currentRoute.baseFloatingCapital)}
+              <div className="bg-slate-950 p-2.5 rounded-xl border border-indigo-500/30">
+                <span className="text-[10px] text-indigo-300 block font-bold">Base en Poder</span>
+                <span className="text-xs sm:text-sm font-bold text-white font-mono mt-0.5 block">
+                  {formatCOP(activeBaseAmount)}
                 </span>
               </div>
               <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">

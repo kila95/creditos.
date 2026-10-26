@@ -1,14 +1,23 @@
-export type UserRole = 'admin' | 'socio' | 'cobrador' | 'cliente';
+export type UserRole =
+  | 'super_admin'
+  | 'admin'
+  | 'collector'
+  | 'socio'
+  | 'cobrador'
+  | 'cliente';
 
 export interface UserProfile {
   id: string;
   email: string;
   fullName: string;
   role: UserRole;
+  organizationId?: string; // ID del fondo/negocio vinculado al admin
+  organizationName?: string; // Nombre comercial del fondo/negocio
+  createdBy?: string; // UID del super_admin o admin que creó este usuario
   phone?: string;
   partnerEquityPct?: number; // % de participación si es socio (ej: 35.00)
   capitalInvestedCop?: number; // Capital aportado al fondo común
-  assignedRouteId?: string; // Para cobradores
+  assignedRouteId?: string; // Para collectors / cobradores
   documentId?: string;
   avatarUrl?: string;
   lastLoginAt?: string;

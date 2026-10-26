@@ -89,15 +89,26 @@ export interface RouteExpenseItem {
   isApproved: boolean;
 }
 
+export interface CollectorBase {
+  id: string;
+  collectorId: string;
+  collectorName: string;
+  routeId: string;
+  amount: number;
+  weekStartDate: string;
+  status: 'ACTIVA' | 'DEVUELTA';
+  createdAt: string;
+}
+
 export const INITIAL_ROUTES: RouteData[] = [
   {
     id: 'route-1',
     code: 'RUTA-MED-01',
     name: 'Comuna 13 - San Javier',
     zone: 'San Javier, 20 de Julio, El Salado',
-    collectorName: 'Julián Montoya',
-    collectorPhone: '+57 312 849 2011',
-    baseFloatingCapital: 300000,
+    collectorName: 'Jhon Alexander Zapata',
+    collectorPhone: '+57 314 555 9012',
+    baseFloatingCapital: 0,
     fixedDailyOpex: 45000,
     collectorCommissionRate: 3.5,
     targetRecoveryRate: 95.0,
@@ -118,7 +129,7 @@ export const INITIAL_ROUTES: RouteData[] = [
     zone: 'Manrique Central, Las Granjas, Aranjuez',
     collectorName: 'Carlos Mario Henao',
     collectorPhone: '+57 301 445 9932',
-    baseFloatingCapital: 400000,
+    baseFloatingCapital: 0,
     fixedDailyOpex: 50000,
     collectorCommissionRate: 4.0,
     targetRecoveryRate: 95.0,
@@ -141,4 +152,7 @@ export const INITIAL_LOANS: LoanDetail[] = [];
 export const INITIAL_LEDGER: LedgerEntry[] = [];
 
 export const INITIAL_EXPENSES: RouteExpenseItem[] = [];
+
+export const INITIAL_COLLECTOR_BASES: CollectorBase[] = [];
+
 
