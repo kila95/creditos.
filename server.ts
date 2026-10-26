@@ -4,7 +4,9 @@ import { requireAuth, AuthRequest } from './src/middleware/auth.ts';
 import { 
   getAllRoutes, 
   getAllClients, 
+  createClient,
   getAllLoans, 
+  createLoan,
   getDailyLedger, 
   recordPayment, 
   recordCashReconciliation, 
@@ -52,11 +54,29 @@ app.get('/api/clients', requireAuth, async (req: AuthRequest, res) => {
   }
 });
 
+app.post('/api/clients', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const client = await createClient(req.body);
+    res.status(201).json(client);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // API: Préstamos
 app.get('/api/loans', requireAuth, async (req: AuthRequest, res) => {
   try {
     const data = await getAllLoans();
     res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/loans', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const loan = await createLoan(req.body);
+    res.status(201).json(loan);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

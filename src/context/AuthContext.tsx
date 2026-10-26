@@ -29,25 +29,18 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [session, setSession] = useState<AuthSession | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState<boolean>(false);
 
   useEffect(() => {
-    // Al cargar la app, verificar si hay una sesión guardada
-    const stored = getStoredSession();
-    if (stored) {
-      setSession(stored);
-    } else {
-      // Iniciar por defecto con la sesión del CFO Principal para una experiencia fluida inmediata
-      const defaultAdmin = DEMO_USERS['admin@rutacapital.co'];
-      if (defaultAdmin) {
-        const defaultSession: AuthSession = {
-          user: { id: defaultAdmin.profile.id, email: defaultAdmin.profile.email },
-          profile: defaultAdmin.profile,
-          token: 'token-default-admin'
-        };
-        setSession(defaultSession);
-      }
+    // REGLA CRÍTICA DE ACCESO: Nunca iniciar sesión automáticamente ni recordar credenciales.
+    // Toda apertura de la app en celular o computadora debe exigir login manual.
+    try {
+      localStorage.removeItem('rutacapital_auth_session');
+      localStorage.removeItem('rutacapital_remembered_collector');
+    } catch (e) {
+      console.warn('Error limpiando sesión previa:', e);
     }
+    setSession(null);
     setLoading(false);
   }, []);
 

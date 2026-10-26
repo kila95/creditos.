@@ -48,6 +48,8 @@ import { AdminRouteGuard } from './components/AdminRouteGuard';
 import { AdminLoginView } from './components/AdminLoginView';
 import { CollectorRouteGuard } from './components/CollectorRouteGuard';
 import { CollectorLoginView } from './components/CollectorLoginView';
+import { NewClientLoanModal } from './components/NewClientLoanModal';
+import { UnifiedLoginView } from './components/UnifiedLoginView';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { useOnlineStatus, syncOfflineQueueWithServer, enqueueOfflinePayment } from './utils/offlineSync';
 
@@ -78,6 +80,7 @@ function MainAppContent() {
   const [expenses, setExpenses] = useState<RouteExpenseItem[]>(INITIAL_EXPENSES);
   const [ledger, setLedger] = useState<LedgerEntry[]>(INITIAL_LEDGER);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>(INITIAL_AUDIT_LOGS);
+  const [showNewClientModal, setShowNewClientModal] = useState<boolean>(false);
 
   // Estado de conexión y latencia con Cloud SQL
   const [cloudSqlStatus, setCloudSqlStatus] = useState<'connected' | 'offline' | 'checking'>('checking');
@@ -96,6 +99,63 @@ function MainAppContent() {
           if (isMounted) {
             setCloudSqlStatus('connected');
             setCloudSqlLatency(latency);
+          }
+
+          // Cargar clientes y préstamos reales desde Cloud SQL
+          try {
+            const [cRes, lRes] = await Promise.all([
+              fetch('/api/clients'),
+              fetch('/api/loans')
+            ]);
+            if (cRes.ok && lRes.ok) {
+              const cData = await cRes.json();
+              const lData = await lRes.json();
+              if (isMounted && Array.isArray(cData)) {
+                setClients(cData.map((c: any) => ({
+                  id: c.id,
+                  name: c.name,
+                  tradeName: c.alias || c.name,
+                  category: c.businessType || 'Comercio',
+                  document: c.documentId || c.document_id || '',
+                  phone: c.phone || '',
+                  address: c.address || '',
+                  neighborhood: c.zone || '',
+                  routeId: c.routeId || c.route_id || 'route-1',
+                  riskTier: c.riskLevel === 'verde' ? 'A_excelente' : c.riskLevel === 'amarillo' ? 'B_promedio' : 'C_alto_riesgo',
+                  daysOverdue: 0,
+                  hasPreventiveBlock: false,
+                  guarantorName: 'Fiador registrado',
+                  guarantorPhone: c.phone || '',
+                  lat: 6.2518,
+                  lng: -75.6142
+                })));
+              }
+              if (isMounted && Array.isArray(lData)) {
+                setLoans(lData.map((l: any) => ({
+                  id: l.id,
+                  code: `PREST-${l.id.slice(-6)}`,
+                  clientId: l.clientId || l.client_id,
+                  clientName: 'Deudor',
+                  tradeName: 'Comercio',
+                  routeId: l.routeId || l.route_id,
+                  principal: Number(l.principalAmount || l.principal_amount || 0),
+                  interestRate: Number(l.interestRate || l.interest_rate || 20),
+                  totalDebt: Number(l.totalAmount || l.total_amount || 0),
+                  installmentAmount: Number(l.dailyQuota || l.daily_quota || 0),
+                  termDays: Number(l.totalDays || l.total_days || 24),
+                  installmentsPaid: Number(l.paidDays || l.paid_days || 0),
+                  totalCollected: Number(l.totalAmount || 0) - Number(l.remainingBalance || 0),
+                  remainingBalance: Number(l.remainingBalance || l.remaining_balance || 0),
+                  disbursedDate: l.startDate || l.start_date || new Date().toISOString().split('T')[0],
+                  dueDate: l.expectedEndDate || l.expected_end_date || '',
+                  daysOverdue: 0,
+                  status: l.status === 'completed' ? 'liquidado' : 'activo',
+                  todayPaid: false
+                })));
+              }
+            }
+          } catch (syncErr) {
+            console.warn('Error sincronizando clientes desde Cloud SQL:', syncErr);
           }
 
           // Si hay conexión, sincronizar cola offline pendiente
@@ -120,6 +180,38 @@ function MainAppContent() {
       clearInterval(interval);
     };
   }, [isOnline]);
+
+  const handleClientCreated = (newClient: ClientProfile, newLoan: LoanDetail) => {
+    setClients(prev => [newClient, ...prev]);
+    setLoans(prev => [newLoan, ...prev]);
+    setRoutes(prev => prev.map(r => {
+      if (r.id === newLoan.routeId) {
+        return {
+          ...r,
+          activeLoansCount: r.activeLoansCount + 1,
+          totalPortfolio: r.totalPortfolio + newLoan.remainingBalance,
+          dailyGrossExpected: r.dailyGrossExpected + newLoan.installmentAmount
+        };
+      }
+      return r;
+    }));
+
+    const auditEvent: AuditLogItem = {
+      id: `aud-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      actor: profile?.email || 'admin_cfo@rutacapital.co',
+      role: 'Administrador CFO',
+      action: 'PRORROGA_PLAZO_AUTORIZADA',
+      targetEntity: `clients (${newClient.name}) & loan (${newLoan.code})`,
+      targetId: newClient.id,
+      oldValue: 'null',
+      newValue: `Monto: $${newLoan.principal.toLocaleString()} COP, Cuota: $${newLoan.installmentAmount.toLocaleString()} COP`,
+      justification: `Vincular nuevo deudor formal y apertura de microcrédito en ${newClient.neighborhood}.`,
+      ipAddress: '190.157.24.81',
+      immutableHash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2)
+    };
+    setAuditLogs(prev => [auditEvent, ...prev]);
+  };
 
   // Registro de pago en calle o billetera (persistencia en tiempo real a Cloud SQL)
   const handleRegisterPayment = (
@@ -445,6 +537,88 @@ function MainAppContent() {
     }
   };
 
+  // REGLA CRÍTICA DE ACCESO: PANTALLA DE INICIO OBLIGATORIA (LOGIN INICIAL)
+  // La aplicación nunca debe iniciar sesión automáticamente ni mostrar datos antes de autenticarse.
+  if (!isAuthenticated && activeRole !== 'client_borrower') {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+        {/* BARRA SUPERIOR DE SELECTOR DE DISPOSITIVOS RESPONSIVE (COMPUTADORA / TABLETA / MÓVIL) */}
+        <div className="bg-slate-950 border-b border-slate-900 py-1.5 px-4 text-xs">
+          <div className="max-w-7xl mx-auto flex items-center justify-between">
+            <div className="flex items-center gap-1 text-[11px] text-slate-400">
+              <span className="hidden sm:inline">Modo Adaptativo Multi-Dispositivo:</span>
+              <div className="flex bg-slate-900 p-0.5 rounded-lg border border-slate-800">
+                <button
+                  onClick={() => setViewportMode('auto')}
+                  className={`px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
+                    viewportMode === 'auto' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                  title="Ajuste fluido automático"
+                >
+                  Fluido (Auto)
+                </button>
+                <button
+                  onClick={() => setViewportMode('desktop')}
+                  className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
+                    viewportMode === 'desktop' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                  title="Computadora"
+                >
+                  <Monitor className="w-3 h-3" />
+                  <span className="hidden md:inline">Computadora</span>
+                </button>
+                <button
+                  onClick={() => setViewportMode('tablet')}
+                  className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
+                    viewportMode === 'tablet' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                  title="Tableta"
+                >
+                  <Tablet className="w-3 h-3" />
+                  <span>Tableta</span>
+                </button>
+                <button
+                  onClick={() => setViewportMode('mobile')}
+                  className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold transition-all ${
+                    viewportMode === 'mobile' ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                  title="Móvil"
+                >
+                  <Smartphone className="w-3 h-3" />
+                  <span>Móvil</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-mono font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full flex items-center gap-1">
+                <Lock className="w-3 h-3" />
+                ACCESO RESTRINGIDO
+              </span>
+              <PWAInstallButton />
+            </div>
+          </div>
+        </div>
+
+        {/* PANTALLA DE LOGIN INICIAL OBLIGATORIA */}
+        <main className={`flex-1 ${getContainerMaxWidth()} flex items-center justify-center p-3 sm:p-4`}>
+          <UnifiedLoginView
+            onLoginSuccess={(loggedRole) => {
+              if (loggedRole === 'cobrador') {
+                setActiveRole('collector_street');
+              } else if (loggedRole === 'socio') {
+                setActiveRole('investor_fund');
+              } else {
+                setActiveRole('admin_cfo');
+              }
+            }}
+            onOpenClientPortal={() => setActiveRole('client_borrower')}
+          />
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
       {/* BARRA SUPERIOR DE SELECTOR DE DISPOSITIVOS RESPONSIVE (COMPUTADORA / TABLETA / MÓVIL) */}
@@ -653,16 +827,12 @@ function MainAppContent() {
             </button>
 
             <button
-              onClick={() => setActiveRole('auth_portal')}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl font-semibold transition-all whitespace-nowrap ${
-                activeRole === 'auth_portal'
-                  ? 'bg-amber-600 text-white shadow-md shadow-amber-900/40'
-                  : 'text-amber-400 hover:text-amber-300'
-              }`}
-              title="Portal de Login y Control de Roles"
+              onClick={logout}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl font-bold transition-all whitespace-nowrap text-rose-400 hover:bg-rose-500/20 border border-rose-500/30"
+              title="Cerrar sesión y bloquear app"
             >
-              <KeyRound className="w-3.5 h-3.5" />
-              <span>Login RBAC</span>
+              <LogOut className="w-3.5 h-3.5" />
+              <span>Cerrar Sesión</span>
             </button>
           </nav>
 
@@ -689,7 +859,6 @@ function MainAppContent() {
               { id: 'security_geofence', name: '5. Ciberseguridad & Geocercas', icon: Radar },
               { id: 'audit_logs', name: '6. Auditoría Inmutable (Logs SHA-256)', icon: ShieldAlert },
               { id: 'supabase_sql', name: '7. Script Supabase (SQL DDL & RLS)', icon: Database },
-              { id: 'auth_portal', name: '8. Autenticación & Cambio de Rol (RBAC)', icon: KeyRound },
             ].map((item) => {
               const Icon = item.icon;
               return (
@@ -710,6 +879,17 @@ function MainAppContent() {
                 </button>
               );
             })}
+
+            <button
+              onClick={() => {
+                logout();
+                setMobileMenuOpen(false);
+              }}
+              className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold text-rose-300 bg-rose-500/15 border border-rose-500/30 hover:bg-rose-500/25 transition-all mt-2"
+            >
+              <LogOut className="w-4 h-4 text-rose-400" />
+              <span>Cerrar Sesión (Bloquear Acceso)</span>
+            </button>
           </div>
         )}
       </header>
@@ -733,6 +913,7 @@ function MainAppContent() {
               onReassignClientRoute={handleReassignClientRoute}
               onConfirmReconciliation={handleConfirmReconciliation}
               onNavigateToTab={(tab) => setActiveRole(tab as ActiveRole)}
+              onOpenNewClientModal={() => setShowNewClientModal(true)}
             />
           </AdminRouteGuard>
         )}
@@ -768,6 +949,7 @@ function MainAppContent() {
                   onRegisterPayment={handleRegisterPayment}
                   onRegisterExpense={handleRegisterExpense}
                   onConfirmReconciliation={handleConfirmReconciliation}
+                  onRegisterNewClient={handleClientCreated}
                 />
               );
             }}
@@ -862,6 +1044,15 @@ function MainAppContent() {
           </div>
         )}
       </main>
+
+      {/* MODAL DE VINCULACIÓN DE NUEVO CLIENTE & PRÉSTAMO */}
+      {showNewClientModal && (
+        <NewClientLoanModal
+          routes={routes}
+          onClose={() => setShowNewClientModal(false)}
+          onClientCreated={handleClientCreated}
+        />
+      )}
 
       {/* BARRA INFERIOR STICKY PARA MÓVIL (QUICK BOTTOM NAVIGATION) */}
       <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 flex justify-around p-1.5">

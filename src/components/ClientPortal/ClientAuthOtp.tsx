@@ -23,7 +23,7 @@ export const ClientAuthOtp: React.FC<ClientAuthOtpProps> = ({
   onAuthenticated,
   defaultDocument
 }) => {
-  const [documentInput, setDocumentInput] = useState(defaultDocument || '71.392.410');
+  const [documentInput, setDocumentInput] = useState(defaultDocument || '');
   const [step, setStep] = useState<'document' | 'otp'>('document');
   const [otpCode, setOtpCode] = useState(['', '', '', '', '', '']);
   const [generatedOtp, setGeneratedOtp] = useState<string>('842915');

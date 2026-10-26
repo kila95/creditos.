@@ -163,3 +163,78 @@ export async function getAuditLogs() {
     throw new Error('No se pudo obtener la bitácora de auditoría.', { cause: error });
   }
 }
+
+export async function createClient(data: {
+  id: string;
+  documentId: string;
+  name: string;
+  alias?: string;
+  phone: string;
+  businessType: string;
+  address: string;
+  zone: string;
+  routeId: string;
+  riskScore?: number;
+  riskLevel?: string;
+  creditLimit: number;
+}) {
+  try {
+    const inserted = await db.insert(clients).values({
+      id: data.id,
+      documentId: data.documentId,
+      name: data.name,
+      alias: data.alias || null,
+      phone: data.phone,
+      businessType: data.businessType,
+      address: data.address,
+      zone: data.zone,
+      routeId: data.routeId,
+      riskScore: data.riskScore ?? 75,
+      riskLevel: data.riskLevel ?? 'verde',
+      creditLimit: data.creditLimit.toString(),
+    }).returning();
+    return inserted[0];
+  } catch (error) {
+    console.error('Error al insertar cliente en Cloud SQL:', error);
+    throw new Error('Error al registrar nuevo cliente.', { cause: error });
+  }
+}
+
+export async function createLoan(data: {
+  id: string;
+  clientId: string;
+  routeId: string;
+  principalAmount: number;
+  interestRate: number;
+  totalAmount: number;
+  dailyQuota: number;
+  remainingBalance: number;
+  totalDays: number;
+  paidDays?: number;
+  status?: string;
+  startDate: string;
+  expectedEndDate: string;
+}) {
+  try {
+    const inserted = await db.insert(loans).values({
+      id: data.id,
+      clientId: data.clientId,
+      routeId: data.routeId,
+      principalAmount: data.principalAmount.toString(),
+      interestRate: data.interestRate.toString(),
+      totalAmount: data.totalAmount.toString(),
+      dailyQuota: data.dailyQuota.toString(),
+      remainingBalance: data.remainingBalance.toString(),
+      totalDays: data.totalDays,
+      paidDays: data.paidDays ?? 0,
+      status: data.status ?? 'active',
+      startDate: data.startDate,
+      expectedEndDate: data.expectedEndDate,
+    }).returning();
+    return inserted[0];
+  } catch (error) {
+    console.error('Error al insertar préstamo en Cloud SQL:', error);
+    throw new Error('Error al registrar nuevo microcrédito.', { cause: error });
+  }
+}
+

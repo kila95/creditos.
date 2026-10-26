@@ -15,7 +15,8 @@ import {
   ArrowRightLeft,
   Sparkles,
   FileCheck,
-  Bot
+  Bot,
+  UserPlus
 } from 'lucide-react';
 import { 
   RouteData, 
@@ -48,6 +49,7 @@ interface AdminDashboardProps {
   onReassignClientRoute: (clientId: string, newRouteId: string) => void;
   onConfirmReconciliation: (routeId: string, actualCash: number, discrepancy: number, notes: string) => void;
   onNavigateToTab?: (tab: string) => void;
+  onOpenNewClientModal?: () => void;
 }
 
 export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
@@ -60,7 +62,8 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
   onToggleClientBlock,
   onReassignClientRoute,
   onConfirmReconciliation,
-  onNavigateToTab
+  onNavigateToTab,
+  onOpenNewClientModal
 }) => {
   // Modales avanzados
   const [showRiskModal, setShowRiskModal] = useState(false);
@@ -129,6 +132,16 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
 
           {/* BOTONES DE OPERACIONES AVANZADAS */}
           <div className="flex flex-wrap items-center gap-2">
+            {onOpenNewClientModal && (
+              <button
+                onClick={onOpenNewClientModal}
+                className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-md shadow-emerald-950/40"
+              >
+                <UserPlus className="w-4 h-4" />
+                + Nuevo Cliente / Crédito
+              </button>
+            )}
+
             <button
               onClick={() => setShowAiNegotiatorModal(true)}
               className="px-3 py-2 bg-gradient-to-r from-purple-600/30 to-indigo-600/30 hover:from-purple-600/40 hover:to-indigo-600/40 text-purple-200 border border-purple-500/40 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-md shadow-purple-950/40"
@@ -154,6 +167,34 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
             </button>
           </div>
         </div>
+
+        {/* BANNER DE BASE DE DATOS LIMPIA (LISTA PARA NUEVOS CLIENTES) */}
+        {clients.length === 0 && (
+          <div className="mt-4 bg-emerald-950/30 border border-emerald-500/30 rounded-xl p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                <UserPlus className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="font-bold text-white text-xs block">
+                  Base de Datos Limpia (0 Registros de Prueba)
+                </span>
+                <span className="text-[11px] text-slate-300 block">
+                  Tablas y esquemas de Cloud SQL preservados al 100%. Lista para vincular los primeros deudores reales de la ruta.
+                </span>
+              </div>
+            </div>
+            {onOpenNewClientModal && (
+              <button
+                onClick={onOpenNewClientModal}
+                className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-md shadow-emerald-950/40 shrink-0"
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                Registrar Primer Cliente
+              </button>
+            )}
+          </div>
+        )}
 
         {/* ALERTA DE ANOMALÍAS EN RUTA */}
         {anomalies.length > 0 && (
