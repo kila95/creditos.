@@ -1,0 +1,6 @@
+{
+  "name": "RutaCapital OS - Microcrédito & Liquidez",
+  "description": "Plataforma de arquitectura de datos PostgreSQL/Supabase, ledger inmutable de cobros diarios, control de rutas y gestión de liquidez para microfinanzas de alto riesgo.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
