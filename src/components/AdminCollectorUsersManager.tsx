@@ -17,7 +17,7 @@ import {
   Compass,
 } from 'lucide-react';
 import { RouteData } from '../data/mockData';
-import { registerNewCollectorAccount, DEMO_USERS } from '../services/supabaseAuth';
+import { registerNewCollectorAccount, DEMO_USERS, supabase, isLiveSupabaseConfigured } from '../services/supabaseAuth';
 import { useAuth } from '../context/AuthContext';
 
 export interface MedellinZoneOption {
@@ -152,14 +152,54 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
   const loadCollectors = useCallback(async () => {
     setIsLoadingList(true);
     try {
+      const mergedMap = new Map<string, CollectorUserRecord>();
+
+      // 1. Consultar directamente Supabase (tabla public.profiles) si está configurado
+      if (isLiveSupabaseConfigured) {
+        const { data: sbCollectors, error: sbErr } = await supabase
+          .from('profiles')
+          .select('*')
+          .in('role', ['collector', 'cobrador'])
+          .order('created_at', { ascending: false });
+
+        if (sbErr) {
+          console.error('❌ [Supabase SELECT profiles (collector) Error]:', sbErr);
+        } else if (Array.isArray(sbCollectors)) {
+          sbCollectors.forEach((u: any) => {
+            const normEmail = (u.email || '').trim().toLowerCase();
+            if (!normEmail) return;
+            const assignedId = u.assigned_route_id || u.assignedRouteId || 'route-1';
+            const fallbackRoute = routes.find((r) => r.id === assignedId);
+            mergedMap.set(normEmail, {
+              uid: u.id,
+              email: u.email,
+              name: u.full_name || u.name || 'Cobrador',
+              role: u.role || 'collector',
+              assignedRouteId: assignedId,
+              routeZone: u.route_zone || u.routeZone || fallbackRoute?.zone || 'Centro / El Hueco',
+              organizationId: u.organization_id || u.tenant_id || 'org-medellin-01',
+              organizationName: u.organization_name || 'Fondo RutaCapital Medellín Central',
+              createdBy: u.created_by || 'usr-admin-001',
+              phone: u.phone || '',
+              documentId: u.document_id || '',
+              isActive: u.is_active ?? true,
+              createdAt: u.created_at || new Date().toISOString(),
+            });
+          });
+        }
+      }
+
+      // 2. Consultar también el backend PostgreSQL (/api/collectors)
       const res = await fetch('/api/collectors');
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
-          const mapped: CollectorUserRecord[] = data.map((u: any) => {
+          data.forEach((u: any) => {
+            const normEmail = (u.email || '').trim().toLowerCase();
+            if (!normEmail || mergedMap.has(normEmail)) return;
             const assignedId = u.assignedRouteId || u.assigned_route_id || 'route-1';
             const fallbackRoute = routes.find((r) => r.id === assignedId);
-            return {
+            mergedMap.set(normEmail, {
               uid: u.uid || String(u.id),
               email: u.email,
               name: u.name,
@@ -180,38 +220,40 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
               documentId: u.documentId || u.document_id || '',
               isActive: u.isActive ?? u.is_active ?? true,
               createdAt: u.createdAt || u.created_at,
-            };
+            });
           });
-
-          mapped.forEach((col) => {
-            const norm = col.email.trim().toLowerCase();
-            if (!DEMO_USERS[norm]) {
-              DEMO_USERS[norm] = {
-                password: 'cobrador123@Medellin',
-                profile: {
-                  id: col.uid,
-                  email: col.email,
-                  fullName: col.name,
-                  role: 'collector',
-                  assignedRouteId: col.assignedRouteId,
-                  routeZone: col.routeZone,
-                  organizationId: col.organizationId,
-                  organizationName: col.organizationName,
-                  createdBy: col.createdBy,
-                  phone: col.phone,
-                  documentId: col.documentId,
-                  isActive: col.isActive,
-                  createdAt: col.createdAt || new Date().toISOString(),
-                },
-              };
-            }
-          });
-
-          setCollectors(mapped);
         }
       }
+
+      const finalCollectors = Array.from(mergedMap.values());
+
+      finalCollectors.forEach((col) => {
+        const norm = col.email.trim().toLowerCase();
+        if (!DEMO_USERS[norm]) {
+          DEMO_USERS[norm] = {
+            password: 'cobrador123@Medellin',
+            profile: {
+              id: col.uid,
+              email: col.email,
+              fullName: col.name,
+              role: 'collector',
+              assignedRouteId: col.assignedRouteId,
+              routeZone: col.routeZone,
+              organizationId: col.organizationId,
+              organizationName: col.organizationName,
+              createdBy: col.createdBy,
+              phone: col.phone,
+              documentId: col.documentId,
+              isActive: col.isActive,
+              createdAt: col.createdAt || new Date().toISOString(),
+            },
+          };
+        }
+      });
+
+      setCollectors(finalCollectors);
     } catch (err) {
-      console.warn('Error cargando listado de cobradores:', err);
+      console.error('Error cargando listado de cobradores:', err);
     } finally {
       setIsLoadingList(false);
     }
@@ -288,12 +330,8 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
     setIsSubmitting(false);
 
     if (error || !createdProfile) {
-      const isDup = error?.includes('23505') || error?.toLowerCase().includes('ya existe');
-      setErrorMsg(
-        isDup
-          ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
-          : error || 'No se pudo crear el usuario cobrador.'
-      );
+      console.error('❌ [Bloqueo de creación de Cobrador]:', error);
+      setErrorMsg(error || 'Error al guardar en base de datos: No se pudo crear el usuario cobrador.');
       return;
     }
 

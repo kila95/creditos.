@@ -102,9 +102,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, authSession) => {
       clearTimeout(timer);
-      if (event === 'SIGNED_OUT' || event === 'USER_UPDATED') {
-        localStorage.clear();
-        sessionStorage.clear();
+      if (event === 'SIGNED_OUT') {
+        localStorage.removeItem('rutacapital_auth_session');
+        sessionStorage.removeItem('rutacapital_auth_session');
         setSession(null);
       } else if (event === 'SIGNED_IN' && authSession?.user) {
         const { data: profileData } = await supabase
@@ -148,10 +148,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async (email: string, password: string, rememberMe: boolean = true): Promise<{ success: boolean; role?: UserRole; error?: string }> => {
     try {
-      localStorage.clear();
-      sessionStorage.clear();
+      localStorage.removeItem('rutacapital_auth_session');
+      sessionStorage.removeItem('rutacapital_auth_session');
     } catch (e) {
-      console.warn('Error purging storage before login:', e);
+      console.warn('Error purging session before login:', e);
     }
 
     setLoading(true);
@@ -169,11 +169,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = async () => {
     setIsLoggingOut(true);
     try {
-      localStorage.clear();
-      sessionStorage.clear();
+      localStorage.removeItem('rutacapital_auth_session');
+      sessionStorage.removeItem('rutacapital_auth_session');
       await signOutUser();
     } catch (e) {
-      console.warn('Error during logout cache purge:', e);
+      console.warn('Error during logout session purge:', e);
     }
     
     setTimeout(() => {

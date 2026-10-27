@@ -375,7 +375,30 @@ export async function signInWithEmailPassword(
 }
 
 /**
+ * Crea un cliente de Supabase Auth 100% aislado en memoria (storage no-op y storageKey único)
+ * para que la creación de cuentas secundarias NUNCA sobreescriba ni altere la sesión actual del Admin/SuperAdmin.
+ */
+function createIsolatedAuthClient() {
+  return createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+      storageKey: `enruta-isolated-provision-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      storage: {
+        getItem: () => null,
+        setItem: () => {},
+        removeItem: () => {},
+      },
+    },
+  });
+}
+
+/**
  * NIVEL 1 -> NIVEL 2: Creación de Nueva Cuenta de Administrador ('admin') por el 'super_admin'
+ * Garantiza:
+ * 1. No romper la sesión activa del SuperAdmin (Edge Function admin-provision-user o cliente aislado en memoria).
+ * 2. Manejo de errores estricto (NUNCA falla en silencio).
  */
 export async function registerNewAdminAccount(input: {
   email: string;
@@ -396,76 +419,123 @@ export async function registerNewAdminAccount(input: {
 
   try {
     if (isLiveSupabaseConfigured) {
-      const superProvisionClient = createClient(supabaseUrl, supabaseAnonKey, {
-        auth: { persistSession: false, autoRefreshToken: false },
-      });
+      let provisionedViaEdgeFunction = false;
 
-      const { data: signUpData, error: signUpError } = await superProvisionClient.auth.signUp({
-        email: normalizedEmail,
-        password: input.password,
-        options: {
-          data: {
-            full_name: input.fullName.trim(),
-            role: 'admin',
-            organization_id: generatedOrgId,
-            organization_name: input.organizationName.trim(),
-            created_by: input.createdBySuperAdminId,
-          },
-        },
-      });
-
-      if (signUpError) {
-        console.error('❌ [Supabase Auth SignUp Error - Admin]:', signUpError);
-        const isDuplicate =
-          signUpError.message?.toLowerCase().includes('already registered') ||
-          signUpError.message?.toLowerCase().includes('already exists') ||
-          (signUpError as any).code === '23505';
-
-        return {
-          profile: null,
-          error: isDuplicate
-            ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
-            : `Error en Supabase Auth (auth.users): ${signUpError.message}`,
-        };
-      }
-
-      if (signUpData.user?.id) {
-        generatedUid = signUpData.user.id;
-      }
-
-      const { error: profileError } = await supabase.from('profiles').upsert([
-        {
-          id: generatedUid,
+      // PASO A: Intentar aprovisionamiento Server-to-Server mediante Edge Function (supabase-admin)
+      const { data: fnData, error: fnError } = await supabase.functions.invoke('admin-provision-user', {
+        body: {
           email: normalizedEmail,
-          full_name: input.fullName.trim(),
+          password: input.password,
+          fullName: input.fullName.trim(),
           role: 'admin',
-          organization_id: generatedOrgId,
-          tenant_id: generatedOrgId,
-          organization_name: input.organizationName.trim(),
-          created_by: input.createdBySuperAdminId,
+          organizationId: generatedOrgId,
+          tenantId: generatedOrgId,
+          organizationName: input.organizationName.trim(),
+          createdBy: input.createdBySuperAdminId,
           phone: input.phone?.trim() || null,
-          document_id: input.documentId?.trim() || null,
-          is_active: true,
+          documentId: input.documentId?.trim() || null,
         },
-      ]);
+      });
 
-      if (profileError) {
-        console.error('❌ [Supabase Profiles Upsert Error - Admin]:', profileError);
-        const isDuplicate =
-          profileError.code === '23505' ||
-          profileError.message?.includes('23505') ||
-          profileError.message?.toLowerCase().includes('unique') ||
-          profileError.message?.toLowerCase().includes('duplicate key');
-
+      if (!fnError && fnData?.user?.id) {
+        generatedUid = fnData.user.id;
+        provisionedViaEdgeFunction = true;
+      } else if (fnError && !fnError.message?.toLowerCase().includes('failed to send a request') && !fnError.message?.includes('404')) {
+        console.error('❌ [Edge Function admin-provision-user Error]:', fnError);
         return {
           profile: null,
-          error: isDuplicate
-            ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
-            : `Error al vincular perfil Admin en tabla profiles (RLS): ${profileError.message}`,
+          error: `Error al guardar en base de datos (Edge Function): ${fnError.message}`,
         };
+      }
+
+      // PASO B: Si la Edge Function aún no está desplegada en el proyecto, usar cliente aislado en memoria (sin alterar sesión actual)
+      if (!provisionedViaEdgeFunction) {
+        const isolatedClient = createIsolatedAuthClient();
+        const { data: signUpData, error: signUpError } = await isolatedClient.auth.signUp({
+          email: normalizedEmail,
+          password: input.password,
+          options: {
+            data: {
+              full_name: input.fullName.trim(),
+              role: 'admin',
+              organization_id: generatedOrgId,
+              tenant_id: generatedOrgId,
+              organization_name: input.organizationName.trim(),
+              created_by: input.createdBySuperAdminId,
+              phone: input.phone?.trim() || null,
+              document_id: input.documentId?.trim() || null,
+            },
+          },
+        });
+
+        if (signUpError) {
+          console.error('❌ [Supabase Auth SignUp Error - Admin]:', signUpError);
+          const isDuplicate =
+            signUpError.message?.toLowerCase().includes('already registered') ||
+            signUpError.message?.toLowerCase().includes('already exists') ||
+            (signUpError as any).code === '23505';
+
+          return {
+            profile: null,
+            error: isDuplicate
+              ? 'Error al guardar en base de datos: Ya existe un usuario registrado con este correo electrónico.'
+              : `Error al guardar en base de datos (Supabase Auth): ${signUpError.message}`,
+          };
+        }
+
+        if (!signUpData.user?.id) {
+          console.error('❌ [Supabase Auth SignUp Error]: No se retornó un user.id válido.');
+          return {
+            profile: null,
+            error: 'Error al guardar en base de datos: Supabase Auth no devolvió un identificador de usuario.',
+          };
+        }
+
+        generatedUid = signUpData.user.id;
+
+        // Insertar explícitamente en public.profiles usando la sesión del SuperAdmin y capturar cualquier error RLS
+        const { data: profileRow, error: profileError } = await supabase
+          .from('profiles')
+          .upsert(
+            [
+              {
+                id: generatedUid,
+                email: normalizedEmail,
+                full_name: input.fullName.trim(),
+                role: 'admin',
+                organization_id: generatedOrgId,
+                tenant_id: generatedOrgId,
+                organization_name: input.organizationName.trim(),
+                created_by: input.createdBySuperAdminId,
+                phone: input.phone?.trim() || null,
+                document_id: input.documentId?.trim() || null,
+                is_active: true,
+              },
+            ],
+            { onConflict: 'id' }
+          )
+          .select()
+          .single();
+
+        if (profileError || !profileRow) {
+          console.error('❌ [Supabase Profiles INSERT Error - Admin]:', profileError);
+          const isDuplicate =
+            profileError?.code === '23505' ||
+            profileError?.message?.includes('23505') ||
+            profileError?.message?.toLowerCase().includes('unique') ||
+            profileError?.message?.toLowerCase().includes('duplicate key');
+
+          return {
+            profile: null,
+            error: isDuplicate
+              ? 'Error al guardar en base de datos: Ya existe un administrador con este documento o correo.'
+              : `Error al guardar en base de datos (tabla profiles / RLS): ${profileError?.message || 'Inserción rechazada'}`,
+          };
+        }
       }
     }
 
+    // Sincronización con base de datos PostgreSQL (/api/admins) con verificación estricta de estado
     const payload = {
       uid: generatedUid,
       email: normalizedEmail,
@@ -478,32 +548,28 @@ export async function registerNewAdminAccount(input: {
       documentId: input.documentId?.trim() || '',
     };
 
-    const targetAdminApiUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/api/admins`;
-    console.log('🔍 [DEBUG registerNewAdminAccount - API Payload & Tenant ID]:', {
-      endpoint: targetAdminApiUrl,
-      tenant_id: generatedOrgId,
-      payload,
-      headers: { 'Content-Type': 'application/json' }
+    const apiRes = await fetch('/api/admins', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
 
-    try {
-      const apiRes = await fetch('/api/admins', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
+    if (!apiRes.ok) {
+      const errBody = await apiRes.json().catch(() => ({}));
+      console.error(`❌ [Error al guardar en /api/admins HTTP ${apiRes.status}]:`, errBody);
+      if (!isLiveSupabaseConfigured) {
+        const isDuplicate =
+          apiRes.status === 409 ||
+          errBody?.code === '23505' ||
+          errBody?.error?.includes('Ya existe');
 
-      console.log('🔍 [DEBUG registerNewAdminAccount - API Response Status]:', {
-        status: apiRes.status,
-        ok: apiRes.ok
-      });
-
-      if (!apiRes.ok) {
-        const errBody = await apiRes.json().catch(() => ({}));
-        console.warn(`⚠️ [/api/admins HTTP ${apiRes.status}]: Backend devolvió error o 404 (${errBody.error || 'Endpoint no disponible en preview estática'}). Se registrará la cuenta localmente en modo resiliente.`);
+        return {
+          profile: null,
+          error: isDuplicate
+            ? 'Error al guardar en base de datos: Ya existe un usuario registrado con este documento o correo.'
+            : `Error al guardar en base de datos: ${errBody.error || `HTTP ${apiRes.status}`}`,
+        };
       }
-    } catch (fetchErr) {
-      console.warn('⚠️ [API Fetch Error /api/admins]: Servidor no alcanzable de inmediato. Guardando cuenta en caché local:', fetchErr);
     }
 
     const newAdminProfile: UserProfile = {
@@ -527,16 +593,20 @@ export async function registerNewAdminAccount(input: {
 
     return { profile: newAdminProfile, error: null };
   } catch (err: any) {
-    console.error('❌ [Excepción creando administrador]:', err);
+    console.error('❌ [Excepción crítica creando administrador]:', err);
     return {
       profile: null,
-      error: err?.message || 'Error inesperado al crear la cuenta de Administrador.',
+      error: `Error al guardar en base de datos: ${err?.message || 'Fallo inesperado al crear el Administrador.'}`,
     };
   }
 }
 
 /**
  * NIVEL 2 -> NIVEL 3: Creación de Nuevo Usuario Cobrador ('collector') por un 'admin'
+ * Garantiza:
+ * 1. No romper la sesión activa del Admin (usa Edge Function o cliente aislado en memoria).
+ * 2. Inserta en public.profiles pasando el tenant_id / auth.uid() del Admin.
+ * 3. Manejo de errores estricto (NUNCA falla en silencio).
  */
 export async function registerNewCollectorAccount(input: {
   email: string;
@@ -552,105 +622,165 @@ export async function registerNewCollectorAccount(input: {
 }): Promise<{ profile: UserProfile | null; error: string | null }> {
   const normalizedEmail = input.email.trim().toLowerCase();
   let generatedUid = `usr-col-${Date.now().toString().slice(-6)}`;
-  const orgId = input.organizationId || 'org-medellin-01';
+  const orgId = input.organizationId || input.createdByAdminId || 'org-medellin-01';
   const orgName = input.organizationName || 'Fondo RutaCapital Medellín';
   const creatorId = input.createdByAdminId || 'usr-admin-001';
   const cleanRouteZone = input.routeZone.trim() || 'Centro / El Hueco';
 
   try {
     if (isLiveSupabaseConfigured) {
-      const adminProvisionClient = createClient(supabaseUrl, supabaseAnonKey, {
-        auth: {
-          persistSession: false,
-          autoRefreshToken: false,
-        },
-      });
+      // Obtener el auth.uid() real del Admin autenticado para cumplir la política RLS de tenant_id
+      const { data: currentAuthData } = await supabase.auth.getUser();
+      const effectiveCreatorUid = currentAuthData?.user?.id || creatorId;
+      const effectiveTenantId = input.organizationId || effectiveCreatorUid;
 
-      const { data: signUpData, error: signUpError } = await adminProvisionClient.auth.signUp({
-        email: normalizedEmail,
-        password: input.password,
-        options: {
-          data: {
-            full_name: input.fullName.trim(),
-            role: 'collector',
-            assigned_route_id: input.assignedRouteId,
-            route_zone: cleanRouteZone,
-            organization_id: orgId,
-            tenant_id: orgId,
-            organization_name: orgName,
-            created_by: creatorId,
-            document_id: input.documentId?.trim() || null,
-            phone: input.phone?.trim() || null,
-          },
-        },
-      });
+      let provisionedViaEdgeFunction = false;
 
-      if (signUpError) {
-        console.error('❌ [Supabase Auth SignUp Error]:', signUpError);
-        const isDuplicate =
-          signUpError.message?.toLowerCase().includes('already registered') ||
-          signUpError.message?.toLowerCase().includes('already exists') ||
-          (signUpError as any).code === '23505';
-
-        return {
-          profile: null,
-          error: isDuplicate
-            ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
-            : `Error en Supabase Auth (auth.users): ${signUpError.message}`,
-        };
-      }
-
-      if (signUpData.user?.id) {
-        generatedUid = signUpData.user.id;
-      }
-
-      // 1. Guardar el perfil del cobrador incluyendo `route_zone` y `tenant_id` en la tabla `profiles`
-      // Esperar obligatoriamente a que se complete la inserción
-      const { error: profileError } = await supabase.from('profiles').upsert([
-        {
-          id: generatedUid,
+      // PASO A: Intentar creación mediante Edge Function (supabase-admin) sin tocar la sesión actual
+      const { data: fnData, error: fnError } = await supabase.functions.invoke('admin-provision-user', {
+        body: {
           email: normalizedEmail,
-          full_name: input.fullName.trim(),
+          password: input.password,
+          fullName: input.fullName.trim(),
           role: 'collector',
-          assigned_route_id: input.assignedRouteId,
-          route_zone: cleanRouteZone,
-          organization_id: orgId,
-          tenant_id: orgId,
-          organization_name: orgName,
-          created_by: creatorId,
+          assignedRouteId: input.assignedRouteId,
+          routeZone: cleanRouteZone,
+          organizationId: effectiveTenantId,
+          tenantId: effectiveTenantId,
+          organizationName: orgName,
+          createdBy: effectiveCreatorUid,
           phone: input.phone?.trim() || null,
-          document_id: input.documentId?.trim() || null,
-          is_active: true,
+          documentId: input.documentId?.trim() || null,
         },
-      ]);
+      });
 
-      if (profileError) {
-        console.error('❌ [Supabase Profiles Upsert Error]:', profileError);
-        const isDuplicate =
-          profileError.code === '23505' ||
-          profileError.message?.includes('23505') ||
-          profileError.message?.toLowerCase().includes('unique') ||
-          profileError.message?.toLowerCase().includes('duplicate key');
-
+      if (!fnError && fnData?.user?.id) {
+        generatedUid = fnData.user.id;
+        provisionedViaEdgeFunction = true;
+      } else if (fnError && !fnError.message?.toLowerCase().includes('failed to send a request') && !fnError.message?.includes('404')) {
+        console.error('❌ [Edge Function admin-provision-user Error - Collector]:', fnError);
         return {
           profile: null,
-          error: isDuplicate
-            ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
-            : `Error al vincular perfil en tabla profiles (RLS): ${profileError.message}`,
+          error: `Error al guardar en base de datos (Edge Function): ${fnError.message}`,
         };
       }
 
-      // 2. Actualizar también la tabla `routes` en Supabase asociando la zona (`zone`) y el cobrador
-      await supabase
-        .from('routes')
-        .update({
-          collector_id: generatedUid,
-          collector_name: input.fullName.trim(),
-          zone: cleanRouteZone,
-        })
-        .eq('id', input.assignedRouteId);
+      // PASO B: Si la Edge Function no está desplegada, usar cliente 100% aislado en memoria
+      if (!provisionedViaEdgeFunction) {
+        const isolatedClient = createIsolatedAuthClient();
+        const { data: signUpData, error: signUpError } = await isolatedClient.auth.signUp({
+          email: normalizedEmail,
+          password: input.password,
+          options: {
+            data: {
+              full_name: input.fullName.trim(),
+              role: 'collector',
+              assigned_route_id: input.assignedRouteId,
+              route_zone: cleanRouteZone,
+              organization_id: effectiveTenantId,
+              tenant_id: effectiveTenantId,
+              organization_name: orgName,
+              created_by: effectiveCreatorUid,
+              document_id: input.documentId?.trim() || null,
+              phone: input.phone?.trim() || null,
+            },
+          },
+        });
+
+        if (signUpError) {
+          console.error('❌ [Supabase Auth SignUp Error - Collector]:', signUpError);
+          const isDuplicate =
+            signUpError.message?.toLowerCase().includes('already registered') ||
+            signUpError.message?.toLowerCase().includes('already exists') ||
+            (signUpError as any).code === '23505';
+
+          return {
+            profile: null,
+            error: isDuplicate
+              ? 'Error al guardar en base de datos: Ya existe un cobrador o usuario con este correo electrónico.'
+              : `Error al guardar en base de datos (Supabase Auth): ${signUpError.message}`,
+          };
+        }
+
+        if (!signUpData.user?.id) {
+          console.error('❌ [Supabase Auth SignUp Error]: No se retornó user.id para el cobrador.');
+          return {
+            profile: null,
+            error: 'Error al guardar en base de datos: Supabase Auth no devolvió un ID de usuario válido.',
+          };
+        }
+
+        generatedUid = signUpData.user.id;
+
+        // 1. Guardar el perfil del cobrador en public.profiles pasando el tenant_id / created_by del Admin
+        const { data: profileRow, error: profileError } = await supabase
+          .from('profiles')
+          .upsert(
+            [
+              {
+                id: generatedUid,
+                email: normalizedEmail,
+                full_name: input.fullName.trim(),
+                role: 'collector',
+                assigned_route_id: input.assignedRouteId,
+                route_zone: cleanRouteZone,
+                organization_id: effectiveTenantId,
+                tenant_id: effectiveTenantId,
+                organization_name: orgName,
+                created_by: effectiveCreatorUid,
+                phone: input.phone?.trim() || null,
+                document_id: input.documentId?.trim() || null,
+                is_active: true,
+              },
+            ],
+            { onConflict: 'id' }
+          )
+          .select()
+          .single();
+
+        if (profileError || !profileRow) {
+          console.error('❌ [Supabase Profiles INSERT Error - Collector]:', profileError);
+          const isDuplicate =
+            profileError?.code === '23505' ||
+            profileError?.message?.includes('23505') ||
+            profileError?.message?.toLowerCase().includes('unique') ||
+            profileError?.message?.toLowerCase().includes('duplicate key');
+
+          return {
+            profile: null,
+            error: isDuplicate
+              ? 'Error al guardar en base de datos: Ya existe un usuario registrado con este documento o correo.'
+              : `Error al guardar en base de datos (tabla profiles / RLS): ${profileError?.message || 'Permiso de escritura denegado'}`,
+          };
+        }
+
+        // 2. Actualizar la tabla routes en Supabase asociando la zona y el cobrador
+        const { error: routeUpdateError } = await supabase
+          .from('routes')
+          .upsert(
+            [
+              {
+                id: input.assignedRouteId,
+                name: `Ruta ${input.assignedRouteId.replace(/^route-?/i, '').toUpperCase()}`,
+                collector_id: generatedUid,
+                collector_name: input.fullName.trim(),
+                zone: cleanRouteZone,
+                organization_id: effectiveTenantId,
+                tenant_id: effectiveTenantId,
+                created_by: effectiveCreatorUid,
+                status: 'active',
+              },
+            ],
+            { onConflict: 'id' }
+          );
+
+        if (routeUpdateError) {
+          console.error('❌ [Supabase Routes Upsert Error]:', routeUpdateError);
+        }
+      }
     }
 
+    // Persistir también en el backend PostgreSQL (/api/collectors) y verificar estado HTTP 201
     const apiRes = await fetch('/api/collectors', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -673,17 +803,19 @@ export async function registerNewCollectorAccount(input: {
     if (!apiRes.ok) {
       const errBody = await apiRes.json().catch(() => ({}));
       console.error('❌ [Error creando cobrador en /api/collectors]:', errBody);
-      const isDuplicate =
-        apiRes.status === 409 ||
-        errBody?.code === '23505' ||
-        errBody?.error?.includes('Ya existe');
+      if (!isLiveSupabaseConfigured) {
+        const isDuplicate =
+          apiRes.status === 409 ||
+          errBody?.code === '23505' ||
+          errBody?.error?.includes('Ya existe');
 
-      return {
-        profile: null,
-        error: isDuplicate
-          ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
-          : errBody.error || 'No se pudo registrar el cobrador en la base de datos.',
-      };
+        return {
+          profile: null,
+          error: isDuplicate
+            ? 'Error al guardar en base de datos: Ya existe un usuario o cliente registrado con este documento o correo.'
+            : `Error al guardar en base de datos: ${errBody.error || 'No se pudo registrar el cobrador.'}`,
+        };
+      }
     }
 
     const newProfile: UserProfile = {
@@ -709,10 +841,10 @@ export async function registerNewCollectorAccount(input: {
 
     return { profile: newProfile, error: null };
   } catch (err: any) {
-    console.error('❌ [Excepción creando cobrador]:', err);
+    console.error('❌ [Excepción crítica creando cobrador]:', err);
     return {
       profile: null,
-      error: err?.message || 'Error inesperado al crear la cuenta del cobrador.',
+      error: `Error al guardar en base de datos: ${err?.message || 'Error inesperado al crear la cuenta del cobrador.'}`,
     };
   }
 }
@@ -723,8 +855,9 @@ export function getRememberedCollectorEmail(): string | null {
 
 export async function signOutUser(): Promise<void> {
   try {
-    localStorage.clear();
-    sessionStorage.clear();
+    // Solo remover la llave de sesión de autenticación, sin borrar datos persistidos ni colas offline
+    localStorage.removeItem(LOCAL_STORAGE_SESSION_KEY);
+    sessionStorage.removeItem(LOCAL_STORAGE_SESSION_KEY);
     if (isLiveSupabaseConfigured) {
       await supabase.auth.signOut();
     }

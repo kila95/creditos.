@@ -125,11 +125,17 @@ export const QuickClientRouteRegistrationModal: React.FC<QuickClientRouteRegistr
         return;
       }
 
+      const userOrgId = profile?.organizationId || 'org-medellin-01';
+      const userCreatorId = profile?.id || 'usr-admin-001';
+
       const { data: createdLoan, error } = await createCustomLoanInDB({
         clientId: selectedExistingClient.id,
         clientName: selectedExistingClient.name,
         tradeName: selectedExistingClient.tradeName,
         routeId: currentRoute.id,
+        organizationId: userOrgId,
+        tenantId: userOrgId,
+        createdBy: userCreatorId,
         principal: numericPrincipal,
         interestRate: numericInterestRate,
         termInstallments: numericTermInstallments,
@@ -142,7 +148,7 @@ export const QuickClientRouteRegistrationModal: React.FC<QuickClientRouteRegistr
         console.error('❌ [Error al insertar préstamo en tabla loans]:', error);
         setErrorMessage(
           error?.message ||
-            'La base de datos rechazó el préstamo. Verifica las políticas RLS en la tabla loans.'
+            'Error al guardar en base de datos: La base de datos rechazó el préstamo. Verifica las políticas RLS en la tabla loans.'
         );
         setErrorDetails({ code: error?.code, hint: error?.hint });
         return;

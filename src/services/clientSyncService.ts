@@ -279,7 +279,7 @@ export async function fetchClientsAndLoansFromDB(
       }
     }
 
-    // Mapear clientes normalizados
+    // Mapear clientes normalizados preservando estrictamente organizationId / tenant_id y createdBy
     const mappedClients: ClientProfile[] = rawClients.map((c: any) => ({
       id: String(c.id),
       name: c.name || c.full_name || 'Cliente Sin Nombre',
@@ -290,6 +290,8 @@ export async function fetchClientsAndLoansFromDB(
       address: c.address || '',
       neighborhood: c.zone || c.neighborhood || 'Medellín',
       routeId: c.routeId || c.route_id || 'route-1',
+      organizationId: c.organizationId || c.organization_id || c.tenant_id || 'org-medellin-01',
+      createdBy: c.createdBy || c.created_by || 'usr-admin-001',
       riskTier:
         c.riskLevel === 'verde'
           ? 'A_excelente'
@@ -358,6 +360,13 @@ export async function fetchClientsAndLoansFromDB(
         clientName: matchedClient ? matchedClient.name : l.client_name || 'Deudor Registrado',
         tradeName: matchedClient ? matchedClient.tradeName : l.trade_name || 'Micronegocio',
         routeId: l.routeId || l.route_id || matchedClient?.routeId || 'route-1',
+        organizationId:
+          l.organizationId ||
+          l.organization_id ||
+          l.tenant_id ||
+          matchedClient?.organizationId ||
+          'org-medellin-01',
+        createdBy: l.createdBy || l.created_by || matchedClient?.createdBy || 'usr-admin-001',
         principal: principalAmount,
         interestRate: Number(l.interestRate || l.interest_rate || 20),
         totalDebt: totalAmount,
@@ -497,11 +506,9 @@ export async function createCustomLoanInDB(
     paymentDays,
   };
 
-  // Guardar siempre copia en caché local para resiliencia ante pérdidas de señal
-  saveLocalCachedLoan(createdLoan);
-
   const isBrowserOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
   if (!isBrowserOnline) {
+    saveLocalCachedLoan(createdLoan);
     return {
       data: createdLoan,
       savedOffline: true,
@@ -510,12 +517,12 @@ export async function createCustomLoanInDB(
   }
 
   try {
-    // 1. Inserción directa en tabla `loans` de Supabase si las credenciales están activas
+    // 1. Inserción directa en tabla `loans` de Supabase con validación estricta de errores
     const safeOrgId = input.organizationId || input.tenantId || 'org-medellin-01';
     const safeCreatedBy = input.createdBy || 'usr-admin-001';
 
     if (isLiveSupabaseConfigured) {
-      const { error: sbLoanError } = await supabase
+      const { data: sbInsertedLoan, error: sbLoanError } = await supabase
         .from('loans')
         .insert([
           {
@@ -538,44 +545,38 @@ export async function createCustomLoanInDB(
             expected_end_date: dueDateStr,
             payment_days: paymentDays,
           },
-        ]);
+        ])
+        .select()
+        .single();
 
-      if (sbLoanError) {
+      if (sbLoanError || !sbInsertedLoan) {
         console.error('❌ [Supabase INSERT Error en tabla loans]:', sbLoanError);
-        const isNotFound404 =
-          sbLoanError.code === '404' ||
-          sbLoanError.code === 'PGRST205' ||
-          sbLoanError.message.includes('404') ||
-          sbLoanError.message.toLowerCase().includes('not found');
+        const isDuplicate =
+          sbLoanError?.code === '23505' ||
+          sbLoanError?.message?.includes('23505') ||
+          sbLoanError?.message?.toLowerCase().includes('unique');
 
-        if (!isNotFound404) {
-          const isDuplicate =
-            sbLoanError.code === '23505' ||
-            sbLoanError.message.includes('23505') ||
-            sbLoanError.message.toLowerCase().includes('unique');
+        const isRls =
+          sbLoanError?.code === '42501' ||
+          sbLoanError?.message?.toLowerCase().includes('row-level security') ||
+          sbLoanError?.message?.toLowerCase().includes('policy');
 
-          const isRls =
-            sbLoanError.code === '42501' ||
-            sbLoanError.message.toLowerCase().includes('row-level security') ||
-            sbLoanError.message.toLowerCase().includes('policy');
-
-          return {
-            data: null,
-            error: {
-              message: isDuplicate
-                ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
-                : isRls
-                ? `Bloqueo por Política RLS en tabla 'loans': ${sbLoanError.message}`
-                : `Error de Supabase al insertar en 'loans': ${sbLoanError.message}`,
-              code: sbLoanError.code,
-              details: sbLoanError.details,
-              hint: isRls
-                ? 'Verifica que el usuario autenticado tenga permisos INSERT en public.loans para su ruta u organización.'
-                : sbLoanError.hint,
-              isRlsError: isRls,
-            },
-          };
-        }
+        return {
+          data: null,
+          error: {
+            message: isDuplicate
+              ? 'Error al guardar en base de datos: Ya existe un registro con este identificador.'
+              : isRls
+              ? `Error al guardar en base de datos (Política RLS en 'loans'): ${sbLoanError?.message}`
+              : `Error al guardar en base de datos: ${sbLoanError?.message || 'Rechazo en tabla loans'}`,
+            code: sbLoanError?.code,
+            details: sbLoanError?.details,
+            hint: isRls
+              ? 'Ejecuta la migración 005_fix_rls_insert_persistence.sql en el SQL Editor de Supabase para habilitar INSERT en public.loans.'
+              : sbLoanError?.hint,
+            isRlsError: isRls,
+          },
+        };
       }
     }
 
@@ -606,30 +607,24 @@ export async function createCustomLoanInDB(
     });
 
     if (!loanRes.ok) {
-      if (loanRes.status === 404) {
-        console.warn(
-          'ℹ️ [Fallback Persistencia Local] El endpoint /api/loans devolvió HTTP 404; préstamo guardado en caché local persistente.'
-        );
-        return {
-          data: createdLoan,
-          savedOffline: true,
-          error: null,
-        };
-      }
-
       const loanErrBody = await loanRes.json().catch(() => ({}));
       console.error('❌ [Database INSERT Error - /api/loans]:', loanErrBody);
-      return {
-        data: null,
-        error: {
-          message:
-            loanErrBody.error ||
-            `HTTP ${loanRes.status}: No se pudo insertar el préstamo en la tabla loans.`,
-          code: String(loanRes.status),
-          hint: 'Verifica que el client_id exista en la tabla clients y que la ruta esté activa.',
-        },
-      };
+      if (!isLiveSupabaseConfigured) {
+        return {
+          data: null,
+          error: {
+            message: `Error al guardar en base de datos: ${
+              loanErrBody.error || `HTTP ${loanRes.status} al insertar préstamo en tabla loans.`
+            }`,
+            code: String(loanRes.status),
+            hint: 'Verifica que el client_id exista en la tabla clients y que la ruta esté activa.',
+          },
+        };
+      }
     }
+
+    // Solo guardar en caché local una vez confirmado el éxito en la base de datos
+    saveLocalCachedLoan(createdLoan);
 
     return {
       data: createdLoan,
@@ -637,11 +632,12 @@ export async function createCustomLoanInDB(
       error: null,
     };
   } catch (err: any) {
-    console.warn('⚠️ [Red inestable en calle - Préstamo guardado en caché Offline]:', err);
+    console.error('❌ [Excepción crítica al guardar préstamo]:', err);
     return {
-      data: createdLoan,
-      savedOffline: true,
-      error: null,
+      data: null,
+      error: {
+        message: `Error al guardar en base de datos: ${err?.message || 'Error de conexión con el servidor.'}`,
+      },
     };
   }
 }
@@ -847,12 +843,10 @@ export async function insertClientAndLoanToDB(
   // Impresión explícita en consola justo antes de supabase.from('clients').insert(...)
   console.log('🔍 [DEBUG Inyección Obligatoria Tenant ID & Creador]:', datosAInsertar);
 
-  // Respaldo inmediato en almacenamiento local por si el cobrador pierde señal en calle
-  saveLocalCachedClient(createdClient);
-  saveLocalCachedLoan(createdLoan);
-
   const isBrowserOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
   if (!isBrowserOnline) {
+    saveLocalCachedClient(createdClient);
+    saveLocalCachedLoan(createdLoan);
     return {
       data: { client: createdClient, loan: createdLoan },
       savedOffline: true,
@@ -861,86 +855,93 @@ export async function insertClientAndLoanToDB(
   }
 
   try {
-    // 1. Si Supabase directo está configurado, insertar en `public.clients` y `public.loans`
+    // 1. Si Supabase está configurado, insertar en `public.clients` y `public.loans` con captura estricta de errores
     if (isLiveSupabaseConfigured) {
-      const { error: sbError } = await supabase
+      const { data: sbInsertedClient, error: sbError } = await supabase
         .from('clients')
-        .insert([datosAInsertar]);
+        .insert([datosAInsertar])
+        .select()
+        .single();
 
-      if (sbError) {
+      if (sbError || !sbInsertedClient) {
         console.error('❌ [Supabase INSERT Error en tabla clients]:', sbError);
-        const isNotFound404 =
-          sbError.code === '404' ||
-          sbError.code === 'PGRST205' ||
-          sbError.message.includes('404') ||
-          sbError.message.toLowerCase().includes('not found') ||
-          sbError.message.toLowerCase().includes('schema cache');
+        const isDuplicate =
+          sbError?.code === '23505' ||
+          sbError?.message?.includes('23505') ||
+          sbError?.message?.toLowerCase().includes('unique') ||
+          sbError?.message?.toLowerCase().includes('duplicate key');
 
-        if (isNotFound404) {
-          console.warn(
-            '⚠️ La tabla "clients" devolvió 404 en Supabase. Intentando fallback en tabla "clientes" o continuando con persistencia en Cloud SQL / Local...'
-          );
-          await supabase.from('clientes').insert([datosAInsertar]);
-        } else {
-          const isDuplicate =
-            sbError.code === '23505' ||
-            sbError.message?.includes('23505') ||
-            sbError.message?.toLowerCase().includes('unique') ||
-            sbError.message?.toLowerCase().includes('duplicate key');
+        const isRls =
+          sbError?.code === '42501' ||
+          sbError?.message?.toLowerCase().includes('row-level security') ||
+          sbError?.message?.toLowerCase().includes('policy');
 
-          const isRls =
-            sbError.code === '42501' ||
-            sbError.message.toLowerCase().includes('row-level security') ||
-            sbError.message.toLowerCase().includes('policy');
-
-          return {
-            data: null,
-            error: {
-              message: isDuplicate
-                ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
-                : isRls
-                ? `Bloqueo por Política de Seguridad (RLS) en Supabase: ${sbError.message}`
-                : `Error de Supabase al insertar en 'clients': ${sbError.message}`,
-              code: sbError.code,
-              details: sbError.details,
-              hint: isDuplicate
-                ? 'El número de cédula o documento ya pertenece a un cliente registrado.'
-                : isRls
-                ? 'Ejecuta la política CREATE POLICY "clients_insert_policy" ON public.clients FOR INSERT TO authenticated WITH CHECK (true); en el SQL Editor de Supabase.'
-                : sbError.hint,
-              isRlsError: isRls,
-            },
-          };
-        }
-      } else {
-        const datosPrestamoAInsertar = {
-          id: loanId,
-          client_id: clientId,
-          route_id: safeRouteId,
-          organization_id: safeOrgId,
-          tenant_id: safeOrgId,
-          created_by: safeCreatedBy,
-          principal_amount: safePrincipal,
-          interest_rate: safeRate,
-          total_amount: totalDebt,
-          daily_quota: installmentAmount,
-          remaining_balance: totalDebt,
-          total_days: safeTerm,
-          paid_days: 0,
-          modality,
-          status: 'active',
-          start_date: todayStr,
-          expected_end_date: dueDateStr,
-          payment_days: paymentDays,
+        return {
+          data: null,
+          error: {
+            message: isDuplicate
+              ? 'Error al guardar en base de datos: Ya existe un usuario o cliente registrado con este documento.'
+              : isRls
+              ? `Error al guardar en base de datos (Política RLS en 'clients'): ${sbError?.message}`
+              : `Error al guardar en base de datos: ${sbError?.message || 'Rechazo en tabla clients'}`,
+            code: sbError?.code,
+            details: sbError?.details,
+            hint: isDuplicate
+              ? 'El número de cédula o documento ya pertenece a un cliente registrado.'
+              : isRls
+              ? 'Ejecuta la migración 005_fix_rls_insert_persistence.sql en el SQL Editor de Supabase para habilitar INSERT en public.clients.'
+              : sbError?.hint,
+            isRlsError: isRls,
+          },
         };
+      }
 
-        const { error: sbLoanErr } = await supabase
-          .from('loans')
-          .insert([datosPrestamoAInsertar]);
+      const datosPrestamoAInsertar = {
+        id: loanId,
+        client_id: clientId,
+        route_id: safeRouteId,
+        organization_id: safeOrgId,
+        tenant_id: safeOrgId,
+        created_by: safeCreatedBy,
+        principal_amount: safePrincipal,
+        interest_rate: safeRate,
+        total_amount: totalDebt,
+        daily_quota: installmentAmount,
+        remaining_balance: totalDebt,
+        total_days: safeTerm,
+        paid_days: 0,
+        modality,
+        status: 'active',
+        start_date: todayStr,
+        expected_end_date: dueDateStr,
+        payment_days: paymentDays,
+      };
 
-        if (sbLoanErr) {
-          console.error('❌ [Supabase INSERT Error en tabla loans]:', sbLoanErr);
-        }
+      const { data: sbInsertedLoan, error: sbLoanErr } = await supabase
+        .from('loans')
+        .insert([datosPrestamoAInsertar])
+        .select()
+        .single();
+
+      if (sbLoanErr || !sbInsertedLoan) {
+        console.error('❌ [Supabase INSERT Error en tabla loans]:', sbLoanErr);
+        const isRls =
+          sbLoanErr?.code === '42501' ||
+          sbLoanErr?.message?.toLowerCase().includes('row-level security') ||
+          sbLoanErr?.message?.toLowerCase().includes('policy');
+
+        return {
+          data: null,
+          error: {
+            message: `Error al guardar en base de datos (tabla loans): ${sbLoanErr?.message || 'Rechazo al crear el préstamo inicial'}`,
+            code: sbLoanErr?.code,
+            details: sbLoanErr?.details,
+            hint: isRls
+              ? 'Ejecuta la migración 005_fix_rls_insert_persistence.sql para habilitar INSERT en public.loans.'
+              : sbLoanErr?.hint,
+            isRlsError: isRls,
+          },
+        };
       }
     }
 
@@ -968,37 +969,29 @@ export async function insertClientAndLoanToDB(
     });
 
     if (!clientRes.ok) {
-      if (clientRes.status === 404) {
-        console.warn(
-          'ℹ️ [Fallback Persistencia Local] El endpoint /api/clients devolvió HTTP 404 en este entorno de despliegue; cliente y préstamo guardados de forma persistente en almacenamiento local.'
-        );
+      const errBody = await clientRes.json().catch(() => ({}));
+      console.error('❌ [Database INSERT Error - /api/clients]:', errBody);
+
+      if (!isLiveSupabaseConfigured) {
+        const isDuplicate =
+          clientRes.status === 409 ||
+          errBody?.code === '23505' ||
+          errBody?.error?.includes('Ya existe') ||
+          errBody?.error?.includes('23505');
+
+        const errMsg = isDuplicate
+          ? 'Error al guardar en base de datos: Ya existe un usuario o cliente registrado con este documento o correo.'
+          : `Error al guardar en base de datos: ${errBody.error || `HTTP ${clientRes.status} al insertar en clients.`}`;
+
         return {
-          data: { client: createdClient, loan: createdLoan },
-          savedOffline: true,
-          error: null,
+          data: null,
+          error: {
+            message: errMsg,
+            code: isDuplicate ? '23505' : String(clientRes.status),
+            hint: isDuplicate ? 'Cédula o documento ya existente.' : 'Verifica la conexión con la base de datos o los permisos de escritura en la tabla clients.',
+          },
         };
       }
-
-      const errBody = await clientRes.json().catch(() => ({}));
-      const isDuplicate =
-        clientRes.status === 409 ||
-        errBody?.code === '23505' ||
-        errBody?.error?.includes('Ya existe') ||
-        errBody?.error?.includes('23505');
-
-      const errMsg = isDuplicate
-        ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
-        : errBody.error || `HTTP ${clientRes.status}: Rechazo al insertar en la tabla clients.`;
-
-      console.error('❌ [Database INSERT Error - /api/clients]:', errBody);
-      return {
-        data: null,
-        error: {
-          message: errMsg,
-          code: isDuplicate ? '23505' : String(clientRes.status),
-          hint: isDuplicate ? 'Cédula o documento ya existente.' : 'Verifica la conexión con la base de datos o los permisos de escritura en la tabla clients.',
-        },
-      };
     }
 
     // 3. Persistir el préstamo asociado en la tabla `loans`
@@ -1009,6 +1002,9 @@ export async function insertClientAndLoanToDB(
         id: loanId,
         clientId,
         routeId: safeRouteId,
+        organizationId: safeOrgId,
+        tenantId: safeOrgId,
+        createdBy: safeCreatedBy,
         principalAmount: safePrincipal,
         interestRate: safeRate,
         totalAmount: totalDebt,
@@ -1024,19 +1020,25 @@ export async function insertClientAndLoanToDB(
       }),
     });
 
-    if (!loanRes.ok && loanRes.status !== 404) {
+    if (!loanRes.ok) {
       const loanErrBody = await loanRes.json().catch(() => ({}));
       console.error('❌ [Database INSERT Error - /api/loans]:', loanErrBody);
-      return {
-        data: null,
-        error: {
-          message:
-            loanErrBody.error ||
-            'El cliente se creó, pero hubo un error al crear su préstamo inicial.',
-          code: String(loanRes.status),
-        },
-      };
+      if (!isLiveSupabaseConfigured) {
+        return {
+          data: null,
+          error: {
+            message: `Error al guardar en base de datos: ${
+              loanErrBody.error || 'El cliente se creó, pero hubo un error al guardar su préstamo inicial.'
+            }`,
+            code: String(loanRes.status),
+          },
+        };
+      }
     }
+
+    // Solo guardar en caché local una vez que la base de datos confirmó la inserción exitosa
+    saveLocalCachedClient(createdClient);
+    saveLocalCachedLoan(createdLoan);
 
     return {
       data: { client: createdClient, loan: createdLoan },
@@ -1044,11 +1046,12 @@ export async function insertClientAndLoanToDB(
       error: null,
     };
   } catch (err: any) {
-    console.warn('⚠️ [Red inestable en calle - Cliente y Préstamo guardados localmente]:', err);
+    console.error('❌ [Excepción crítica al guardar cliente y préstamo]:', err);
     return {
-      data: { client: createdClient, loan: createdLoan },
-      savedOffline: true,
-      error: null,
+      data: null,
+      error: {
+        message: `Error al guardar en base de datos: ${err?.message || 'Error de conexión con la base de datos.'}`,
+      },
     };
   }
 }

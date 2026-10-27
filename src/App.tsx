@@ -159,8 +159,36 @@ function MainAppContent() {
           };
         });
       });
-      setRoutes(prevRoutes =>
-        prevRoutes.map(r => {
+      setRoutes(prevRoutes => {
+        const existingIds = new Set(prevRoutes.map(r => r.id));
+        const dynamicRouteIds = new Set<string>();
+        data.clients.forEach(c => { if (c.routeId && !existingIds.has(c.routeId)) dynamicRouteIds.add(c.routeId); });
+        data.loans.forEach(l => { if (l.routeId && !existingIds.has(l.routeId)) dynamicRouteIds.add(l.routeId); });
+
+        const extraRoutes: RouteData[] = Array.from(dynamicRouteIds).map(rid => ({
+          id: rid,
+          code: rid.toUpperCase().slice(0, 12),
+          name: `Ruta ${rid}`,
+          zone: 'Zona Operativa',
+          collectorName: 'Cobrador Asignado',
+          collectorPhone: '3000000000',
+          baseFloatingCapital: 0,
+          fixedDailyOpex: 35000,
+          collectorCommissionRate: 10,
+          targetRecoveryRate: 92,
+          activeLoansCount: 0,
+          totalPortfolio: 0,
+          dailyGrossExpected: 0,
+          dailyGrossCollected: 0,
+          dailyExpenses: 0,
+          par1Rate: 0,
+          par7Rate: 0,
+          par30Rate: 0,
+          status: 'activa',
+        }));
+
+        const allRoutes = [...prevRoutes, ...extraRoutes];
+        return allRoutes.map(r => {
           const rLoans = data.loans.filter(l => l.routeId === r.id && l.status !== 'liquidado' && l.status !== 'liquidated');
           return {
             ...r,
@@ -168,8 +196,8 @@ function MainAppContent() {
             totalPortfolio: rLoans.reduce((sum, l) => sum + l.remainingBalance, 0),
             dailyGrossExpected: rLoans.reduce((sum, l) => sum + l.installmentAmount, 0),
           };
-        })
-      );
+        });
+      });
     }
   };
 
@@ -558,15 +586,49 @@ function MainAppContent() {
   } else if (profile?.role === 'admin') {
     return <AdminLayout />;
   } else if (profile?.role === 'collector' || profile?.role === 'cobrador') {
+    const collectorRoute: RouteData =
+      routes.find(r => r.id === profile.assignedRouteId) ||
+      (profile.assignedRouteId
+        ? {
+            id: profile.assignedRouteId,
+            code: profile.assignedRouteId.toUpperCase().slice(0, 12),
+            name: `Ruta ${profile.fullName}`,
+            zone: 'Zona Asignada',
+            organizationId: profile.organizationId,
+            collectorName: profile.fullName,
+            collectorPhone: '3000000000',
+            baseFloatingCapital: 0,
+            fixedDailyOpex: 35000,
+            collectorCommissionRate: 10,
+            targetRecoveryRate: 92,
+            activeLoansCount: 0,
+            totalPortfolio: 0,
+            dailyGrossExpected: 0,
+            dailyGrossCollected: 0,
+            dailyExpenses: 0,
+            par1Rate: 0,
+            par7Rate: 0,
+            par30Rate: 0,
+            status: 'activa',
+          }
+        : routes[0]);
+
+    const collectorClients = clients.filter(
+      c => c.routeId === collectorRoute.id || (profile.organizationId && c.organizationId === profile.organizationId)
+    );
+    const collectorLoans = loans.filter(
+      l => l.routeId === collectorRoute.id || (profile.organizationId && l.organizationId === profile.organizationId)
+    );
+
     return (
       <>
         <CollectorLayout
-          currentRoute={routes[0]}
-          clients={clients.filter(c => c.routeId === routes[0].id)}
-          loans={loans.filter(l => l.routeId === routes[0].id)}
-          expenses={expenses.filter(e => e.routeId === routes[0].id)}
-          ledger={ledger.filter(led => led.routeId === routes[0].id)}
-          activeCollectorBase={collectorBases.find(b => b.routeId === routes[0].id && b.status === 'ACTIVA') || null}
+          currentRoute={collectorRoute}
+          clients={collectorClients}
+          loans={collectorLoans}
+          expenses={expenses.filter(e => e.routeId === collectorRoute.id)}
+          ledger={ledger.filter(led => led.routeId === collectorRoute.id)}
+          activeCollectorBase={collectorBases.find(b => b.routeId === collectorRoute.id && b.status === 'ACTIVA') || null}
           onRegisterPayment={handleRegisterPayment}
           onRegisterExpense={handleRegisterExpense}
           onConfirmReconciliation={handleConfirmReconciliation}
@@ -579,8 +641,8 @@ function MainAppContent() {
         />
         {showNewClientModal && (
           <NewClientLoanModal
-            routes={routes}
-            clients={clients}
+            routes={routes.some(r => r.id === collectorRoute.id) ? routes : [collectorRoute, ...routes]}
+            clients={collectorClients}
             onClose={() => setShowNewClientModal(false)}
             onClientCreated={handleClientCreated}
             onLoanCreatedForExistingClient={handleLoanCreatedForExistingClient}

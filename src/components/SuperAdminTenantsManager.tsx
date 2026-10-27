@@ -16,7 +16,7 @@ import {
   Layers,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { registerNewAdminAccount, DEMO_USERS } from '../services/supabaseAuth';
+import { registerNewAdminAccount, DEMO_USERS, supabase, isLiveSupabaseConfigured } from '../services/supabaseAuth';
 
 export interface RegisteredAdminRecord {
   id: string;
@@ -53,50 +53,90 @@ export const SuperAdminTenantsManager: React.FC = () => {
   const loadAdmins = useCallback(async () => {
     setIsLoading(true);
     try {
+      const mergedMap = new Map<string, RegisteredAdminRecord>();
+
+      // 1. Consultar directamente Supabase (tabla public.profiles) si está configurado
+      if (isLiveSupabaseConfigured) {
+        const { data: sbAdmins, error: sbErr } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('role', 'admin')
+          .order('created_at', { ascending: false });
+
+        if (sbErr) {
+          console.error('❌ [Supabase SELECT profiles (role=admin) Error]:', sbErr);
+        } else if (Array.isArray(sbAdmins)) {
+          sbAdmins.forEach((a: any) => {
+            const normEmail = (a.email || '').trim().toLowerCase();
+            if (!normEmail) return;
+            mergedMap.set(normEmail, {
+              id: a.id,
+              email: a.email,
+              password: 'admin123@Medellin',
+              fullName: a.full_name || a.name || 'Administrador',
+              role: 'admin',
+              organizationId: a.organization_id || a.tenant_id || `org-${a.id}`,
+              organizationName: a.organization_name || `Fondo ${a.full_name || 'EnRuta'}`,
+              createdBy: a.created_by || 'usr-super-000',
+              phone: a.phone || '300 000 0000',
+              cedula: a.document_id || 'N/A',
+              createdAt: a.created_at || new Date().toISOString(),
+            });
+          });
+        }
+      }
+
+      // 2. Consultar también el backend PostgreSQL (/api/admins)
       const res = await fetch('/api/admins');
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
-          const mapped: RegisteredAdminRecord[] = data.map((a: any) => ({
-            id: a.uid || `usr-admin-${a.id}`,
-            email: a.email,
-            password: 'admin123@Medellin',
-            fullName: a.name || a.fullName || 'Administrador',
-            role: 'admin',
-            organizationId: a.organizationId || a.organization_id || `org-${a.id}`,
-            organizationName: a.organizationName || a.organization_name || `Fondo ${a.name || a.fullName}`,
-            createdBy: a.createdBy || a.created_by || 'usr-super-000',
-            phone: a.phone || '300 000 0000',
-            cedula: a.documentId || a.document_id || 'N/A',
-            createdAt: a.createdAt || a.created_at || new Date().toISOString(),
-          }));
-
-          // Register in DEMO_USERS for instant RBAC switching
-          mapped.forEach((adm) => {
-            const norm = adm.email.trim().toLowerCase();
-            if (!DEMO_USERS[norm]) {
-              DEMO_USERS[norm] = {
-                password: adm.password || 'admin123@Medellin',
-                profile: {
-                  id: adm.id,
-                  email: adm.email,
-                  fullName: adm.fullName,
-                  role: 'admin',
-                  organizationId: adm.organizationId,
-                  organizationName: adm.organizationName,
-                  createdBy: adm.createdBy,
-                  phone: adm.phone,
-                  documentId: adm.cedula,
-                  isActive: true,
-                  createdAt: adm.createdAt,
-                },
-              };
-            }
+          data.forEach((a: any) => {
+            const normEmail = (a.email || '').trim().toLowerCase();
+            if (!normEmail || mergedMap.has(normEmail)) return;
+            mergedMap.set(normEmail, {
+              id: a.uid || `usr-admin-${a.id}`,
+              email: a.email,
+              password: 'admin123@Medellin',
+              fullName: a.name || a.fullName || 'Administrador',
+              role: 'admin',
+              organizationId: a.organizationId || a.organization_id || `org-${a.id}`,
+              organizationName: a.organizationName || a.organization_name || `Fondo ${a.name || a.fullName}`,
+              createdBy: a.createdBy || a.created_by || 'usr-super-000',
+              phone: a.phone || '300 000 0000',
+              cedula: a.documentId || a.document_id || 'N/A',
+              createdAt: a.createdAt || a.created_at || new Date().toISOString(),
+            });
           });
-
-          setAdminsList(mapped);
         }
       }
+
+      const finalAdmins = Array.from(mergedMap.values());
+
+      // Register in DEMO_USERS for instant RBAC switching
+      finalAdmins.forEach((adm) => {
+        const norm = adm.email.trim().toLowerCase();
+        if (!DEMO_USERS[norm]) {
+          DEMO_USERS[norm] = {
+            password: adm.password || 'admin123@Medellin',
+            profile: {
+              id: adm.id,
+              email: adm.email,
+              fullName: adm.fullName,
+              role: 'admin',
+              organizationId: adm.organizationId,
+              organizationName: adm.organizationName,
+              createdBy: adm.createdBy,
+              phone: adm.phone,
+              documentId: adm.cedula,
+              isActive: true,
+              createdAt: adm.createdAt,
+            },
+          };
+        }
+      });
+
+      setAdminsList(finalAdmins);
     } catch (err) {
       console.error('[SuperAdminTenantsManager] Error cargando administradores:', err);
     } finally {
@@ -148,12 +188,8 @@ export const SuperAdminTenantsManager: React.FC = () => {
       });
 
       if (error || !createdAdmin) {
-        const isDup = error?.includes('23505') || error?.toLowerCase().includes('ya existe');
-        setErrorMsg(
-          isDup
-            ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
-            : error || 'No se pudo registrar la cuenta de Administrador.'
-        );
+        console.error('❌ [Bloqueo de creación de Administrador]:', error);
+        setErrorMsg(error || 'Error al guardar en base de datos: No se pudo registrar la cuenta de Administrador.');
         return;
       }
 
