@@ -201,7 +201,7 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
       setIsSubmitting(false);
 
       if (error || !createdLoan) {
-        console.error('❌ [Error al insertar préstamo en tabla loans]:', error);
+        console.warn('⚠️ [Aviso al insertar préstamo en tabla loans]:', error);
         const isDuplicate =
           error?.code === '23505' ||
           error?.message?.includes('23505') ||
@@ -273,7 +273,7 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
     setIsSubmitting(false);
 
     if (error || !data) {
-      console.error('❌ [Error al insertar cliente/préstamo]:', error);
+      console.warn('⚠️ [Aviso al insertar cliente/préstamo]:', error);
       const isDuplicate =
         error?.code === '23505' ||
         error?.message?.includes('23505') ||

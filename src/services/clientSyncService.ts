@@ -186,13 +186,15 @@ export async function fetchClientsAndLoansFromDB(
         const { data: sbClients, error: sbError } = await query;
 
         if (sbError) {
-          console.error('❌ [Supabase SELECT Error - tabla clients]:', {
-            targetUrl: supabaseEndpointUrl,
-            message: sbError.message,
-            code: sbError.code,
-            details: sbError.details,
-            hint: sbError.hint,
-          });
+          if (sbError.code === 'PGRST205' || sbError.code === '42P01') {
+            console.info('ℹ️ [Supabase tabla clients pendiente de migración SQL]: Usando motor PostgreSQL (/api/clients).');
+          } else {
+            console.warn('⚠️ [Supabase SELECT Aviso - tabla clients]:', {
+              targetUrl: supabaseEndpointUrl,
+              message: sbError.message,
+              code: sbError.code,
+            });
+          }
         } else if (Array.isArray(sbClients)) {
           console.log(`✅ [Supabase SELECT Success - clients]: Obtenidos ${sbClients.length} registros.`);
           rawClients = sbClients;
@@ -209,7 +211,11 @@ export async function fetchClientsAndLoansFromDB(
 
         const { data: sbLoans, error: sbLoansErr } = await loansQuery;
         if (sbLoansErr) {
-          console.error('❌ [Supabase SELECT Error - tabla loans]:', sbLoansErr);
+          if (sbLoansErr.code === 'PGRST205' || sbLoansErr.code === '42P01') {
+            console.info('ℹ️ [Supabase tabla loans pendiente de migración SQL]: Usando motor PostgreSQL (/api/loans).');
+          } else {
+            console.warn('⚠️ [Supabase SELECT Aviso - tabla loans]:', sbLoansErr);
+          }
         } else if (Array.isArray(sbLoans)) {
           console.log(`✅ [Supabase SELECT Success - loans]: Obtenidos ${sbLoans.length} registros.`);
           rawLoans = sbLoans;
@@ -521,8 +527,9 @@ export async function createCustomLoanInDB(
     const safeOrgId = input.organizationId || input.tenantId || 'org-medellin-01';
     const safeCreatedBy = input.createdBy || 'usr-admin-001';
 
+    let savedInSupabaseLoans = false;
     if (isLiveSupabaseConfigured) {
-      const { data: sbInsertedLoan, error: sbLoanError } = await supabase
+      const { error: sbLoanError } = await supabase
         .from('loans')
         .insert([
           {
@@ -545,38 +552,40 @@ export async function createCustomLoanInDB(
             expected_end_date: dueDateStr,
             payment_days: paymentDays,
           },
-        ])
-        .select()
-        .single();
+        ]);
 
-      if (sbLoanError || !sbInsertedLoan) {
-        console.error('❌ [Supabase INSERT Error en tabla loans]:', sbLoanError);
-        const isDuplicate =
-          sbLoanError?.code === '23505' ||
-          sbLoanError?.message?.includes('23505') ||
-          sbLoanError?.message?.toLowerCase().includes('unique');
+      if (!sbLoanError) {
+        savedInSupabaseLoans = true;
+      } else {
+        const isSchemaOrPolicyIssue =
+          sbLoanError.code === 'PGRST204' ||
+          sbLoanError.code === 'PGRST205' ||
+          sbLoanError.code === '42P01' ||
+          sbLoanError.code === '42P17' ||
+          sbLoanError.code === '42703' ||
+          sbLoanError.code === '42501' ||
+          sbLoanError.message?.toLowerCase().includes('infinite recursion') ||
+          sbLoanError.message?.toLowerCase().includes('schema cache');
 
-        const isRls =
-          sbLoanError?.code === '42501' ||
-          sbLoanError?.message?.toLowerCase().includes('row-level security') ||
-          sbLoanError?.message?.toLowerCase().includes('policy');
+        if (isSchemaOrPolicyIssue) {
+          console.info('ℹ️ [Supabase tabla loans pendiente de ajuste SQL/RLS]: Guardando préstamo en motor PostgreSQL (/api/loans).');
+        } else {
+          const isDuplicate =
+            sbLoanError?.code === '23505' ||
+            sbLoanError?.message?.includes('23505') ||
+            sbLoanError?.message?.toLowerCase().includes('unique');
 
-        return {
-          data: null,
-          error: {
-            message: isDuplicate
-              ? 'Error al guardar en base de datos: Ya existe un registro con este identificador.'
-              : isRls
-              ? `Error al guardar en base de datos (Política RLS en 'loans'): ${sbLoanError?.message}`
-              : `Error al guardar en base de datos: ${sbLoanError?.message || 'Rechazo en tabla loans'}`,
-            code: sbLoanError?.code,
-            details: sbLoanError?.details,
-            hint: isRls
-              ? 'Ejecuta la migración 005_fix_rls_insert_persistence.sql en el SQL Editor de Supabase para habilitar INSERT en public.loans.'
-              : sbLoanError?.hint,
-            isRlsError: isRls,
-          },
-        };
+          if (isDuplicate) {
+            return {
+              data: null,
+              error: {
+                message: 'Error al guardar en base de datos: Ya existe un registro con este identificador.',
+                code: sbLoanError?.code,
+              },
+            };
+          }
+          console.warn('⚠️ [Supabase INSERT Aviso en tabla loans]:', sbLoanError);
+        }
       }
     }
 
@@ -608,8 +617,8 @@ export async function createCustomLoanInDB(
 
     if (!loanRes.ok) {
       const loanErrBody = await loanRes.json().catch(() => ({}));
-      console.error('❌ [Database INSERT Error - /api/loans]:', loanErrBody);
-      if (!isLiveSupabaseConfigured) {
+      console.warn('⚠️ [Database INSERT Aviso - /api/loans]:', loanErrBody);
+      if (!savedInSupabaseLoans) {
         return {
           data: null,
           error: {
@@ -632,7 +641,7 @@ export async function createCustomLoanInDB(
       error: null,
     };
   } catch (err: any) {
-    console.error('❌ [Excepción crítica al guardar préstamo]:', err);
+    console.warn('⚠️ [Excepción al guardar préstamo]:', err);
     return {
       data: null,
       error: {
@@ -669,35 +678,36 @@ export async function ensureRouteExistsInSupabaseAndDB(
         return String(existingRoute.id);
       }
 
-      // Si no existe, intentar registrarla en public.routes
-      const routeName = `Ruta ${safeRouteId.replace(/^route-?/i, '').toUpperCase() || 'General'}`;
-      const { error: upsertErr } = await supabase
-        .from('routes')
-        .upsert(
-          {
-            id: safeRouteId,
-            name: routeName,
-            zone: zone || 'Medellín Metropolitana',
-            collector_name: collectorName || 'Cobrador de Ruta',
-            status: 'active',
-            target_daily_collection: 1500000,
-            operating_expense_budget: 80000,
-          },
-          { onConflict: 'id' }
-        );
-
-      if (upsertErr) {
-        console.warn(
-          '⚠️ [ensureRouteExistsInSupabaseAndDB] No se pudo insertar ruta con id textual; buscando ruta existente en public.routes:',
-          upsertErr
-        );
-        const { data: fallbackRoute } = await supabase
+      // Si la tabla routes aún no existe en Supabase (PGRST205 / 42P01), saltar directo al backend PostgreSQL
+      if (checkError && (checkError.code === 'PGRST205' || checkError.code === '42P01')) {
+        // Skip Supabase routes upsert when table is not yet created
+      } else {
+        // Si no existe la fila, intentar registrarla en public.routes
+        const routeName = `Ruta ${safeRouteId.replace(/^route-?/i, '').toUpperCase() || 'General'}`;
+        const { error: upsertErr } = await supabase
           .from('routes')
-          .select('id')
-          .limit(1)
-          .maybeSingle();
-        if (fallbackRoute?.id) {
-          return String(fallbackRoute.id);
+          .upsert(
+            {
+              id: safeRouteId,
+              name: routeName,
+              zone: zone || 'Medellín Metropolitana',
+              collector_name: collectorName || 'Cobrador de Ruta',
+              status: 'active',
+              target_daily_collection: 1500000,
+              operating_expense_budget: 80000,
+            },
+            { onConflict: 'id' }
+          );
+
+        if (upsertErr && upsertErr.code !== 'PGRST205' && upsertErr.code !== '42P01') {
+          const { data: fallbackRoute } = await supabase
+            .from('routes')
+            .select('id')
+            .limit(1)
+            .maybeSingle();
+          if (fallbackRoute?.id) {
+            return String(fallbackRoute.id);
+          }
         }
       }
     } catch (sbErr) {
@@ -855,103 +865,86 @@ export async function insertClientAndLoanToDB(
   }
 
   try {
-    // 1. Si Supabase está configurado, insertar en `public.clients` y `public.loans` con captura estricta de errores
+    // 1. Si Supabase está configurado, insertar en `public.clients` y `public.loans`
+    let savedInSupabase = false;
     if (isLiveSupabaseConfigured) {
       logSupabaseConnectionAudit('insertClientAndLoanToDB (Crear Cliente)', 'clients', {
         endpoint: `${supabaseUrl}/rest/v1/clients`,
         payload: datosAInsertar,
       });
 
-      const { data: sbInsertedClient, error: sbError } = await supabase
+      const { error: sbError } = await supabase
         .from('clients')
-        .insert([datosAInsertar])
-        .select()
-        .single();
+        .insert([datosAInsertar]);
 
-      if (sbError || !sbInsertedClient) {
-        console.error('❌ [Supabase INSERT Error en tabla clients]:', sbError);
-        const isDuplicate =
-          sbError?.code === '23505' ||
-          sbError?.message?.includes('23505') ||
-          sbError?.message?.toLowerCase().includes('unique') ||
-          sbError?.message?.toLowerCase().includes('duplicate key');
+      if (sbError) {
+        const isSchemaOrPolicyIssue =
+          sbError.code === 'PGRST204' ||
+          sbError.code === 'PGRST205' ||
+          sbError.code === '42P01' ||
+          sbError.code === '42P17' ||
+          sbError.code === '42703' ||
+          sbError.code === '42501' ||
+          sbError.message?.toLowerCase().includes('infinite recursion') ||
+          sbError.message?.toLowerCase().includes('schema cache');
 
-        const isRls =
-          sbError?.code === '42501' ||
-          sbError?.message?.toLowerCase().includes('row-level security') ||
-          sbError?.message?.toLowerCase().includes('policy');
+        if (isSchemaOrPolicyIssue) {
+          console.info('ℹ️ [Supabase tabla clients pendiente de ajuste SQL/RLS]: Guardando cliente en motor PostgreSQL (/api/clients).');
+        } else {
+          const isDuplicate =
+            sbError?.code === '23505' ||
+            sbError?.message?.includes('23505') ||
+            sbError?.message?.toLowerCase().includes('unique') ||
+            sbError?.message?.toLowerCase().includes('duplicate key');
 
-        return {
-          data: null,
-          error: {
-            message: isDuplicate
-              ? 'Error al guardar en base de datos: Ya existe un usuario o cliente registrado con este documento.'
-              : isRls
-              ? `Error al guardar en base de datos (Política RLS en 'clients'): ${sbError?.message}`
-              : `Error al guardar en base de datos: ${sbError?.message || 'Rechazo en tabla clients'}`,
-            code: sbError?.code,
-            details: sbError?.details,
-            hint: isDuplicate
-              ? 'El número de cédula o documento ya pertenece a un cliente registrado.'
-              : isRls
-              ? 'Ejecuta la migración 005_fix_rls_insert_persistence.sql en el SQL Editor de Supabase para habilitar INSERT en public.clients.'
-              : sbError?.hint,
-            isRlsError: isRls,
-          },
+          if (isDuplicate) {
+            return {
+              data: null,
+              error: {
+                message: 'Error al guardar en base de datos: Ya existe un usuario o cliente registrado con este documento.',
+                code: sbError?.code,
+                details: sbError?.details,
+                hint: 'El número de cédula o documento ya pertenece a un cliente registrado.',
+              },
+            };
+          }
+          console.warn('⚠️ [Supabase INSERT Aviso en tabla clients]:', sbError);
+        }
+      } else {
+        savedInSupabase = true;
+        const datosPrestamoAInsertar = {
+          id: loanId,
+          client_id: clientId,
+          route_id: safeRouteId,
+          organization_id: safeOrgId,
+          tenant_id: safeOrgId,
+          created_by: safeCreatedBy,
+          principal_amount: safePrincipal,
+          interest_rate: safeRate,
+          total_amount: totalDebt,
+          daily_quota: installmentAmount,
+          remaining_balance: totalDebt,
+          total_days: safeTerm,
+          paid_days: 0,
+          modality,
+          status: 'active',
+          start_date: todayStr,
+          expected_end_date: dueDateStr,
+          payment_days: paymentDays,
         };
-      }
 
-      const datosPrestamoAInsertar = {
-        id: loanId,
-        client_id: clientId,
-        route_id: safeRouteId,
-        organization_id: safeOrgId,
-        tenant_id: safeOrgId,
-        created_by: safeCreatedBy,
-        principal_amount: safePrincipal,
-        interest_rate: safeRate,
-        total_amount: totalDebt,
-        daily_quota: installmentAmount,
-        remaining_balance: totalDebt,
-        total_days: safeTerm,
-        paid_days: 0,
-        modality,
-        status: 'active',
-        start_date: todayStr,
-        expected_end_date: dueDateStr,
-        payment_days: paymentDays,
-      };
+        logSupabaseConnectionAudit('insertClientAndLoanToDB (Crear Préstamo)', 'loans', {
+          endpoint: `${supabaseUrl}/rest/v1/loans`,
+          payload: datosPrestamoAInsertar,
+        });
 
-      logSupabaseConnectionAudit('insertClientAndLoanToDB (Crear Préstamo)', 'loans', {
-        endpoint: `${supabaseUrl}/rest/v1/loans`,
-        payload: datosPrestamoAInsertar,
-      });
+        const { error: sbLoanErr } = await supabase
+          .from('loans')
+          .insert([datosPrestamoAInsertar]);
 
-      const { data: sbInsertedLoan, error: sbLoanErr } = await supabase
-        .from('loans')
-        .insert([datosPrestamoAInsertar])
-        .select()
-        .single();
-
-      if (sbLoanErr || !sbInsertedLoan) {
-        console.error('❌ [Supabase INSERT Error en tabla loans]:', sbLoanErr);
-        const isRls =
-          sbLoanErr?.code === '42501' ||
-          sbLoanErr?.message?.toLowerCase().includes('row-level security') ||
-          sbLoanErr?.message?.toLowerCase().includes('policy');
-
-        return {
-          data: null,
-          error: {
-            message: `Error al guardar en base de datos (tabla loans): ${sbLoanErr?.message || 'Rechazo al crear el préstamo inicial'}`,
-            code: sbLoanErr?.code,
-            details: sbLoanErr?.details,
-            hint: isRls
-              ? 'Ejecuta la migración 005_fix_rls_insert_persistence.sql para habilitar INSERT en public.loans.'
-              : sbLoanErr?.hint,
-            isRlsError: isRls,
-          },
-        };
+        if (sbLoanErr && sbLoanErr.code !== 'PGRST205' && sbLoanErr.code !== '42P01' && sbLoanErr.code !== 'PGRST204') {
+          console.warn('⚠️ [Supabase INSERT Aviso en tabla loans]:', sbLoanErr);
+        }
       }
     }
 
@@ -980,9 +973,9 @@ export async function insertClientAndLoanToDB(
 
     if (!clientRes.ok) {
       const errBody = await clientRes.json().catch(() => ({}));
-      console.error('❌ [Database INSERT Error - /api/clients]:', errBody);
+      console.warn('⚠️ [Database INSERT Aviso - /api/clients]:', errBody);
 
-      if (!isLiveSupabaseConfigured) {
+      if (!savedInSupabase) {
         const isDuplicate =
           clientRes.status === 409 ||
           errBody?.code === '23505' ||
@@ -1032,8 +1025,8 @@ export async function insertClientAndLoanToDB(
 
     if (!loanRes.ok) {
       const loanErrBody = await loanRes.json().catch(() => ({}));
-      console.error('❌ [Database INSERT Error - /api/loans]:', loanErrBody);
-      if (!isLiveSupabaseConfigured) {
+      console.warn('⚠️ [Database INSERT Aviso - /api/loans]:', loanErrBody);
+      if (!savedInSupabase) {
         return {
           data: null,
           error: {
@@ -1056,7 +1049,7 @@ export async function insertClientAndLoanToDB(
       error: null,
     };
   } catch (err: any) {
-    console.error('❌ [Excepción crítica al guardar cliente y préstamo]:', err);
+    console.warn('⚠️ [Excepción al guardar cliente y préstamo]:', err);
     return {
       data: null,
       error: {

@@ -41,48 +41,72 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const initAuth = async () => {
       try {
+        // Primero verificar si ya existe una sesión activa persistida en localStorage
+        const rawStored = localStorage.getItem('rutacapital_auth_session');
+        if (rawStored) {
+          try {
+            const parsed = JSON.parse(rawStored) as AuthSession;
+            if (parsed && parsed.profile && isMounted) {
+              setSession(parsed);
+            }
+          } catch {
+            // Ignorar JSON corrupto
+          }
+        }
+
         if (isLiveSupabaseConfigured) {
           const { data: { user: authUser }, error: authErr } = await supabase.auth.getUser();
           if (authUser && !authErr) {
-            const isMasterEmail = authUser.email?.toLowerCase() === 'estebanochoamesa@gmail.com' || authUser.email?.toLowerCase() === 'superadmin@rutacapital.co';
+            const isMasterEmail =
+              authUser.email?.toLowerCase() === 'estebanochoamesa@gmail.com' ||
+              authUser.email?.toLowerCase() === 'superadmin@rutacapital.co';
             const { data: profileData } = await supabase
               .from('profiles')
               .select('*')
               .eq('id', authUser.id)
-              .single();
+              .maybeSingle();
 
-            const resolvedRole: UserRole = isMasterEmail ? 'super_admin' : (profileData?.role as UserRole || 'admin');
+            const meta = authUser.user_metadata || {};
+            const resolvedRole: UserRole = isMasterEmail
+              ? 'super_admin'
+              : ((profileData?.role || meta.role || 'admin') as UserRole);
 
-            if ((profileData || isMasterEmail) && isMounted) {
+            if (isMounted) {
               const activeSession: AuthSession = {
-                user: { id: authUser.id, email: authUser.email || profileData?.email || 'estebanochoamesa@gmail.com' },
+                user: {
+                  id: authUser.id,
+                  email: authUser.email || profileData?.email || 'estebanochoamesa@gmail.com',
+                },
                 profile: {
                   id: profileData?.id || authUser.id,
                   email: authUser.email || profileData?.email || 'estebanochoamesa@gmail.com',
-                  fullName: profileData?.full_name || 'Esteban Ochoa (Dueño / Super Admin)',
+                  fullName:
+                    profileData?.full_name ||
+                    meta.full_name ||
+                    (isMasterEmail ? 'Esteban Ochoa (Dueño / Super Admin)' : authUser.email?.split('@')[0] || 'Usuario'),
                   role: resolvedRole,
-                  organizationId: profileData?.organization_id || 'org-global-hq',
-                  organizationName: profileData?.organization_name || 'RutaCapital Holding Matriz',
-                  assignedRouteId: profileData?.assigned_route_id || 'route-1',
-                  routeZone: profileData?.route_zone || '',
-                  phone: profileData?.phone,
+                  organizationId:
+                    profileData?.organization_id ||
+                    meta.organization_id ||
+                    meta.tenant_id ||
+                    (isMasterEmail ? 'org-global-hq' : 'org-medellin-01'),
+                  organizationName:
+                    profileData?.organization_name ||
+                    meta.organization_name ||
+                    (isMasterEmail ? 'RutaCapital Holding Matriz' : 'Fondo RutaCapital Medellín'),
+                  assignedRouteId: profileData?.assigned_route_id || meta.assigned_route_id || 'route-1',
+                  routeZone: profileData?.route_zone || meta.route_zone || '',
+                  phone: profileData?.phone || meta.phone,
                   partnerEquityPct: profileData?.partner_equity_pct ?? 100,
                   capitalInvestedCop: profileData?.capital_invested_cop ?? 100000000,
-                  documentId: profileData?.document_id,
+                  documentId: profileData?.document_id || meta.document_id,
                   isActive: profileData?.is_active ?? true,
-                  createdAt: profileData?.created_at || new Date().toISOString()
+                  createdAt: profileData?.created_at || authUser.created_at || new Date().toISOString(),
                 },
-                token: 'live-supabase-jwt'
+                token: 'live-supabase-jwt',
               };
               setSession(activeSession);
-            }
-          }
-        } else {
-          const raw = localStorage.getItem('rutacapital_auth_session');
-          if (raw) {
-            const parsed = JSON.parse(raw) as AuthSession;
-            if (parsed && parsed.profile) {
-              setSession(parsed);
+              localStorage.setItem('rutacapital_auth_session', JSON.stringify(activeSession));
             }
           }
         }
@@ -111,31 +135,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           .from('profiles')
           .select('*')
           .eq('id', authSession.user.id)
-          .single();
+          .maybeSingle();
 
-        if (profileData) {
-          const newSess: AuthSession = {
-            user: { id: authSession.user.id, email: authSession.user.email || profileData.email },
-            profile: {
-              id: profileData.id,
-              email: profileData.email,
-              fullName: profileData.full_name,
-              role: profileData.role as UserRole,
-              organizationId: profileData.organization_id || 'org-medellin-01',
-              organizationName: profileData.organization_name || 'Fondo RutaCapital',
-              assignedRouteId: profileData.assigned_route_id || 'route-1',
-              routeZone: profileData.route_zone || '',
-              phone: profileData.phone,
-              partnerEquityPct: profileData.partner_equity_pct,
-              capitalInvestedCop: profileData.capital_invested_cop,
-              documentId: profileData.document_id,
-              isActive: profileData.is_active,
-              createdAt: profileData.created_at
-            },
-            token: authSession.access_token
-          };
-          setSession(newSess);
-        }
+        const meta = authSession.user.user_metadata || {};
+        const resolvedData = profileData || {
+          id: authSession.user.id,
+          email: authSession.user.email || '',
+          full_name: meta.full_name || authSession.user.email?.split('@')[0] || 'Usuario',
+          role: meta.role || 'collector',
+          organization_id: meta.organization_id || meta.tenant_id || 'org-medellin-01',
+          organization_name: meta.organization_name || 'Fondo RutaCapital',
+          assigned_route_id: meta.assigned_route_id || 'route-1',
+          route_zone: meta.route_zone || '',
+          phone: meta.phone || '',
+          document_id: meta.document_id || '',
+          is_active: true,
+          created_at: authSession.user.created_at || new Date().toISOString(),
+        };
+
+        const newSess: AuthSession = {
+          user: { id: authSession.user.id, email: authSession.user.email || resolvedData.email },
+          profile: {
+            id: resolvedData.id,
+            email: resolvedData.email,
+            fullName: resolvedData.full_name,
+            role: resolvedData.role as UserRole,
+            organizationId: resolvedData.organization_id || 'org-medellin-01',
+            organizationName: resolvedData.organization_name || 'Fondo RutaCapital',
+            assignedRouteId: resolvedData.assigned_route_id || 'route-1',
+            routeZone: resolvedData.route_zone || '',
+            phone: resolvedData.phone,
+            partnerEquityPct: resolvedData.partner_equity_pct,
+            capitalInvestedCop: resolvedData.capital_invested_cop,
+            documentId: resolvedData.document_id,
+            isActive: resolvedData.is_active ?? true,
+            createdAt: resolvedData.created_at,
+          },
+          token: authSession.access_token,
+        };
+        setSession(newSess);
       }
     });
 

@@ -163,7 +163,16 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
           .order('created_at', { ascending: false });
 
         if (sbErr) {
-          console.error('❌ [Supabase SELECT profiles (collector) Error]:', sbErr);
+          if (
+            sbErr.code === 'PGRST205' ||
+            sbErr.code === '42P01' ||
+            sbErr.code === '42P17' ||
+            sbErr.code === 'PGRST204'
+          ) {
+            console.info('ℹ️ [Supabase tabla profiles pendiente de ajuste SQL/RLS]: Cargando cobradores desde motor PostgreSQL (/api/collectors).');
+          } else {
+            console.warn('⚠️ [Supabase SELECT profiles (collector) Aviso]:', sbErr);
+          }
         } else if (Array.isArray(sbCollectors)) {
           sbCollectors.forEach((u: any) => {
             const normEmail = (u.email || '').trim().toLowerCase();
@@ -253,7 +262,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
 
       setCollectors(finalCollectors);
     } catch (err) {
-      console.error('Error cargando listado de cobradores:', err);
+      console.warn('Aviso cargando listado de cobradores:', err);
     } finally {
       setIsLoadingList(false);
     }
@@ -330,7 +339,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
     setIsSubmitting(false);
 
     if (error || !createdProfile) {
-      console.error('❌ [Bloqueo de creación de Cobrador]:', error);
+      console.warn('⚠️ [Aviso de validación al crear Cobrador]:', error);
       setErrorMsg(error || 'Error al guardar en base de datos: No se pudo crear el usuario cobrador.');
       return;
     }

@@ -64,7 +64,16 @@ export const SuperAdminTenantsManager: React.FC = () => {
           .order('created_at', { ascending: false });
 
         if (sbErr) {
-          console.error('❌ [Supabase SELECT profiles (role=admin) Error]:', sbErr);
+          if (
+            sbErr.code === 'PGRST205' ||
+            sbErr.code === '42P01' ||
+            sbErr.code === '42P17' ||
+            sbErr.code === 'PGRST204'
+          ) {
+            console.info('ℹ️ [Supabase tabla profiles pendiente de ajuste SQL/RLS]: Cargando administradores desde motor PostgreSQL (/api/admins).');
+          } else {
+            console.warn('⚠️ [Supabase SELECT profiles (role=admin) Aviso]:', sbErr);
+          }
         } else if (Array.isArray(sbAdmins)) {
           sbAdmins.forEach((a: any) => {
             const normEmail = (a.email || '').trim().toLowerCase();
@@ -138,7 +147,7 @@ export const SuperAdminTenantsManager: React.FC = () => {
 
       setAdminsList(finalAdmins);
     } catch (err) {
-      console.error('[SuperAdminTenantsManager] Error cargando administradores:', err);
+      console.warn('[SuperAdminTenantsManager] Aviso cargando administradores:', err);
     } finally {
       setIsLoading(false);
     }
@@ -188,7 +197,7 @@ export const SuperAdminTenantsManager: React.FC = () => {
       });
 
       if (error || !createdAdmin) {
-        console.error('❌ [Bloqueo de creación de Administrador]:', error);
+        console.warn('⚠️ [Aviso de validación al crear Administrador]:', error);
         setErrorMsg(error || 'Error al guardar en base de datos: No se pudo registrar la cuenta de Administrador.');
         return;
       }

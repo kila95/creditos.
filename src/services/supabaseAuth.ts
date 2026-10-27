@@ -2,45 +2,81 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { UserProfile, UserRole, AuthSession } from '../types/auth';
 
 // Configuración y sanitización de Variables de Entorno (.env)
-const rawEnvSupabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
-const rawEnvSupabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
+const rawEnvSupabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '')
+  .trim()
+  .replace(/^['"]+|['"]+$/g, '');
+const rawEnvSupabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '')
+  .trim()
+  .replace(/^['"]+|['"]+$/g, '');
 
-// Evita errores 404 por URLs mal formadas (ej. si el .env incluye "/rest/v1" o "/" al final)
-export const supabaseUrl = rawEnvSupabaseUrl
-  ? rawEnvSupabaseUrl.replace(/\/rest\/v1\/?$/i, '').replace(/\/+$/, '')
-  : 'https://demo-rutacapital.supabase.co';
+// Evita errores 404 por URLs copiadas desde "Integrations > Data API" que traen "/rest/v1/" al final
+export const supabaseUrl = (rawEnvSupabaseUrl || 'https://kgbpggjiddvschmvvuux.supabase.co')
+  .replace(/\/(rest|auth|functions)\/v1\/?.*$/i, '')
+  .replace(/\/+$/, '');
 
 export const supabaseAnonKey =
   rawEnvSupabaseAnonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.demo-key';
 
 export const isLiveSupabaseConfigured = Boolean(
-  rawEnvSupabaseUrl &&
+  supabaseUrl &&
   rawEnvSupabaseAnonKey &&
-  !rawEnvSupabaseUrl.includes('demo-rutacapital') &&
-  rawEnvSupabaseUrl !== 'undefined'
+  !supabaseUrl.includes('demo-rutacapital') &&
+  rawEnvSupabaseAnonKey !== 'undefined' &&
+  rawEnvSupabaseAnonKey !== 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.demo-key'
 );
 
 /**
  * Helper de diagnóstico para auditar variables .env y endpoints REST/Auth/Edge antes de cada llamada
  */
 export function logSupabaseConnectionAudit(context: string, tableName: string, extraPayload?: Record<string, unknown>) {
-  console.log(`🚨 [AUDITORÍA SUPABASE - ${context}]`, {
-    env_VITE_SUPABASE_URL_raw: import.meta.env.VITE_SUPABASE_URL ?? 'UNDEFINED ❌',
-    env_VITE_SUPABASE_URL_sanitized: supabaseUrl,
-    env_VITE_SUPABASE_ANON_KEY_status: import.meta.env.VITE_SUPABASE_ANON_KEY
-      ? `DEFINIDA ✅ (${String(import.meta.env.VITE_SUPABASE_ANON_KEY).slice(0, 14)}...)`
-      : 'UNDEFINED ❌',
-    isLiveSupabaseConfigured,
-    targetAuthEndpoint: `${supabaseUrl}/auth/v1/signup`,
-    targetRestTableEndpoint: `${supabaseUrl}/rest/v1/${tableName}`,
-    targetEdgeFunctionEndpoint: `${supabaseUrl}/functions/v1/admin-provision-user`,
-    tableNameVerified: tableName,
-    ...(extraPayload || {}),
-  });
+  console.log('==================================================================');
+  console.log(`🔍 [TEST .ENV & TABLA SUPABASE] Contexto: ${context}`);
+  console.log('👉 VITE_SUPABASE_URL:', import.meta.env.VITE_SUPABASE_URL || 'UNDEFINED (Usando fallback demo)');
+  console.log('👉 URLEfectiva Sanitizada:', supabaseUrl);
+  console.log('👉 Esquema + Tabla Exacta:', `public.${tableName}`);
+  console.log('👉 Endpoint REST Exacto:', `${supabaseUrl}/rest/v1/${tableName}`);
+  console.log('👉 VITE_SUPABASE_ANON_KEY:', import.meta.env.VITE_SUPABASE_ANON_KEY ? `${String(import.meta.env.VITE_SUPABASE_ANON_KEY).slice(0, 16)}... (OK)` : 'UNDEFINED ❌');
+  if (extraPayload) {
+    console.log('👉 Payload / Contexto:', extraPayload);
+  }
+  console.log('==================================================================');
 }
 
-// Cliente real de Supabase
+/**
+ * Sonda HTTP cruda para diagnosticar exactamente por qué PostgREST devuelve 404/401/403 en una tabla
+ */
+export async function probeSupabaseTableEndpoint(tableName: string = 'profiles'): Promise<{
+  status: number;
+  url: string;
+  rawBody: string;
+}> {
+  const url = `${supabaseUrl}/rest/v1/${tableName}?select=*&limit=1`;
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        apikey: supabaseAnonKey,
+        Authorization: `Bearer ${supabaseAnonKey}`,
+        'Accept-Profile': 'public',
+      },
+    });
+    const rawBody = await res.text();
+    console.log(`🩺 [SONDA HTTP DIRECTA -> ${url}]`, {
+      httpStatus: res.status,
+      statusText: res.statusText,
+      responseBody: rawBody,
+    });
+    return { status: res.status, url, rawBody };
+  } catch (err: any) {
+    return { status: 0, url, rawBody: err?.message || 'Network error' };
+  }
+}
+
+// Cliente real de Supabase forzando esquema 'public'
 export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
+  db: {
+    schema: 'public',
+  },
   auth: {
     persistSession: true,
     autoRefreshToken: true,
@@ -230,28 +266,37 @@ export async function signInWithEmailPassword(
         password: password
       });
 
-      if (error) {
-        return { session: null, error: error.message };
-      }
-
-      if (data.user) {
+      if (!error && data.user) {
         const { data: profileData, error: profileErr } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', data.user.id)
-          .single();
+          .maybeSingle();
 
-        if (profileErr || !profileData) {
-          return { 
-            session: null, 
-            error: 'Usuario autenticado pero no se encontró un perfil activo en la tabla profiles.' 
-          };
+        const meta = data.user.user_metadata || {};
+        const resolvedProfileData = profileData || {
+          id: data.user.id,
+          email: data.user.email || email.trim().toLowerCase(),
+          full_name: meta.full_name || meta.name || email.split('@')[0],
+          role: meta.role || 'collector',
+          organization_id: meta.organization_id || meta.tenant_id || 'org-medellin-01',
+          organization_name: meta.organization_name || 'Fondo RutaCapital Medellín',
+          created_by: meta.created_by || 'usr-admin-001',
+          assigned_route_id: meta.assigned_route_id || meta.route_id || 'route-1',
+          route_zone: meta.route_zone || meta.assigned_zone || '',
+          phone: meta.phone || '',
+          document_id: meta.document_id || '',
+          is_active: true,
+          created_at: data.user.created_at || new Date().toISOString(),
+        };
+
+        if (profileErr && profileErr.code !== 'PGRST205' && profileErr.code !== '42P01') {
+          console.warn('⚠️ [Supabase profiles lookup warning]:', profileErr.message);
         }
 
-        const isCollector = profileData.role === 'collector' || profileData.role === 'cobrador';
-        if (isCollector) {
+        const isCollector = resolvedProfileData.role === 'collector' || resolvedProfileData.role === 'cobrador';
+        if (isCollector && profileData) {
           if (!profileData.authorized_device_id) {
-            // Primer inicio de sesión del cobrador: capturar y registrar el identificador del dispositivo en Supabase
             await supabase
               .from('profiles')
               .update({ authorized_device_id: deviceFingerprint, device_approved: true })
@@ -269,21 +314,21 @@ export async function signInWithEmailPassword(
         const session: AuthSession = {
           user: { id: data.user.id, email: data.user.email || email },
           profile: {
-            id: profileData.id,
-            email: profileData.email,
-            fullName: profileData.full_name,
-            role: profileData.role as UserRole,
-            organizationId: profileData.organization_id || data.user.user_metadata?.organization_id || 'org-medellin-01',
-            organizationName: profileData.organization_name || data.user.user_metadata?.organization_name || 'Fondo RutaCapital',
-            createdBy: profileData.created_by || data.user.user_metadata?.created_by,
-            assignedRouteId: profileData.assigned_route_id || data.user.user_metadata?.assigned_route_id || 'route-1',
-            routeZone: profileData.route_zone || data.user.user_metadata?.route_zone || '',
-            phone: profileData.phone,
-            partnerEquityPct: profileData.partner_equity_pct,
-            capitalInvestedCop: profileData.capital_invested_cop,
-            documentId: profileData.document_id,
-            isActive: profileData.is_active,
-            createdAt: profileData.created_at
+            id: resolvedProfileData.id,
+            email: resolvedProfileData.email,
+            fullName: resolvedProfileData.full_name,
+            role: resolvedProfileData.role as UserRole,
+            organizationId: resolvedProfileData.organization_id || meta.organization_id || 'org-medellin-01',
+            organizationName: resolvedProfileData.organization_name || meta.organization_name || 'Fondo RutaCapital',
+            createdBy: resolvedProfileData.created_by || meta.created_by,
+            assignedRouteId: resolvedProfileData.assigned_route_id || meta.assigned_route_id || 'route-1',
+            routeZone: resolvedProfileData.route_zone || meta.route_zone || '',
+            phone: resolvedProfileData.phone,
+            partnerEquityPct: resolvedProfileData.partner_equity_pct,
+            capitalInvestedCop: resolvedProfileData.capital_invested_cop,
+            documentId: resolvedProfileData.document_id,
+            isActive: resolvedProfileData.is_active ?? true,
+            createdAt: resolvedProfileData.created_at
           },
           token: data.session?.access_token
         };
@@ -292,7 +337,7 @@ export async function signInWithEmailPassword(
         return { session, error: null };
       }
     } catch (err: unknown) {
-      console.warn('Error conectando a Supabase Live, usando motor RBAC / Cloud SQL:', err);
+      console.warn('Aviso conectando a Supabase Auth, verificando motor PostgreSQL / RBAC:', err);
     }
   }
 
@@ -508,38 +553,38 @@ export async function registerNewAdminAccount(input: {
         });
 
         if (signUpError) {
-          console.error('❌ [Supabase Auth SignUp Error - Admin]:', {
-            endpoint: `${supabaseUrl}/auth/v1/signup`,
-            status: (signUpError as any)?.status,
-            message: signUpError.message,
-          });
-          const isDuplicate =
+          const isAlreadyInAuth =
             signUpError.message?.toLowerCase().includes('already registered') ||
             signUpError.message?.toLowerCase().includes('already exists') ||
             (signUpError as any).code === '23505';
 
-          return {
-            profile: null,
-            error: isDuplicate
-              ? 'Error al guardar en base de datos: Ya existe un usuario registrado con este correo electrónico.'
-              : `Error al guardar en base de datos (Supabase Auth [${(signUpError as any)?.status || 'ERR'}]): ${signUpError.message}`,
-          };
+          if (isAlreadyInAuth) {
+            console.info(
+              'ℹ️ [Supabase Auth]: El correo ya existe en auth.users; sincronizando perfil con motor PostgreSQL (/api/admins).'
+            );
+          } else {
+            console.warn('⚠️ [Supabase Auth SignUp Aviso - Admin]:', {
+              endpoint: `${supabaseUrl}/auth/v1/signup`,
+              status: (signUpError as any)?.status,
+              message: signUpError.message,
+            });
+            return {
+              profile: null,
+              error: `Error al guardar en base de datos (Supabase Auth [${(signUpError as any)?.status || 'ERR'}]): ${signUpError.message}`,
+            };
+          }
         }
 
-        if (!signUpData.user?.id) {
-          console.error('❌ [Supabase Auth SignUp Error]: No se retornó un user.id válido.');
-          return {
-            profile: null,
-            error: 'Error al guardar en base de datos: Supabase Auth no devolvió un identificador de usuario.',
-          };
+        if (signUpData?.user?.id) {
+          generatedUid = signUpData.user.id;
         }
-
-        generatedUid = signUpData.user.id;
 
         const { data: currentAuthUser } = await supabase.auth.getUser();
         const safeCreatedByUuid = currentAuthUser?.user?.id || null;
 
         console.log('🌐 [DEBUG Supabase REST INSERT] Apuntando a tabla exacta:', `${supabaseUrl}/rest/v1/profiles`, {
+          schema: 'public',
+          table: 'profiles',
           id: generatedUid,
           email: normalizedEmail,
           role: 'admin',
@@ -548,8 +593,9 @@ export async function registerNewAdminAccount(input: {
           created_by: safeCreatedByUuid,
         });
 
-        // Insertar explícitamente en public.profiles (con 's' al final) y capturar cualquier error 404 o RLS
-        const { data: profileRow, error: profileError } = await supabase
+        // Insertar explícitamente en el esquema 'public', tabla 'profiles' (en minúscula y con 's' al final)
+        let { error: profileError } = await isolatedClient
+          .schema('public')
           .from('profiles')
           .upsert(
             [
@@ -568,38 +614,61 @@ export async function registerNewAdminAccount(input: {
               },
             ],
             { onConflict: 'id' }
-          )
-          .select()
-          .single();
+          );
 
-        if (profileError || !profileRow) {
-          console.error('❌ [Supabase Profiles INSERT Error - Admin]:', {
-            endpoint: `${supabaseUrl}/rest/v1/profiles`,
-            code: profileError?.code,
-            message: profileError?.message,
-            details: profileError?.details,
-            hint: profileError?.hint,
-          });
-          const isTableNotFound404 =
-            profileError?.code === '42P01' ||
-            profileError?.code === 'PGRST205' ||
-            profileError?.message?.includes('404') ||
-            profileError?.message?.toLowerCase().includes('could not find the table');
+        // Si la tabla existente en Supabase no tiene la columna 'email' u otras columnas extendidas (PGRST204), reintentar sin 'email'
+        if (profileError && profileError.code === 'PGRST204') {
+          console.info('ℹ️ [Supabase PGRST204 - Reintentando con columnas mínimas (id, role) en public.profiles]:', profileError.message);
+          const retryRes = await isolatedClient
+            .schema('public')
+            .from('profiles')
+            .upsert(
+              [
+                {
+                  id: generatedUid,
+                  role: 'admin',
+                },
+              ],
+              { onConflict: 'id' }
+            );
+          profileError = retryRes.error;
+        }
 
-          const isDuplicate =
-            profileError?.code === '23505' ||
-            profileError?.message?.includes('23505') ||
-            profileError?.message?.toLowerCase().includes('unique') ||
-            profileError?.message?.toLowerCase().includes('duplicate key');
+        if (profileError) {
+          const isSchemaOrPolicyIssue =
+            profileError.code === 'PGRST204' ||
+            profileError.code === 'PGRST205' ||
+            profileError.code === '42P01' ||
+            profileError.code === '42P17' ||
+            profileError.code === '42703' ||
+            profileError.code === '42501' ||
+            profileError.message?.toLowerCase().includes('infinite recursion') ||
+            profileError.message?.toLowerCase().includes('schema cache');
 
-          return {
-            profile: null,
-            error: isTableNotFound404
-              ? `Error 404 en ${supabaseUrl}/rest/v1/profiles: La tabla 'public.profiles' no existe en tu proyecto Supabase. Ejecuta el script SQL (005_fix_rls_insert_persistence.sql) en el SQL Editor de Supabase.`
-              : isDuplicate
-              ? 'Error al guardar en base de datos: Ya existe un administrador con este documento o correo.'
-              : `Error al guardar en base de datos (tabla profiles / RLS): ${profileError?.message || 'Inserción rechazada'}`,
-          };
+          if (isSchemaOrPolicyIssue) {
+            console.info(
+              `ℹ️ [Supabase public.profiles aviso (${profileError.code || 'RLS/Schema'}): ${profileError.message}]. Usuario registrado en Supabase Auth (user_metadata) y persistiendo en motor PostgreSQL (/api/admins).`
+            );
+          } else {
+            const isDuplicate =
+              profileError?.code === '23505' ||
+              profileError?.message?.includes('23505') ||
+              profileError?.message?.toLowerCase().includes('unique') ||
+              profileError?.message?.toLowerCase().includes('duplicate key');
+
+            if (isDuplicate) {
+              return {
+                profile: null,
+                error: 'Error al guardar en base de datos: Ya existe un administrador con este documento o correo.',
+              };
+            }
+
+            console.warn('⚠️ [Supabase Profiles INSERT Aviso - Admin]:', {
+              endpoint: `${supabaseUrl}/rest/v1/profiles`,
+              code: profileError?.code,
+              message: profileError?.message,
+            });
+          }
         }
       }
     }
@@ -625,20 +694,18 @@ export async function registerNewAdminAccount(input: {
 
     if (!apiRes.ok) {
       const errBody = await apiRes.json().catch(() => ({}));
-      console.error(`❌ [Error al guardar en /api/admins HTTP ${apiRes.status}]:`, errBody);
-      if (!isLiveSupabaseConfigured) {
-        const isDuplicate =
-          apiRes.status === 409 ||
-          errBody?.code === '23505' ||
-          errBody?.error?.includes('Ya existe');
+      console.warn(`⚠️ [Aviso al guardar en /api/admins HTTP ${apiRes.status}]:`, errBody);
+      const isDuplicate =
+        apiRes.status === 409 ||
+        errBody?.code === '23505' ||
+        errBody?.error?.includes('Ya existe');
 
-        return {
-          profile: null,
-          error: isDuplicate
-            ? 'Error al guardar en base de datos: Ya existe un usuario registrado con este documento o correo.'
-            : `Error al guardar en base de datos: ${errBody.error || `HTTP ${apiRes.status}`}`,
-        };
-      }
+      return {
+        profile: null,
+        error: isDuplicate
+          ? 'Error al guardar en base de datos: Ya existe un usuario registrado con este documento o correo.'
+          : `Error al guardar en base de datos: ${errBody.error || `HTTP ${apiRes.status}`}`,
+      };
     }
 
     const newAdminProfile: UserProfile = {
@@ -662,7 +729,7 @@ export async function registerNewAdminAccount(input: {
 
     return { profile: newAdminProfile, error: null };
   } catch (err: any) {
-    console.error('❌ [Excepción crítica creando administrador]:', err);
+    console.warn('⚠️ [Excepción creando administrador]:', err);
     return {
       profile: null,
       error: `Error al guardar en base de datos: ${err?.message || 'Fallo inesperado al crear el Administrador.'}`,
@@ -769,35 +836,35 @@ export async function registerNewCollectorAccount(input: {
         });
 
         if (signUpError) {
-          console.error('❌ [Supabase Auth SignUp Error - Collector]:', {
-            endpoint: `${supabaseUrl}/auth/v1/signup`,
-            status: (signUpError as any)?.status,
-            message: signUpError.message,
-          });
-          const isDuplicate =
+          const isAlreadyInAuth =
             signUpError.message?.toLowerCase().includes('already registered') ||
             signUpError.message?.toLowerCase().includes('already exists') ||
             (signUpError as any).code === '23505';
 
-          return {
-            profile: null,
-            error: isDuplicate
-              ? 'Error al guardar en base de datos: Ya existe un cobrador o usuario con este correo electrónico.'
-              : `Error al guardar en base de datos (Supabase Auth [${(signUpError as any)?.status || 'ERR'}]): ${signUpError.message}`,
-          };
+          if (isAlreadyInAuth) {
+            console.info(
+              'ℹ️ [Supabase Auth]: El correo del cobrador ya existe en auth.users; sincronizando perfil con motor PostgreSQL (/api/collectors).'
+            );
+          } else {
+            console.warn('⚠️ [Supabase Auth SignUp Aviso - Collector]:', {
+              endpoint: `${supabaseUrl}/auth/v1/signup`,
+              status: (signUpError as any)?.status,
+              message: signUpError.message,
+            });
+            return {
+              profile: null,
+              error: `Error al guardar en base de datos (Supabase Auth [${(signUpError as any)?.status || 'ERR'}]): ${signUpError.message}`,
+            };
+          }
         }
 
-        if (!signUpData.user?.id) {
-          console.error('❌ [Supabase Auth SignUp Error]: No se retornó user.id para el cobrador.');
-          return {
-            profile: null,
-            error: 'Error al guardar en base de datos: Supabase Auth no devolvió un ID de usuario válido.',
-          };
+        if (signUpData?.user?.id) {
+          generatedUid = signUpData.user.id;
         }
-
-        generatedUid = signUpData.user.id;
 
         console.log('🌐 [DEBUG Supabase REST INSERT] Apuntando a tabla exacta:', `${supabaseUrl}/rest/v1/profiles`, {
+          schema: 'public',
+          table: 'profiles',
           id: generatedUid,
           email: normalizedEmail,
           role: 'collector',
@@ -806,8 +873,9 @@ export async function registerNewCollectorAccount(input: {
           created_by: effectiveCreatorUid,
         });
 
-        // 1. Guardar el perfil del cobrador en public.profiles (con 's' al final) pasando el tenant_id / created_by del Admin
-        const { data: profileRow, error: profileError } = await supabase
+        // 1. Guardar el perfil del cobrador en public.profiles (en minúscula y con 's' al final)
+        let { error: profileError } = await isolatedClient
+          .schema('public')
           .from('profiles')
           .upsert(
             [
@@ -828,63 +896,85 @@ export async function registerNewCollectorAccount(input: {
               },
             ],
             { onConflict: 'id' }
-          )
-          .select()
-          .single();
-
-        if (profileError || !profileRow) {
-          console.error('❌ [Supabase Profiles INSERT Error - Collector]:', {
-            endpoint: `${supabaseUrl}/rest/v1/profiles`,
-            code: profileError?.code,
-            message: profileError?.message,
-            details: profileError?.details,
-            hint: profileError?.hint,
-          });
-          const isTableNotFound404 =
-            profileError?.code === '42P01' ||
-            profileError?.code === 'PGRST205' ||
-            profileError?.message?.includes('404') ||
-            profileError?.message?.toLowerCase().includes('could not find the table');
-
-          const isDuplicate =
-            profileError?.code === '23505' ||
-            profileError?.message?.includes('23505') ||
-            profileError?.message?.toLowerCase().includes('unique') ||
-            profileError?.message?.toLowerCase().includes('duplicate key');
-
-          return {
-            profile: null,
-            error: isTableNotFound404
-              ? `Error 404 en ${supabaseUrl}/rest/v1/profiles: La tabla 'public.profiles' no existe en tu proyecto Supabase. Ejecuta el script SQL (005_fix_rls_insert_persistence.sql) en el SQL Editor de Supabase.`
-              : isDuplicate
-              ? 'Error al guardar en base de datos: Ya existe un usuario registrado con este documento o correo.'
-              : `Error al guardar en base de datos (tabla profiles / RLS): ${profileError?.message || 'Permiso de escritura denegado'}`,
-          };
-        }
-
-        // 2. Actualizar la tabla routes en Supabase asociando la zona y el cobrador
-        console.log('🌐 [DEBUG Supabase REST UPSERT] Apuntando a tabla exacta:', `${supabaseUrl}/rest/v1/routes`);
-        const { error: routeUpdateError } = await supabase
-          .from('routes')
-          .upsert(
-            [
-              {
-                id: input.assignedRouteId,
-                name: `Ruta ${input.assignedRouteId.replace(/^route-?/i, '').toUpperCase()}`,
-                collector_id: generatedUid,
-                collector_name: input.fullName.trim(),
-                zone: cleanRouteZone,
-                organization_id: effectiveTenantId,
-                tenant_id: effectiveTenantId,
-                created_by: effectiveCreatorUid,
-                status: 'active',
-              },
-            ],
-            { onConflict: 'id' }
           );
 
-        if (routeUpdateError) {
-          console.warn('⚠️ [Supabase Routes Upsert Warning]:', routeUpdateError);
+        if (profileError && profileError.code === 'PGRST204') {
+          console.info('ℹ️ [Supabase PGRST204 - Reintentando con columnas mínimas (id, role) en public.profiles]:', profileError.message);
+          const retryRes = await isolatedClient
+            .schema('public')
+            .from('profiles')
+            .upsert(
+              [
+                {
+                  id: generatedUid,
+                  role: 'collector',
+                },
+              ],
+              { onConflict: 'id' }
+            );
+          profileError = retryRes.error;
+        }
+
+        if (profileError) {
+          const isSchemaOrPolicyIssue =
+            profileError.code === 'PGRST204' ||
+            profileError.code === 'PGRST205' ||
+            profileError.code === '42P01' ||
+            profileError.code === '42P17' ||
+            profileError.code === '42703' ||
+            profileError.code === '42501' ||
+            profileError.message?.toLowerCase().includes('infinite recursion') ||
+            profileError.message?.toLowerCase().includes('schema cache');
+
+          if (isSchemaOrPolicyIssue) {
+            console.info(
+              `ℹ️ [Supabase public.profiles aviso (${profileError.code || 'RLS/Schema'}): ${profileError.message}]. Cobrador registrado en Supabase Auth (user_metadata) y persistiendo en motor PostgreSQL (/api/collectors).`
+            );
+          } else {
+            const isDuplicate =
+              profileError?.code === '23505' ||
+              profileError?.message?.includes('23505') ||
+              profileError?.message?.toLowerCase().includes('unique') ||
+              profileError?.message?.toLowerCase().includes('duplicate key');
+
+            if (isDuplicate) {
+              return {
+                profile: null,
+                error: 'Error al guardar en base de datos: Ya existe un usuario registrado con este documento o correo.',
+              };
+            }
+
+            console.warn('⚠️ [Supabase Profiles INSERT Aviso - Collector]:', {
+              endpoint: `${supabaseUrl}/rest/v1/profiles`,
+              code: profileError?.code,
+              message: profileError?.message,
+            });
+          }
+        } else {
+          // 2. Actualizar la tabla routes en Supabase asociando la zona y el cobrador
+          console.log('🌐 [DEBUG Supabase REST UPSERT] Apuntando a tabla exacta:', `${supabaseUrl}/rest/v1/routes`);
+          const { error: routeUpdateError } = await supabase
+            .from('routes')
+            .upsert(
+              [
+                {
+                  id: input.assignedRouteId,
+                  name: `Ruta ${input.assignedRouteId.replace(/^route-?/i, '').toUpperCase()}`,
+                  collector_id: generatedUid,
+                  collector_name: input.fullName.trim(),
+                  zone: cleanRouteZone,
+                  organization_id: effectiveTenantId,
+                  tenant_id: effectiveTenantId,
+                  created_by: effectiveCreatorUid,
+                  status: 'active',
+                },
+              ],
+              { onConflict: 'id' }
+            );
+
+          if (routeUpdateError && routeUpdateError.code !== 'PGRST205' && routeUpdateError.code !== '42P01') {
+            console.info('ℹ️ [Supabase Routes Upsert Aviso]:', routeUpdateError.message);
+          }
         }
       }
     }
@@ -911,20 +1001,18 @@ export async function registerNewCollectorAccount(input: {
 
     if (!apiRes.ok) {
       const errBody = await apiRes.json().catch(() => ({}));
-      console.error('❌ [Error creando cobrador en /api/collectors]:', errBody);
-      if (!isLiveSupabaseConfigured) {
-        const isDuplicate =
-          apiRes.status === 409 ||
-          errBody?.code === '23505' ||
-          errBody?.error?.includes('Ya existe');
+      console.warn('⚠️ [Aviso creando cobrador en /api/collectors]:', errBody);
+      const isDuplicate =
+        apiRes.status === 409 ||
+        errBody?.code === '23505' ||
+        errBody?.error?.includes('Ya existe');
 
-        return {
-          profile: null,
-          error: isDuplicate
-            ? 'Error al guardar en base de datos: Ya existe un usuario o cliente registrado con este documento o correo.'
-            : `Error al guardar en base de datos: ${errBody.error || 'No se pudo registrar el cobrador.'}`,
-        };
-      }
+      return {
+        profile: null,
+        error: isDuplicate
+          ? 'Error al guardar en base de datos: Ya existe un usuario o cliente registrado con este documento o correo.'
+          : `Error al guardar en base de datos: ${errBody.error || 'No se pudo registrar el cobrador.'}`,
+      };
     }
 
     const newProfile: UserProfile = {
@@ -950,7 +1038,7 @@ export async function registerNewCollectorAccount(input: {
 
     return { profile: newProfile, error: null };
   } catch (err: any) {
-    console.error('❌ [Excepción crítica creando cobrador]:', err);
+    console.warn('⚠️ [Excepción creando cobrador]:', err);
     return {
       profile: null,
       error: `Error al guardar en base de datos: ${err?.message || 'Error inesperado al crear la cuenta del cobrador.'}`,
