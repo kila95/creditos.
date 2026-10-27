@@ -34,8 +34,7 @@ export const AdminRouteGuard: React.FC<AdminRouteGuardProps> = ({
     profile, 
     role, 
     loading, 
-    logout,
-    switchDemoUser 
+    logout
   } = useAuth();
 
   if (loading) {
@@ -73,7 +72,7 @@ export const AdminRouteGuard: React.FC<AdminRouteGuardProps> = ({
           ? (isSuperAdmin || isAdmin) 
           : isSocio;
 
-  // Si está autenticado pero con rol insuficiente (ej. Collector o Cliente)
+  // Si está autenticado pero con rol insuficiente
   if (!isAuthorized) {
     return (
       <div className="max-w-xl mx-auto py-10 px-4">
@@ -98,18 +97,16 @@ export const AdminRouteGuard: React.FC<AdminRouteGuardProps> = ({
             </p>
           </div>
 
-          {/* Explicación de la regla CFO / Supabase */}
           <div className="bg-slate-950/90 border border-slate-800 rounded-2xl p-4 text-left space-y-2 text-xs font-mono">
             <div className="flex items-center gap-2 text-slate-400 font-bold">
               <Lock className="w-3.5 h-3.5 text-amber-400" />
               <span>Restricción de Row Level Security (RLS 3 Niveles)</span>
             </div>
             <p className="text-slate-400 text-[11px] font-sans leading-normal">
-              El panel administrativo solo permite el acceso a roles <span className="text-amber-300 font-bold">'super_admin'</span> (visibilidad global) o <span className="text-emerald-300 font-bold">'admin'</span> (gestión aislada de su propio fondo, cobradores y clientes). Los usuarios con rol <span className="text-white font-bold">'collector'</span> solo pueden operar su ruta asignada.
+              El panel administrativo solo permite el acceso a roles <span className="text-amber-300 font-bold">'super_admin'</span> o <span className="text-emerald-300 font-bold">'admin'</span>.
             </p>
           </div>
 
-          {/* Acciones de recuperación */}
           <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
             {isCollector && (
               <button
@@ -120,33 +117,14 @@ export const AdminRouteGuard: React.FC<AdminRouteGuardProps> = ({
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             )}
-
-            {role === 'cliente' && (
-              <button
-                onClick={() => onRedirectToAuthorized && onRedirectToAuthorized('client_borrower')}
-                className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-teal-950/40 transition-all"
-              >
-                Ir a Mi Portal de Deudor
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
-            )}
-
-            <button
-              onClick={() => switchDemoUser('superadmin@rutacapital.co')}
-              className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center justify-center gap-2 transition-all"
-            >
-              Cambiar a Super Admin
-            </button>
           </div>
         </div>
       </div>
     );
   }
 
-  // Usuario autorizado (Super Admin, Admin o Socio): Renderizar contenido protegido con barra de seguridad
   return (
     <div className="space-y-4">
-      {/* BARRA DE ESTADO DE SESIÓN EJECUTIVA (3-LEVEL RBAC CLEARANCE) */}
       <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-3 sm:px-4 flex flex-col lg:flex-row items-center justify-between gap-3 shadow-lg">
         <div className="flex items-center gap-3 w-full lg:w-auto">
           <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-xs shrink-0 ${
@@ -181,68 +159,23 @@ export const AdminRouteGuard: React.FC<AdminRouteGuardProps> = ({
               </span>
               <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 flex items-center gap-1">
                 <Building2 className="w-3 h-3" />
-                {isSuperAdmin ? 'Visibilidad Total (Todos los Fondos)' : `${profile?.organizationName || 'Fondo'} (${profile?.organizationId || 'org-medellin-01'})`}
+                {isSuperAdmin ? 'Visibilidad Total' : `${profile?.organizationName || 'Fondo'} (${profile?.organizationId || 'org-medellin-01'})`}
               </span>
             </div>
             <p className="text-[11px] text-slate-400 font-mono truncate mt-0.5">
-              {profile?.email} · UID: {profile?.id} {profile?.createdBy ? `· Creado por: ${profile.createdBy}` : ''}
+              {profile?.email} · UID: {profile?.id}
             </p>
           </div>
         </div>
 
-        {/* Acciones de cambio de cuenta de test (Jerarquía de 3 niveles) y logout */}
-        <div className="flex items-center gap-2 w-full lg:w-auto justify-end flex-wrap">
-          <div className="flex items-center bg-slate-950 p-1 rounded-xl border border-slate-800 text-[11px] flex-wrap gap-1">
-            <span className="text-slate-400 px-2 hidden xl:inline text-[10px] font-mono">Simular Jerarquía:</span>
-            <button
-              onClick={() => switchDemoUser('superadmin@rutacapital.co')}
-              className={`px-2.5 py-1 rounded-lg text-[10px] font-black transition-all flex items-center gap-1 cursor-pointer ${
-                role === 'super_admin'
-                  ? 'bg-amber-500 text-slate-950 shadow'
-                  : 'text-amber-300 hover:bg-amber-500/10'
-              }`}
-              title="Nivel 1: Super Administrador General (Crea Admins y ve todo)"
-            >
-              <Crown className="w-3 h-3" />
-              1. Super Admin
-            </button>
-            <button
-              onClick={() => switchDemoUser('admin@rutacapital.co')}
-              className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
-                profile?.email === 'admin@rutacapital.co'
-                  ? 'bg-emerald-600 text-white'
-                  : 'text-slate-300 hover:text-white'
-              }`}
-              title="Nivel 2: Admin Fondo Medellín Central (org-medellin-01)"
-            >
-              2A. Admin Medellín
-            </button>
-            <button
-              onClick={() => switchDemoUser('admin2@rutacapital.co')}
-              className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
-                profile?.email === 'admin2@rutacapital.co'
-                  ? 'bg-indigo-600 text-white'
-                  : 'text-slate-300 hover:text-white'
-              }`}
-              title="Nivel 2: Admin Fondo Norte (org-norte-02 - Aislado)"
-            >
-              2B. Admin Norte
-            </button>
-            <button
-              onClick={() => switchDemoUser('cobrador@rutacapital.co')}
-              className="px-2.5 py-1 rounded-lg text-[10px] font-bold text-rose-400 hover:bg-rose-950/40 transition-all cursor-pointer"
-              title="Nivel 3: Collector (Probar bloqueo 403 en Panel Admin)"
-            >
-              3. Collector (Test 403)
-            </button>
-          </div>
-
+        <div className="flex items-center gap-2 w-full lg:w-auto justify-end">
           <button
             onClick={logout}
-            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer"
+            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-semibold px-3"
             title="Cerrar sesión"
           >
             <LogOut className="w-4 h-4" />
+            <span>Cerrar Sesión</span>
           </button>
         </div>
       </div>

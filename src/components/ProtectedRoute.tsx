@@ -31,8 +31,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
     profile, 
     role, 
     loading, 
-    logout,
-    switchDemoUser 
+    logout
   } = useAuth();
 
   const [redirectCountdown, setRedirectCountdown] = useState<number | null>(null);

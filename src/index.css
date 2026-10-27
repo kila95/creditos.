@@ -1,1 +1,39 @@
 @import "tailwindcss";
+
+@theme {
+  --font-brand: 'Bricolage Grotesque', sans-serif;
+  --font-sans: 'Plus Jakarta Sans', sans-serif;
+}
+
+@layer base {
+  body {
+    font-family: var(--font-sans), sans-serif;
+    background-color: #0d1b2a;
+    color: #e2e8f0;
+  }
+}
+
+/* EnRuta Custom Theme Utilities */
+.bg-enruta-dark {
+  background-color: #0d1b2a;
+}
+
+.bg-enruta-emerald {
+  background: linear-gradient(135deg, #00b4d8 0%, #2ec4b6 100%);
+}
+
+.text-enruta-emerald {
+  color: #2ec4b6;
+}
+
+.border-enruta-emerald {
+  border-color: #2ec4b6;
+}
+
+.bg-enruta-orange {
+  background-color: #ff9f1c;
+}
+
+.text-enruta-orange {
+  color: #ff9f1c;
+}

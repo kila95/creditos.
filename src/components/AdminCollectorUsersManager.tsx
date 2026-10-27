@@ -126,7 +126,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
   onCollectorCreated,
   onSwitchToCollectorView,
 }) => {
-  const { profile, isSuperAdmin, isAdmin, switchDemoUser } = useAuth();
+  const { profile, isSuperAdmin, isAdmin } = useAuth();
 
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -334,7 +334,6 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
   };
 
   const handleTestCollectorLogin = (collectorEmail: string) => {
-    switchDemoUser(collectorEmail);
     if (onSwitchToCollectorView) {
       onSwitchToCollectorView();
     }

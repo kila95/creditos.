@@ -34,7 +34,7 @@ export interface RegisteredAdminRecord {
 }
 
 export const SuperAdminTenantsManager: React.FC = () => {
-  const { profile, isSuperAdmin, switchDemoUser } = useAuth();
+  const { profile, isSuperAdmin } = useAuth();
 
   const [adminsList, setAdminsList] = useState<RegisteredAdminRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -185,7 +185,7 @@ export const SuperAdminTenantsManager: React.FC = () => {
   };
 
   const handleInspectAdminSession = (admin: RegisteredAdminRecord) => {
-    switchDemoUser(admin.email);
+    alert(`Para iniciar sesión como ${admin.fullName}, por favor cierre sesión e ingrese con el correo: ${admin.email}`);
   };
 
   return (

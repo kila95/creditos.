@@ -67,7 +67,7 @@ const SUPER_ADMIN_NAV_OPTIONS: NavOption[] = [
 ];
 
 export const SuperAdminDashboardView: React.FC = () => {
-  const { profile, switchDemoUser } = useAuth();
+  const { profile } = useAuth();
 
   // Estado para la navegación "pantalla por pantalla"
   const [activeTab, setActiveTab] = useState<SuperAdminTab>('dashboard');
@@ -273,7 +273,7 @@ export const SuperAdminDashboardView: React.FC = () => {
                         <td className="py-3.5 px-4">
                           <button
                             type="button"
-                            onClick={() => switchDemoUser(tenant.adminEmail)}
+                            onClick={() => alert(`Para auditar el inquilino, cierre sesión e ingrese como ${tenant.adminEmail}`)}
                             className="px-2.5 py-1 bg-slate-800 hover:bg-indigo-900/60 text-indigo-300 border border-slate-700 hover:border-indigo-500/50 rounded-md text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer"
                           >
                             <KeyRound className="w-3 h-3" />

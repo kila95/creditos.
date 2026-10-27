@@ -23,7 +23,7 @@ export const CollectorRouteGuard: React.FC<CollectorRouteGuardProps> = ({
   routes,
   onSelectSupervisedRoute
 }) => {
-  const { isAuthenticated, role, isSuperAdmin, isAdmin, isSocio, isCollector, profile, loading, logout, switchDemoUser } = useAuth();
+  const { isAuthenticated, role, isSuperAdmin, isAdmin, isSocio, isCollector, profile, loading, logout } = useAuth();
   const [supervisedRouteId, setSupervisedRouteId] = React.useState<string>('route-1');
 
   if (loading) {
@@ -64,12 +64,7 @@ export const CollectorRouteGuard: React.FC<CollectorRouteGuardProps> = ({
               Tu cuenta de deudor no tiene permisos para acceder al sistema operativo de cobro en calle.
             </p>
           </div>
-          <button
-            onClick={() => switchDemoUser('cobrador@rutacapital.co')}
-            className="w-full py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs"
-          >
-            Iniciar como Collector Autorizado
-          </button>
+
         </div>
       </div>
     );

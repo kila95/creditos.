@@ -488,9 +488,19 @@ export async function getAllAdmins() {
       .from(users)
       .where(eq(users.role, 'admin'))
       .orderBy(desc(users.createdAt));
-  } catch (error) {
-    console.error('Error al consultar administradores en Cloud SQL:', error);
-    throw new Error('No se pudieron obtener los administradores de fondos.', { cause: error });
+  } catch (error: any) {
+    try {
+      await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authorized_device_id text;`);
+      await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS device_approved boolean DEFAULT true;`);
+      return await db
+        .select()
+        .from(users)
+        .where(eq(users.role, 'admin'))
+        .orderBy(desc(users.createdAt));
+    } catch (e) {
+      console.error('Error al consultar administradores en Cloud SQL:', error);
+      throw new Error('No se pudieron obtener los administradores de fondos.', { cause: error });
+    }
   }
 }
 
@@ -566,9 +576,19 @@ export async function getAllCollectors() {
       .from(users)
       .where(or(eq(users.role, 'collector'), eq(users.role, 'cobrador')))
       .orderBy(desc(users.createdAt));
-  } catch (error) {
-    console.error('Error al consultar cobradores en Cloud SQL:', error);
-    throw new Error('No se pudieron obtener los usuarios cobradores.', { cause: error });
+  } catch (error: any) {
+    try {
+      await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authorized_device_id text;`);
+      await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS device_approved boolean DEFAULT true;`);
+      return await db
+        .select()
+        .from(users)
+        .where(or(eq(users.role, 'collector'), eq(users.role, 'cobrador')))
+        .orderBy(desc(users.createdAt));
+    } catch (e) {
+      console.error('Error al consultar cobradores en Cloud SQL:', error);
+      throw new Error('No se pudieron obtener los usuarios cobradores.', { cause: error });
+    }
   }
 }
 
@@ -688,8 +708,19 @@ export async function authenticateUserFromDB(email: string, password: string, de
         .where(eq(users.email, normalizedEmail))
         .limit(1);
     } catch (queryErr) {
-      console.warn('Advertencia consultando tabla users en Cloud SQL:', queryErr);
-      return null;
+      console.warn('Advertencia consultando tabla users en Cloud SQL, intentando auto-reparar esquema:', queryErr);
+      try {
+        await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authorized_device_id text;`);
+        await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS device_approved boolean DEFAULT true;`);
+        found = await db
+          .select()
+          .from(users)
+          .where(eq(users.email, normalizedEmail))
+          .limit(1);
+      } catch (innerErr) {
+        console.warn('Fallo en auto-reparación o consulta de users:', innerErr);
+        return null;
+      }
     }
 
     if (!found || !found.length) {

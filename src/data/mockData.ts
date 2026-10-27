@@ -77,7 +77,7 @@ export interface LedgerEntry {
   amount: number;
   principalPortion: number;
   interestPortion: number;
-  paymentMethod: 'efectivo' | 'nequi' | 'daviplata';
+  paymentMethod: 'efectivo' | 'nequi' | 'bancolombia' | 'daviplata';
   preBalance: number;
   postBalance: number;
   timestamp: string;

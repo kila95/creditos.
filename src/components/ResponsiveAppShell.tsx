@@ -120,7 +120,7 @@ export const ResponsiveAppShell: React.FC<ResponsiveAppShellProps> = ({
   onOpenNewClientModal,
   children,
 }) => {
-  const { profile, role, isSuperAdmin, isAdmin, logout, switchDemoUser } = useAuth();
+  const { profile, role, isSuperAdmin, isAdmin, logout } = useAuth();
   const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
 
   const currentNav = NAV_ITEMS.find((item) => item.id === activeRole) || NAV_ITEMS[0];
@@ -304,72 +304,7 @@ export const ResponsiveAppShell: React.FC<ResponsiveAppShellProps> = ({
           </div>
         </nav>
 
-        {/* Selector Rápido de Jerarquía (Para Pruebas de Roles) & Cerrar Sesión */}
-        <div className="p-3 border-t border-slate-800 bg-slate-950/60 space-y-2.5">
-          <div>
-            <p className="text-[10px] font-medium text-slate-400 mb-1.5 px-1">
-              Cambio Rápido de Nivel / Tenant (RLS):
-            </p>
-            <div className="grid grid-cols-2 gap-1">
-              <button
-                type="button"
-                onClick={() => {
-                  switchDemoUser('superadmin@rutacapital.co');
-                  onSelectRole('admin_cfo');
-                }}
-                className={`py-1.5 px-2 rounded text-[10px] font-semibold transition-colors whitespace-nowrap cursor-pointer ${
-                  role === 'super_admin'
-                    ? 'bg-amber-500 text-slate-950'
-                    : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'
-                }`}
-              >
-                Super Admin (SaaS)
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  switchDemoUser('admin@rutacapital.co');
-                  onSelectRole('admin_cfo');
-                }}
-                className={`py-1.5 px-2 rounded text-[10px] font-semibold transition-colors whitespace-nowrap cursor-pointer ${
-                  profile?.email === 'admin@rutacapital.co'
-                    ? 'bg-emerald-600 text-white'
-                    : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'
-                }`}
-              >
-                Admin 1 (Tenant Sur)
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  switchDemoUser('admin2@rutacapital.co');
-                  onSelectRole('admin_cfo');
-                }}
-                className={`py-1.5 px-2 rounded text-[10px] font-semibold transition-colors whitespace-nowrap cursor-pointer ${
-                  profile?.email === 'admin2@rutacapital.co'
-                    ? 'bg-teal-600 text-white'
-                    : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'
-                }`}
-              >
-                Admin 2 (Tenant Norte)
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  switchDemoUser('cobrador@rutacapital.co');
-                  onSelectRole('collector_street');
-                }}
-                className={`py-1.5 px-2 rounded text-[10px] font-semibold transition-colors whitespace-nowrap cursor-pointer ${
-                  role === 'collector' || role === 'cobrador'
-                    ? 'bg-indigo-600 text-white'
-                    : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'
-                }`}
-              >
-                Collector (Ruta 1)
-              </button>
-            </div>
-          </div>
-
+        <div className="p-3 border-t border-slate-800 bg-slate-950/60">
           <button
             type="button"
             onClick={handleLogout}
@@ -458,50 +393,7 @@ export const ResponsiveAppShell: React.FC<ResponsiveAppShellProps> = ({
 
             {/* Footer del Drawer Móvil */}
             <div className="p-4 border-t border-slate-800 bg-slate-950/60 space-y-2">
-              <div className="grid grid-cols-3 gap-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    switchDemoUser('superadmin@rutacapital.co');
-                    handleNavClick('admin_cfo');
-                  }}
-                  className={`py-1.5 px-2 rounded text-[10px] font-semibold ${
-                    role === 'super_admin'
-                      ? 'bg-amber-500 text-slate-950'
-                      : 'bg-slate-900 text-slate-300 border border-slate-800'
-                  }`}
-                >
-                  Super Admin
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    switchDemoUser('admin@rutacapital.co');
-                    handleNavClick('admin_cfo');
-                  }}
-                  className={`py-1.5 px-2 rounded text-[10px] font-semibold ${
-                    profile?.email === 'admin@rutacapital.co'
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-slate-900 text-slate-300 border border-slate-800'
-                  }`}
-                >
-                  Admin 1
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    switchDemoUser('cobrador@rutacapital.co');
-                    handleNavClick('collector_street');
-                  }}
-                  className={`py-1.5 px-2 rounded text-[10px] font-semibold ${
-                    role === 'collector' || role === 'cobrador'
-                      ? 'bg-indigo-600 text-white'
-                      : 'bg-slate-900 text-slate-300 border border-slate-800'
-                  }`}
-                >
-                  Collector
-                </button>
-              </div>
+
 
               <button
                 type="button"

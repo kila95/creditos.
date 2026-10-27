@@ -88,7 +88,29 @@ interface CollectorStreetViewProps {
   onRegisterNewClient?: (client: ClientProfile, loan: LoanDetail) => void;
   onCreateLoanForExistingClient?: (loan: LoanDetail) => void;
   onSyncDatabase?: () => Promise<void> | void;
+  onOpenNewClientModal?: () => void;
 }
+
+interface NewClientButtonContainerProps {
+  onOpenNewClientModal: () => void;
+}
+
+const NewClientButtonContainer: React.FC<NewClientButtonContainerProps> = React.memo(({ onOpenNewClientModal }) => {
+  return (
+    <div className="new-client-button-container transform-gpu">
+      <button
+        type="button"
+        onClick={onOpenNewClientModal}
+        className="w-full min-h-[48px] py-3 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs sm:text-sm rounded-xl shadow-md flex items-center justify-center gap-2 cursor-pointer select-none"
+      >
+        <UserPlus className="w-4 h-4" />
+        <span>+ Nuevo Cliente o Préstamo en Ruta</span>
+      </button>
+    </div>
+  );
+});
+
+NewClientButtonContainer.displayName = 'NewClientButtonContainer';
 
 export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
   currentRoute,
@@ -103,11 +125,21 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
   onRegisterNewClient,
   onCreateLoanForExistingClient,
   onSyncDatabase,
+  onOpenNewClientModal,
 }) => {
   const browserOnline = useOnlineStatus();
   // Permite simular modo sin señal en zonas urbanas complejas o responder al estado real de red
   const [simulatedOffline, setSimulatedOffline] = useState(false);
   const isOnline = browserOnline && !simulatedOffline;
+
+  // useCallback para evitar re-renderizaciones innecesarias del botón Nuevo Cliente
+  const handleOpenNewClientModal = React.useCallback(() => {
+    if (onOpenNewClientModal) {
+      onOpenNewClientModal();
+    } else {
+      setQuickRegisterModalOpen(true);
+    }
+  }, [onOpenNewClientModal]);
 
   // Vista activa del cobrador: 'route_list' (Recorrido de Clientes) o 'shift_closing' (Resumen de Cierre de Turno)
   const [collectorTab, setCollectorTab] = useState<'route_list' | 'shift_closing'>('route_list');
@@ -874,15 +906,8 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
                 </div>
               </div>
 
-              {/* Botón Principal Táctil: Nuevo Cliente / Préstamo */}
-              <button
-                type="button"
-                onClick={() => setQuickRegisterModalOpen(true)}
-                className="w-full min-h-[48px] py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs sm:text-sm rounded-xl shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
-              >
-                <UserPlus className="w-4 h-4" />
-                <span>+ Nuevo Cliente o Préstamo en Ruta</span>
-              </button>
+              {/* Botón Nuevo Cliente optimizado con React.memo y useCallback */}
+              <NewClientButtonContainer onOpenNewClientModal={handleOpenNewClientModal} />
 
               {/* Botones secundarios grandes para celular */}
               <div className="grid grid-cols-2 gap-2">

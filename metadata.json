@@ -1,6 +1,6 @@
 {
-  "name": "RutaCapital OS - Microcrédito & Liquidez",
-  "description": "Plataforma de arquitectura de datos PostgreSQL/Supabase, ledger inmutable de cobros diarios, control de rutas y gestión de liquidez para microfinanzas de alto riesgo.",
+  "name": "EnRuta - Gestión de Cartera",
+  "description": "Plataforma profesional EnRuta - Gestión de Cartera y microcréditos, control de rutas y recaudo diario.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

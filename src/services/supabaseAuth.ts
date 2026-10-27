@@ -23,6 +23,23 @@ export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKe
 // JERARQUÍA DE 3 NIVELES PRE-CONFIGURADA (super_admin -> admin -> collector)
 // ==============================================================================
 export const DEMO_USERS: Record<string, { password: string; profile: UserProfile }> = {
+  'estebanochoamesa@gmail.com': {
+    password: 'super123@Medellin',
+    profile: {
+      id: 'usr-super-000',
+      email: 'estebanochoamesa@gmail.com',
+      fullName: 'Esteban Ochoa (Dueño / Super Admin)',
+      role: 'super_admin',
+      organizationId: 'org-global-hq',
+      organizationName: 'RutaCapital Holding Matriz',
+      phone: '+57 312 890 1234',
+      partnerEquityPct: 100.0,
+      capitalInvestedCop: 100000000,
+      documentId: 'CC 71.392.810',
+      isActive: true,
+      createdAt: '2025-01-01T08:00:00Z',
+    }
+  },
   'superadmin@rutacapital.co': {
     password: 'super123@Medellin',
     profile: {
@@ -661,14 +678,15 @@ export function getRememberedCollectorEmail(): string | null {
 }
 
 export async function signOutUser(): Promise<void> {
-  if (isLiveSupabaseConfigured) {
-    try {
+  try {
+    localStorage.clear();
+    sessionStorage.clear();
+    if (isLiveSupabaseConfigured) {
       await supabase.auth.signOut();
-    } catch (e) {
-      console.error('Error cerrando sesión en Supabase:', e);
     }
+  } catch (e) {
+    console.error('Error cerrando sesión en Supabase:', e);
   }
-  localStorage.removeItem(LOCAL_STORAGE_SESSION_KEY);
 }
 
 export function getStoredSession(): AuthSession | null {
