@@ -64,7 +64,6 @@ import { AdminCollectorUsersManager, CollectorUserRecord } from './AdminCollecto
 import { SuperAdminTenantsManager } from './SuperAdminTenantsManager';
 import { NegotiationProposal } from '../utils/aiNegotiator';
 import { useAuth } from '../context/AuthContext';
-// Removed PaymentGatewayView import
 import { LiquidatedHistoryView } from './LiquidatedHistoryView';
 
 interface AdminDashboardProps {
@@ -622,7 +621,6 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
                       <FileCheck className="w-4 h-4 text-emerald-400" />
                       <span>Ver Arqueos</span>
                     </button>
-// Removed header button for payments
                 </div>
               </div>
 
@@ -1325,8 +1323,6 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
             onOpenNewClientModal={onOpenNewClientModal}
           />
         )}
-
-// Removed payment tab content
       </main>
 
       {/* MODALES OPERATIVOS GLOBALES */}
