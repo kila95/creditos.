@@ -1,5 +1,6 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
+import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import { requireAuth, AuthRequest } from './src/middleware/auth.ts';
 import { 
   getAllRoutes, 
@@ -235,6 +236,202 @@ app.post('/api/collectors', requireAuth, async (req: AuthRequest, res) => {
   } catch (err: any) {
     const isDup = err.message?.includes('Ya existe') || err.message?.includes('23505');
     res.status(isDup ? 409 : 500).json({ error: err.message, code: isDup ? '23505' : undefined });
+  }
+});
+
+// API: Aprovisionamiento Seguro de Usuarios (Admin / Cobrador) con Supabase Admin API
+// Regla 1: Usa supabaseAdmin.auth.admin.createUser para crear en auth.users sin cerrar la sesión del SuperAdmin/Admin.
+// Regla 2: Pasa email_confirm: true y asigna contraseña temporal/por defecto (vinculada al documento si no se especifica).
+// Regla 3: Toma el user.id retornado y ejecuta el INSERT en public.profiles (si el paso 1 falla, el paso 3 no se ejecuta).
+app.post('/api/admin/provision-user', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const {
+      email,
+      password,
+      fullName,
+      role,
+      organizationId,
+      tenantId,
+      organizationName,
+      createdBy,
+      assignedRouteId,
+      routeZone,
+      phone,
+      documentId,
+    } = req.body;
+
+    if (!email || !fullName || !role) {
+      return res.status(400).json({
+        error: 'Campos obligatorios faltantes (email, fullName, role).',
+      });
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const cleanPass = String(password || '').trim();
+    const cleanDoc = String(documentId || '').replace(/[^0-9a-zA-Z]/g, '');
+    const effectivePassword =
+      cleanPass.length >= 6
+        ? cleanPass
+        : cleanDoc.length >= 6
+          ? cleanDoc
+          : cleanDoc.length > 0
+            ? `${cleanDoc}2025*`
+            : 'Ruta2025*';
+
+    const rawSupabaseUrl = (
+      process.env.SUPABASE_URL ||
+      process.env.VITE_SUPABASE_URL ||
+      'https://kgbpggjiddvschmvvuux.supabase.co'
+    )
+      .trim()
+      .replace(/^['"]+|['"]+$/g, '')
+      .replace(/\/(rest|auth|functions)\/v1\/?.*$/i, '')
+      .replace(/\/+$/, '');
+
+    const serviceRoleKey = (
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.VITE_SUPABASE_SERVICE_ROLE_KEY ||
+      ''
+    )
+      .trim()
+      .replace(/^['"]+|['"]+$/g, '');
+
+    if (!serviceRoleKey || serviceRoleKey.includes('TU_SUPABASE_SERVICE_ROLE_KEY')) {
+      return res.status(501).json({
+        error: 'SUPABASE_SERVICE_ROLE_KEY no configurada en el servidor.',
+        code: 'SERVICE_ROLE_MISSING',
+      });
+    }
+
+    const supabaseAdmin = createSupabaseClient(rawSupabaseUrl, serviceRoleKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    });
+
+    const effectiveTenantId = tenantId || organizationId || createdBy;
+
+    // PASO 1 Y 2: Crear en auth.users con email_confirm: true y contraseña temporal
+    let { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
+      email: normalizedEmail,
+      password: effectivePassword,
+      email_confirm: true,
+      user_metadata: {
+        full_name: String(fullName).trim(),
+        role,
+        organization_id: effectiveTenantId,
+        tenant_id: effectiveTenantId,
+        organization_name: organizationName || 'Fondo EnRuta',
+        created_by: createdBy || null,
+        assigned_route_id: assignedRouteId || null,
+        route_zone: routeZone || null,
+        phone: phone || null,
+        document_id: documentId || null,
+      },
+    });
+
+    // Si el usuario ya existía en auth.users (ej. sin confirmar de una prueba previa), actualizar clave y autoconfirmar
+    if (
+      authError &&
+      (authError.message?.toLowerCase().includes('already') ||
+        authError.message?.toLowerCase().includes('exists'))
+    ) {
+      const { data: usersList } = await supabaseAdmin.auth.admin.listUsers();
+      const existingAuthUser = usersList?.users?.find(
+        (u) => u.email?.toLowerCase() === normalizedEmail
+      );
+      if (existingAuthUser) {
+        const updatedAuth = await supabaseAdmin.auth.admin.updateUserById(existingAuthUser.id, {
+          password: effectivePassword,
+          email_confirm: true,
+          user_metadata: {
+            full_name: String(fullName).trim(),
+            role,
+            organization_id: effectiveTenantId,
+            tenant_id: effectiveTenantId,
+            organization_name: organizationName || 'Fondo EnRuta',
+            created_by: createdBy || null,
+            assigned_route_id: assignedRouteId || null,
+            route_zone: routeZone || null,
+            phone: phone || null,
+            document_id: documentId || null,
+          },
+        });
+        authData = updatedAuth.data;
+        authError = updatedAuth.error;
+      }
+    }
+
+    // BLOQUEO ESTRICTO: Si el Paso 1 falla, el Paso 3 NO SE EJECUTA
+    if (authError || !authData?.user?.id) {
+      return res.status(400).json({
+        error: authError?.message || 'Error al registrar usuario en auth.users (Supabase Admin API).',
+        code: (authError as any)?.code || 'AUTH_ADMIN_CREATE_FAILED',
+      });
+    }
+
+    // PASO 3: Sincronización de UUID (user.id -> INSERT en public.profiles)
+    const newUserId = authData.user.id;
+    const finalTenantId = role === 'admin' ? (organizationId || newUserId) : effectiveTenantId;
+
+    const fullProfilePayload = {
+      id: newUserId,
+      email: normalizedEmail,
+      full_name: String(fullName).trim(),
+      role,
+      organization_id: finalTenantId,
+      tenant_id: finalTenantId,
+      organization_name: organizationName || 'Fondo EnRuta',
+      created_by: createdBy || newUserId,
+      assigned_route_id: assignedRouteId || null,
+      route_zone: routeZone || null,
+      phone: phone || null,
+      document_id: documentId || null,
+      is_active: true,
+    };
+
+    let { data: profileRow, error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .insert([fullProfilePayload])
+      .select()
+      .single();
+
+    if (profileError && profileError.code === '23505') {
+      const upsertRes = await supabaseAdmin
+        .from('profiles')
+        .upsert([fullProfilePayload], { onConflict: 'id' })
+        .select()
+        .single();
+      profileRow = upsertRes.data;
+      profileError = upsertRes.error;
+    }
+
+    if (profileError && profileError.code === 'PGRST204') {
+      const minimalRes = await supabaseAdmin
+        .from('profiles')
+        .upsert([{ id: newUserId, role }], { onConflict: 'id' })
+        .select()
+        .single();
+      profileRow = minimalRes.data;
+      profileError = minimalRes.error;
+    }
+
+    if (profileError) {
+      return res.status(400).json({
+        error: `Error al insertar en public.profiles: ${profileError.message}`,
+        code: profileError.code,
+      });
+    }
+
+    return res.status(201).json({
+      status: 201,
+      user: authData.user,
+      profile: profileRow || fullProfilePayload,
+      effectivePassword,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 

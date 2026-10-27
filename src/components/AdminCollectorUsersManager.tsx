@@ -205,10 +205,34 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
         if (Array.isArray(data)) {
           data.forEach((u: any) => {
             const normEmail = (u.email || '').trim().toLowerCase();
-            if (!normEmail || mergedMap.has(normEmail)) return;
+            if (!normEmail) return;
+            const existing = mergedMap.get(normEmail);
+            if (existing) {
+              if (u.password) {
+                DEMO_USERS[normEmail] = {
+                  password: u.password,
+                  profile: {
+                    id: existing.uid,
+                    email: existing.email,
+                    fullName: existing.name,
+                    role: 'collector',
+                    assignedRouteId: existing.assignedRouteId,
+                    routeZone: existing.routeZone,
+                    organizationId: existing.organizationId,
+                    organizationName: existing.organizationName,
+                    createdBy: existing.createdBy,
+                    phone: existing.phone,
+                    documentId: existing.documentId,
+                    isActive: existing.isActive,
+                    createdAt: existing.createdAt || new Date().toISOString(),
+                  },
+                };
+              }
+              return;
+            }
             const assignedId = u.assignedRouteId || u.assigned_route_id || 'route-1';
             const fallbackRoute = routes.find((r) => r.id === assignedId);
-            mergedMap.set(normEmail, {
+            const record: CollectorUserRecord = {
               uid: u.uid || String(u.id),
               email: u.email,
               name: u.name,
@@ -229,7 +253,27 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
               documentId: u.documentId || u.document_id || '',
               isActive: u.isActive ?? u.is_active ?? true,
               createdAt: u.createdAt || u.created_at,
-            });
+            };
+            mergedMap.set(normEmail, record);
+
+            DEMO_USERS[normEmail] = {
+              password: u.password || DEMO_USERS[normEmail]?.password || 'cobrador123@Medellin',
+              profile: {
+                id: record.uid,
+                email: record.email,
+                fullName: record.name,
+                role: 'collector',
+                assignedRouteId: record.assignedRouteId,
+                routeZone: record.routeZone,
+                organizationId: record.organizationId,
+                organizationName: record.organizationName,
+                createdBy: record.createdBy,
+                phone: record.phone,
+                documentId: record.documentId,
+                isActive: record.isActive,
+                createdAt: record.createdAt || new Date().toISOString(),
+              },
+            };
           });
         }
       }
@@ -302,9 +346,14 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
     setErrorMsg(null);
     setSuccessMsg(null);
 
-    if (!fullName.trim() || !email.trim() || !password.trim() || !assignedRouteId) {
+    const cleanDocDigits = documentId.replace(/[^0-9a-zA-Z]/g, '');
+    const effectiveCollectorPassword =
+      password.trim() ||
+      (cleanDocDigits.length >= 6 ? cleanDocDigits : 'cobrador123@Medellin');
+
+    if (!fullName.trim() || !email.trim() || !assignedRouteId) {
       setErrorMsg(
-        'Completa Nombre completo, Correo electrónico, Contraseña temporal y Ruta Asignada.'
+        'Completa Nombre completo, Correo electrónico y Ruta Asignada.'
       );
       return;
     }
@@ -314,7 +363,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
       return;
     }
 
-    if (password.trim().length < 6) {
+    if (effectiveCollectorPassword.length < 6) {
       setErrorMsg(
         'La contraseña temporal debe tener al menos 6 caracteres (requisito de Supabase Auth).'
       );
@@ -325,7 +374,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
 
     const { profile: createdProfile, error } = await registerNewCollectorAccount({
       email: email.trim(),
-      password: password.trim(),
+      password: effectiveCollectorPassword,
       fullName: fullName.trim(),
       assignedRouteId,
       routeZone: resolvedRouteZone,

@@ -81,7 +81,7 @@ export const SuperAdminTenantsManager: React.FC = () => {
             mergedMap.set(normEmail, {
               id: a.id,
               email: a.email,
-              password: 'admin123@Medellin',
+              password: DEMO_USERS[normEmail]?.password || 'admin123@Medellin',
               fullName: a.full_name || a.name || 'Administrador',
               role: 'admin',
               organizationId: a.organization_id || a.tenant_id || `org-${a.id}`,
@@ -102,11 +102,18 @@ export const SuperAdminTenantsManager: React.FC = () => {
         if (Array.isArray(data)) {
           data.forEach((a: any) => {
             const normEmail = (a.email || '').trim().toLowerCase();
-            if (!normEmail || mergedMap.has(normEmail)) return;
+            if (!normEmail) return;
+            const existing = mergedMap.get(normEmail);
+            if (existing) {
+              if (a.password) {
+                existing.password = a.password;
+              }
+              return;
+            }
             mergedMap.set(normEmail, {
               id: a.uid || `usr-admin-${a.id}`,
               email: a.email,
-              password: 'admin123@Medellin',
+              password: a.password || DEMO_USERS[normEmail]?.password || 'admin123@Medellin',
               fullName: a.name || a.fullName || 'Administrador',
               role: 'admin',
               organizationId: a.organizationId || a.organization_id || `org-${a.id}`,
@@ -125,24 +132,22 @@ export const SuperAdminTenantsManager: React.FC = () => {
       // Register in DEMO_USERS for instant RBAC switching
       finalAdmins.forEach((adm) => {
         const norm = adm.email.trim().toLowerCase();
-        if (!DEMO_USERS[norm]) {
-          DEMO_USERS[norm] = {
-            password: adm.password || 'admin123@Medellin',
-            profile: {
-              id: adm.id,
-              email: adm.email,
-              fullName: adm.fullName,
-              role: 'admin',
-              organizationId: adm.organizationId,
-              organizationName: adm.organizationName,
-              createdBy: adm.createdBy,
-              phone: adm.phone,
-              documentId: adm.cedula,
-              isActive: true,
-              createdAt: adm.createdAt,
-            },
-          };
-        }
+        DEMO_USERS[norm] = {
+          password: adm.password || DEMO_USERS[norm]?.password || 'admin123@Medellin',
+          profile: {
+            id: adm.id,
+            email: adm.email,
+            fullName: adm.fullName,
+            role: 'admin',
+            organizationId: adm.organizationId,
+            organizationName: adm.organizationName,
+            createdBy: adm.createdBy,
+            phone: adm.phone,
+            documentId: adm.cedula,
+            isActive: true,
+            createdAt: adm.createdAt,
+          },
+        };
       });
 
       setAdminsList(finalAdmins);
@@ -165,6 +170,11 @@ export const SuperAdminTenantsManager: React.FC = () => {
   }
 
   const handleGeneratePassword = () => {
+    const cleanCedula = cedula.replace(/[^0-9a-zA-Z]/g, '');
+    if (cleanCedula.length >= 6) {
+      setTemporaryPassword(cleanCedula);
+      return;
+    }
     const num = Math.floor(100 + Math.random() * 900);
     setTemporaryPassword(`Admin${num}@Fondo`);
   };
@@ -174,12 +184,17 @@ export const SuperAdminTenantsManager: React.FC = () => {
     setErrorMsg(null);
     setSuccessMsg(null);
 
-    if (!fullName.trim() || !organizationName.trim() || !email.trim() || !temporaryPassword.trim()) {
-      setErrorMsg('Nombre completo, Nombre del Fondo/Negocio, Correo y Contraseña temporal son obligatorios.');
+    const cleanCedulaDigits = cedula.replace(/[^0-9a-zA-Z]/g, '');
+    const effectiveTempPassword =
+      temporaryPassword.trim() ||
+      (cleanCedulaDigits.length >= 6 ? cleanCedulaDigits : 'admin123@Medellin');
+
+    if (!fullName.trim() || !organizationName.trim() || !email.trim()) {
+      setErrorMsg('Nombre completo, Nombre del Fondo/Negocio y Correo son obligatorios.');
       return;
     }
 
-    if (temporaryPassword.trim().length < 6) {
+    if (effectiveTempPassword.length < 6) {
       setErrorMsg('La contraseña temporal debe tener mínimo 6 caracteres.');
       return;
     }
@@ -188,7 +203,7 @@ export const SuperAdminTenantsManager: React.FC = () => {
     try {
       const { profile: createdAdmin, error } = await registerNewAdminAccount({
         email: email.trim(),
-        password: temporaryPassword.trim(),
+        password: effectiveTempPassword,
         fullName: fullName.trim(),
         organizationName: organizationName.trim(),
         phone: phone.trim() || '300 000 0000',

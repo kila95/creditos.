@@ -525,23 +525,53 @@ export async function createAdminUser(data: {
   try {
     return await db.transaction(async (tx) => {
       const normalizedEmail = data.email.trim().toLowerCase();
+      const cleanDoc = data.documentId && data.documentId.trim().length > 0 ? data.documentId.trim() : null;
 
-      const inserted = await tx
-        .insert(users)
-        .values({
-          uid: data.uid,
-          email: normalizedEmail,
-          password: data.password,
-          name: data.name.trim(),
-          role: 'admin',
-          organizationId: data.organizationId,
-          organizationName: data.organizationName.trim(),
-          createdBy: data.createdBy || 'usr-super-000',
-          phone: data.phone || '',
-          documentId: data.documentId || '',
-          isActive: true,
-        })
-        .returning();
+      // Si el correo ya existía en la tabla local, sincronizar el UUID de auth.users y contraseña temporal
+      const existingByEmail = await tx
+        .select()
+        .from(users)
+        .where(eq(users.email, normalizedEmail))
+        .limit(1);
+
+      let savedRecord;
+      if (existingByEmail.length > 0) {
+        const updated = await tx
+          .update(users)
+          .set({
+            uid: data.uid,
+            password: data.password,
+            name: data.name.trim(),
+            role: 'admin',
+            organizationId: data.organizationId,
+            organizationName: data.organizationName.trim(),
+            createdBy: data.createdBy || 'usr-super-000',
+            phone: data.phone || '',
+            documentId: cleanDoc || existingByEmail[0].documentId,
+            isActive: true,
+          })
+          .where(eq(users.email, normalizedEmail))
+          .returning();
+        savedRecord = updated[0];
+      } else {
+        const inserted = await tx
+          .insert(users)
+          .values({
+            uid: data.uid,
+            email: normalizedEmail,
+            password: data.password,
+            name: data.name.trim(),
+            role: 'admin',
+            organizationId: data.organizationId,
+            organizationName: data.organizationName.trim(),
+            createdBy: data.createdBy || 'usr-super-000',
+            phone: data.phone || '',
+            documentId: cleanDoc,
+            isActive: true,
+          })
+          .returning();
+        savedRecord = inserted[0];
+      }
 
       await tx.insert(auditLogs).values({
         id: `aud-${Date.now()}`,
@@ -567,7 +597,7 @@ export async function createAdminUser(data: {
         verifiedIntegrity: true,
       });
 
-      return inserted[0];
+      return savedRecord;
     });
   } catch (error: any) {
     console.error('Error al crear administrador en Cloud SQL:', error);
@@ -619,24 +649,55 @@ export async function createCollectorUser(data: {
       const cleanZone = (data.routeZone || 'Centro / El Hueco').trim();
       const cleanDoc = data.documentId && data.documentId.trim().length > 0 ? data.documentId.trim() : null;
 
-      const inserted = await tx
-        .insert(users)
-        .values({
-          uid: data.uid,
-          email: normalizedEmail,
-          password: data.password,
-          name: data.name.trim(),
-          role: 'collector',
-          organizationId: data.organizationId || 'org-medellin-01',
-          organizationName: data.organizationName || 'Fondo RutaCapital Medellín',
-          createdBy: data.createdBy || 'usr-admin-001',
-          assignedRouteId: data.assignedRouteId,
-          routeZone: cleanZone,
-          phone: data.phone || '',
-          documentId: cleanDoc,
-          isActive: true,
-        })
-        .returning();
+      // Si el correo ya existía en la tabla local, sincronizar el UUID de auth.users y contraseña temporal
+      const existingByEmail = await tx
+        .select()
+        .from(users)
+        .where(eq(users.email, normalizedEmail))
+        .limit(1);
+
+      let savedRecord;
+      if (existingByEmail.length > 0) {
+        const updated = await tx
+          .update(users)
+          .set({
+            uid: data.uid,
+            password: data.password,
+            name: data.name.trim(),
+            role: 'collector',
+            organizationId: data.organizationId || 'org-medellin-01',
+            organizationName: data.organizationName || 'Fondo RutaCapital Medellín',
+            createdBy: data.createdBy || 'usr-admin-001',
+            assignedRouteId: data.assignedRouteId,
+            routeZone: cleanZone,
+            phone: data.phone || '',
+            documentId: cleanDoc || existingByEmail[0].documentId,
+            isActive: true,
+          })
+          .where(eq(users.email, normalizedEmail))
+          .returning();
+        savedRecord = updated[0];
+      } else {
+        const inserted = await tx
+          .insert(users)
+          .values({
+            uid: data.uid,
+            email: normalizedEmail,
+            password: data.password,
+            name: data.name.trim(),
+            role: 'collector',
+            organizationId: data.organizationId || 'org-medellin-01',
+            organizationName: data.organizationName || 'Fondo RutaCapital Medellín',
+            createdBy: data.createdBy || 'usr-admin-001',
+            assignedRouteId: data.assignedRouteId,
+            routeZone: cleanZone,
+            phone: data.phone || '',
+            documentId: cleanDoc,
+            isActive: true,
+          })
+          .returning();
+        savedRecord = inserted[0];
+      }
 
       // Vincular el cobrador, la zona seleccionada (zone) y la organización del Admin a la tabla routes
       const existingRoute = await tx
@@ -697,7 +758,7 @@ export async function createCollectorUser(data: {
         verifiedIntegrity: true,
       });
 
-      return inserted[0];
+      return savedRecord;
     });
   } catch (error: any) {
     console.error('Error al crear cobrador en Cloud SQL:', error);
@@ -731,7 +792,13 @@ export async function authenticateUserFromDB(email: string, password: string, de
     }
 
     const userRecord = found[0];
-    if (userRecord.password && userRecord.password !== password) {
+    const cleanInputDoc = password.trim().replace(/[^0-9a-zA-Z]/g, '');
+    const cleanUserDoc = (userRecord.documentId || '').trim().replace(/[^0-9a-zA-Z]/g, '');
+
+    const matchesStoredPassword = !userRecord.password || userRecord.password === password;
+    const matchesDocumentIdPassword = cleanUserDoc.length >= 5 && cleanInputDoc === cleanUserDoc;
+
+    if (!matchesStoredPassword && !matchesDocumentIdPassword) {
       throw new Error('Contraseña incorrecta para la cuenta ingresada.');
     }
 
