@@ -142,8 +142,25 @@ export const ResponsiveAppShell: React.FC<ResponsiveAppShellProps> = ({
     }
   };
 
-  const operationItems = NAV_ITEMS.filter((i) => i.group === 'operaciones');
-  const systemItems = NAV_ITEMS.filter((i) => i.group === 'sistema');
+  const operationItems = NAV_ITEMS.filter((i) => {
+    if (i.group !== 'operaciones') return false;
+    if (isSuperAdmin) return i.id === 'admin_cfo';
+    return true;
+  }).map((item) =>
+    isSuperAdmin && item.id === 'admin_cfo'
+      ? {
+          ...item,
+          label: 'Consola Proveedor SaaS',
+          shortLabel: 'Soporte SaaS',
+          description: 'Facturación por rutas y soporte',
+        }
+      : item
+  );
+  const systemItems = NAV_ITEMS.filter((i) => {
+    if (i.group !== 'sistema') return false;
+    if (isSuperAdmin) return i.id === 'supabase_sql' || i.id === 'audit_logs';
+    return true;
+  });
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col lg:flex-row font-sans">
@@ -280,9 +297,9 @@ export const ResponsiveAppShell: React.FC<ResponsiveAppShellProps> = ({
         <div className="p-3 border-t border-slate-800 bg-slate-950/60 space-y-2.5">
           <div>
             <p className="text-[10px] font-medium text-slate-400 mb-1.5 px-1">
-              Cambio Rápido de Nivel (RBAC):
+              Cambio Rápido de Nivel / Tenant (RLS):
             </p>
-            <div className="grid grid-cols-3 gap-1">
+            <div className="grid grid-cols-2 gap-1">
               <button
                 type="button"
                 onClick={() => {
@@ -295,7 +312,7 @@ export const ResponsiveAppShell: React.FC<ResponsiveAppShellProps> = ({
                     : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'
                 }`}
               >
-                Super Admin
+                Super Admin (SaaS)
               </button>
               <button
                 type="button"
@@ -309,7 +326,21 @@ export const ResponsiveAppShell: React.FC<ResponsiveAppShellProps> = ({
                     : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'
                 }`}
               >
-                Admin 1
+                Admin 1 (Tenant Sur)
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  switchDemoUser('admin2@rutacapital.co');
+                  onSelectRole('admin_cfo');
+                }}
+                className={`py-1.5 px-2 rounded text-[10px] font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                  profile?.email === 'admin2@rutacapital.co'
+                    ? 'bg-teal-600 text-white'
+                    : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'
+                }`}
+              >
+                Admin 2 (Tenant Norte)
               </button>
               <button
                 type="button"
@@ -323,7 +354,7 @@ export const ResponsiveAppShell: React.FC<ResponsiveAppShellProps> = ({
                     : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-800'
                 }`}
               >
-                Collector
+                Collector (Ruta 1)
               </button>
             </div>
           </div>
@@ -563,7 +594,7 @@ export const ResponsiveAppShell: React.FC<ResponsiveAppShellProps> = ({
               </button>
             </div>
 
-            {onOpenNewClientModal && isAdmin && (
+            {onOpenNewClientModal && isAdmin && !isSuperAdmin && (
               <button
                 type="button"
                 onClick={onOpenNewClientModal}

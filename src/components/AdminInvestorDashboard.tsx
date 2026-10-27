@@ -139,6 +139,238 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
     setShowAiNegotiatorModal(false);
   };
 
+  // =========================================================================
+  // VISTA RESTRINGIDA EXCLUSIVA PARA SUPER_ADMIN (PROVEEDOR SAAS)
+  // El Super Admin tiene ESTRICTAMENTE PROHIBIDO leer o modificar tablas
+  // financieras confidenciales (clients, loans, payments, cash_drawer_sessions).
+  // Solo visualiza métricas operativas (cantidad de rutas activas por tenant)
+  // para fines de facturación SaaS, soporte técnico y aprovisionamiento de inquilinos.
+  // =========================================================================
+  if (isSuperAdmin) {
+    const tenantBillingMap = routes.reduce<
+      Record<
+        string,
+        {
+          tenantId: string;
+          tenantName: string;
+          activeRoutesCount: number;
+          totalRoutesCount: number;
+          zones: string[];
+        }
+      >
+    >((acc, route) => {
+      const tId = route.organizationId || 'org-medellin-01';
+      if (!acc[tId]) {
+        acc[tId] = {
+          tenantId: tId,
+          tenantName:
+            tId === 'org-medellin-01'
+              ? 'Fondo RutaCapital Sur (Inquilino #1)'
+              : tId === 'org-norte-02'
+                ? 'Inversiones del Norte (Inquilino #2)'
+                : `Organización ${tId}`,
+          activeRoutesCount: 0,
+          totalRoutesCount: 0,
+          zones: [],
+        };
+      }
+      acc[tId].totalRoutesCount += 1;
+      if (route.status === 'activa') {
+        acc[tId].activeRoutesCount += 1;
+      }
+      if (route.zone && !acc[tId].zones.includes(route.zone)) {
+        acc[tId].zones.push(route.zone);
+      }
+      return acc;
+    }, {});
+
+    // Asegurar que ambos tenants principales aparezcan en la consola de facturación
+    if (!tenantBillingMap['org-medellin-01']) {
+      tenantBillingMap['org-medellin-01'] = {
+        tenantId: 'org-medellin-01',
+        tenantName: 'Fondo RutaCapital Sur (Inquilino #1)',
+        activeRoutesCount: 1,
+        totalRoutesCount: 1,
+        zones: ['Comuna 13 - San Javier'],
+      };
+    }
+    if (!tenantBillingMap['org-norte-02']) {
+      tenantBillingMap['org-norte-02'] = {
+        tenantId: 'org-norte-02',
+        tenantName: 'Inversiones del Norte (Inquilino #2)',
+        activeRoutesCount: 1,
+        totalRoutesCount: 1,
+        zones: ['Manrique & Aranjuez'],
+      };
+    }
+
+    const tenantBillingRows = Object.values(tenantBillingMap);
+    const totalActiveRoutesForBilling = tenantBillingRows.reduce(
+      (sum, t) => sum + t.activeRoutesCount,
+      0
+    );
+    const feePerActiveRouteCOP = 180000;
+    const totalMonthlySaasBillingCOP = totalActiveRoutesForBilling * feePerActiveRouteCOP;
+
+    return (
+      <div className="space-y-6">
+        {/* BANNER DE RESTRICCIÓN TÉCNICA RLS PARA SUPER_ADMIN */}
+        <div className="bg-amber-950/30 border border-amber-500/40 rounded-xl p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex items-start gap-3.5">
+            <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-300 shrink-0">
+              <Lock className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-amber-500 text-slate-950 uppercase tracking-wider">
+                  Modo Proveedor SaaS · Solo Lectura Operativa
+                </span>
+                <span className="text-xs font-mono text-amber-300">
+                  role = &apos;super_admin&apos; · Zero-Trust RLS Activo
+                </span>
+              </div>
+              <h2 className="text-base sm:text-lg font-bold text-white mt-1.5">
+                Bloqueo Financiero Confidencial Activo (Aislamiento Multi-Tenant)
+              </h2>
+              <p className="text-xs text-slate-300 mt-1 leading-relaxed max-w-3xl">
+                Por política de privacidad criptográfica y Row Level Security (<code className="text-amber-300 font-mono">NOT public.is_super_admin()</code>), este rol tiene <strong>ESTRICTAMENTE PROHIBIDO</strong> ejecutar <code className="text-rose-300 font-mono">INSERT, UPDATE, DELETE</code> o consultar registros confidenciales en <code className="text-emerald-300 font-mono">clients</code>, <code className="text-emerald-300 font-mono">loans</code>, <code className="text-emerald-300 font-mono">payments</code> y <code className="text-emerald-300 font-mono">cash_drawer_sessions</code>. La vista se limita exclusivamente a soporte técnico, aprovisionamiento de inquilinos y conteo de rutas activas para facturación SaaS.
+              </p>
+            </div>
+          </div>
+
+          {onNavigateToTab && (
+            <button
+              type="button"
+              onClick={() => onNavigateToTab('supabase_sql')}
+              className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-bold flex items-center gap-2 shrink-0 cursor-pointer transition-colors"
+            >
+              <Database className="w-4 h-4" />
+              <span>Ver Políticas SQL &amp; RLS</span>
+            </button>
+          )}
+        </div>
+
+        {/* TARJETAS DE FACTURACIÓN SAAS Y MÉTRICAS OPERATIVAS (SELECT LIMITADO) */}
+        <section className="bg-slate-900 border border-slate-800 rounded-xl p-5 sm:p-6 shadow-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-slate-800">
+            <div>
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <Crown className="w-4 h-4 text-amber-400" />
+                Métricas Operativas para Facturación del Servicio SaaS (Vista: v_saas_tenant_billing_metrics)
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Lectura agregada de rutas activas por organización sin acceso a saldos de cartera ni datos personales de deudores
+              </p>
+            </div>
+            <span className="text-[11px] font-mono text-emerald-400 bg-emerald-950/50 border border-emerald-500/30 px-3 py-1 rounded-lg">
+              SELECT COUNT(routes) GROUP BY organization_id
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 mt-5">
+            <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4">
+              <div className="flex items-center justify-between text-slate-400 text-xs">
+                <span>Inquilinos (Tenants) Activos</span>
+                <Users className="w-4 h-4 text-indigo-400" />
+              </div>
+              <div className="text-2xl font-bold text-white mt-1.5 font-mono tabular-nums">
+                {tenantBillingRows.length}
+              </div>
+              <div className="text-xs text-slate-400 mt-1">
+                Organizaciones aisladas por <code className="text-slate-300">tenant_id</code>
+              </div>
+            </div>
+
+            <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-4">
+              <div className="flex items-center justify-between text-slate-400 text-xs">
+                <span>Rutas Activas Facturables</span>
+                <Activity className="w-4 h-4 text-emerald-400" />
+              </div>
+              <div className="text-2xl font-bold text-emerald-400 mt-1.5 font-mono tabular-nums">
+                {totalActiveRoutesForBilling}
+              </div>
+              <div className="text-xs text-slate-400 mt-1">
+                Tarifa SaaS: {formatCOP(feePerActiveRouteCOP)} / ruta activa
+              </div>
+            </div>
+
+            <div className="bg-slate-950/70 border border-amber-500/30 rounded-xl p-4">
+              <div className="flex items-center justify-between text-amber-300 text-xs font-medium">
+                <span>Facturación Mensual SaaS (MRR)</span>
+                <DollarSign className="w-4 h-4 text-amber-400" />
+              </div>
+              <div className="text-2xl font-bold text-amber-300 mt-1.5 font-mono tabular-nums">
+                {formatCOP(totalMonthlySaasBillingCOP)}
+              </div>
+              <div className="text-xs text-slate-400 mt-1">
+                Cálculo exclusivo sobre rutas operativas
+              </div>
+            </div>
+
+            <div className="bg-slate-950/70 border border-rose-500/30 rounded-xl p-4">
+              <div className="flex items-center justify-between text-rose-300 text-xs font-medium">
+                <span>Acceso a Tablas Financieras</span>
+                <Lock className="w-4 h-4 text-rose-400" />
+              </div>
+              <div className="text-base font-bold text-rose-400 mt-2 font-mono">
+                0 FILAS (BLOQUEADO)
+              </div>
+              <div className="text-[11px] text-slate-400 mt-1">
+                clients · loans · payments · sessions
+              </div>
+            </div>
+          </div>
+
+          {/* TABLA DE FACTURACIÓN POR TENANT (SOLO LECTURA DE RUTAS ACTIVAS) */}
+          <div className="mt-6 overflow-x-auto border border-slate-800 rounded-xl">
+            <table className="w-full text-xs text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-950 border-b border-slate-800 text-slate-400 font-mono text-[11px]">
+                  <th className="py-3 px-4">Tenant ID (organization_id)</th>
+                  <th className="py-3 px-4">Organización / Inquilino</th>
+                  <th className="py-3 px-4">Rutas Activas</th>
+                  <th className="py-3 px-4">Tarifa por Ruta</th>
+                  <th className="py-3 px-4">Facturación SaaS Mensual</th>
+                  <th className="py-3 px-4">Datos Financieros (Clientes/Préstamos)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/70 bg-slate-900/60">
+                {tenantBillingRows.map((row) => (
+                  <tr key={row.tenantId} className="hover:bg-slate-800/40">
+                    <td className="py-3 px-4 font-mono font-bold text-amber-300">
+                      {row.tenantId}
+                    </td>
+                    <td className="py-3 px-4 font-semibold text-white">
+                      {row.tenantName}
+                    </td>
+                    <td className="py-3 px-4 font-mono font-bold text-emerald-400 tabular-nums">
+                      {row.activeRoutesCount} ruta(s)
+                    </td>
+                    <td className="py-3 px-4 font-mono text-slate-300 tabular-nums">
+                      {formatCOP(feePerActiveRouteCOP)}
+                    </td>
+                    <td className="py-3 px-4 font-mono font-bold text-white tabular-nums">
+                      {formatCOP(row.activeRoutesCount * feePerActiveRouteCOP)}
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-rose-950/60 border border-rose-500/30 text-rose-300 font-mono text-[11px]">
+                        <Lock className="w-3 h-3" />
+                        OCULTO / PROHIBIDO POR RLS
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        {/* APROVISIONAMIENTO DE NUEVOS ADMINISTRADORES (INQUILINOS MULTI-TENANT) */}
+        <SuperAdminTenantsManager />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* =====================================================================
@@ -152,12 +384,10 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
               <span aria-hidden="true">·</span>
               <span>{profile?.organizationName || 'RutaCapital Medellín'}</span>
               <span aria-hidden="true">·</span>
-              <span className="font-mono text-slate-300">{role}</span>
+              <span className="font-mono text-emerald-400">tenant_id: {profile?.organizationId || 'org-medellin-01'}</span>
             </div>
             <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight mt-1">
-              {isSuperAdmin
-                ? 'Centro de Control Super Administrador & Liquidez'
-                : 'Consolidado de Caja, Rutas y Equipo de Cobro'}
+              Consolidado de Caja, Rutas y Equipo de Cobro
             </h2>
             <p className="text-xs text-slate-400 mt-1">
               Flujo de Caja Neto = Recaudo Bruto Diario − Gastos Operativos de Ruta − Provisión de Cartera (4%)

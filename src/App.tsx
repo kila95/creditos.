@@ -83,14 +83,63 @@ function MainAppContent() {
   const [activeAlerts, setActiveAlerts] = useState<Par30AlertItem[]>([]);
   const [legalDispatches, setLegalDispatches] = useState<Record<string, boolean>>({});
 
-  // Hook useEffect global que monitorea el estado 'loans' y filtra por 'daysOverdue >= 30' (PAR 30)
+  // Aislamiento Multi-Tenant estricto por organization_id (tenant_id)
+  const isSuperAdminRole = role === 'super_admin';
+  const currentTenantId = profile?.organizationId || 'org-medellin-01';
+
+  const tenantRoutes = isSuperAdminRole
+    ? routes
+    : routes.filter((r) => (r.organizationId || 'org-medellin-01') === currentTenantId);
+  const tenantRouteIds = new Set(tenantRoutes.map((r) => r.id));
+
+  const tenantClients = isSuperAdminRole
+    ? []
+    : clients.filter(
+        (c) =>
+          (c.organizationId || (c.routeId === 'route-2' ? 'org-norte-02' : 'org-medellin-01')) ===
+            currentTenantId || tenantRouteIds.has(c.routeId)
+      );
+
+  const tenantLoans = isSuperAdminRole
+    ? []
+    : loans.filter(
+        (l) =>
+          (l.organizationId || (l.routeId === 'route-2' ? 'org-norte-02' : 'org-medellin-01')) ===
+            currentTenantId || tenantRouteIds.has(l.routeId)
+      );
+
+  const tenantExpenses = isSuperAdminRole
+    ? []
+    : expenses.filter(
+        (e) => (e.organizationId || 'org-medellin-01') === currentTenantId || tenantRouteIds.has(e.routeId)
+      );
+
+  const tenantLedger = isSuperAdminRole
+    ? []
+    : ledger.filter(
+        (led) =>
+          (led.organizationId || 'org-medellin-01') === currentTenantId || tenantRouteIds.has(led.routeId)
+      );
+
+  const tenantCollectorBases = isSuperAdminRole
+    ? []
+    : collectorBases.filter(
+        (b) => (b.organizationId || 'org-medellin-01') === currentTenantId || tenantRouteIds.has(b.routeId)
+      );
+
+  // Hook useEffect global que monitorea el estado 'loans' del tenant activo y filtra por 'daysOverdue >= 30' (PAR 30)
   useEffect(() => {
-    const par30Loans = loans.filter(
+    if (isSuperAdminRole) {
+      setActiveAlerts([]);
+      return;
+    }
+
+    const par30Loans = tenantLoans.filter(
       (loan) => loan.daysOverdue >= 30 && loan.status !== 'liquidado'
     );
 
     const generatedAlerts: Par30AlertItem[] = par30Loans.map((loan) => {
-      const matchedClient = clients.find((c) => c.id === loan.clientId);
+      const matchedClient = tenantClients.find((c) => c.id === loan.clientId);
       return {
         id: `par30-alert-${loan.id}`,
         loanId: loan.id,
@@ -112,7 +161,7 @@ function MainAppContent() {
     });
 
     setActiveAlerts(generatedAlerts);
-  }, [loans, clients, legalDispatches]);
+  }, [loans, clients, legalDispatches, isSuperAdminRole, currentTenantId]);
 
   // Estado de conexión y latencia con Cloud SQL
   const [cloudSqlStatus, setCloudSqlStatus] = useState<'connected' | 'offline' | 'checking'>('checking');
@@ -299,8 +348,20 @@ function MainAppContent() {
   };
 
   const handleClientCreated = (newClient: ClientProfile, newLoan: LoanDetail) => {
-    setClients(prev => [newClient, ...prev]);
-    setLoans(prev => [newLoan, ...prev]);
+    if (isSuperAdminRole) {
+      console.error('[RLS Bloqueo Multi-Tenant] super_admin tiene prohibido hacer INSERT en clients o loans.');
+      return;
+    }
+    const clientWithTenant: ClientProfile = {
+      ...newClient,
+      organizationId: currentTenantId,
+    };
+    const loanWithTenant: LoanDetail = {
+      ...newLoan,
+      organizationId: currentTenantId,
+    };
+    setClients(prev => [clientWithTenant, ...prev]);
+    setLoans(prev => [loanWithTenant, ...prev]);
     setRoutes(prev => prev.map(r => {
       if (r.id === newLoan.routeId) {
         return {
@@ -331,7 +392,15 @@ function MainAppContent() {
   };
 
   const handleLoanCreatedForExistingClient = (newLoan: LoanDetail) => {
-    setLoans(prev => [newLoan, ...prev]);
+    if (isSuperAdminRole) {
+      console.error('[RLS Bloqueo Multi-Tenant] super_admin tiene prohibido hacer INSERT en loans.');
+      return;
+    }
+    const loanWithTenant: LoanDetail = {
+      ...newLoan,
+      organizationId: currentTenantId,
+    };
+    setLoans(prev => [loanWithTenant, ...prev]);
     setRoutes(prev =>
       prev.map(r => {
         if (r.id === newLoan.routeId) {
@@ -370,6 +439,10 @@ function MainAppContent() {
     method: 'efectivo' | 'nequi' | 'daviplata', 
     notes: string
   ) => {
+    if (isSuperAdminRole) {
+      console.error('[RLS Bloqueo Multi-Tenant] super_admin tiene prohibido hacer INSERT/UPDATE en payments y loans.');
+      return;
+    }
     const loan = loans.find(l => l.id === loanId);
     if (!loan) return;
 
@@ -893,30 +966,33 @@ function MainAppContent() {
         </div>
       )}
 
-      {/* BANNER PERSISTENTE SUPERIOR DE ALERTAS PAR 30 (MORA >= 30 DÍAS) */}
-      <Par30AlertBanner
-        activeAlerts={activeAlerts}
-        onRestructureLoan={handleRestructureLoan}
-        onInitiateLegalCollection={handleInitiateLegalCollection}
-        onSimulatePar30Case={handleSimulatePar30Case}
-      />
+      {/* BANNER PERSISTENTE SUPERIOR DE ALERTAS PAR 30 (OCULTO PARA SUPER_ADMIN POR PRIVACIDAD FINANCIERA) */}
+      {!isSuperAdminRole && (
+        <Par30AlertBanner
+          activeAlerts={activeAlerts}
+          onRestructureLoan={handleRestructureLoan}
+          onInitiateLegalCollection={handleInitiateLegalCollection}
+          onSimulatePar30Case={handleSimulatePar30Case}
+        />
+      )}
 
-      {/* VISTA 1: PANEL SUPER ADMIN & ADMINISTRADOR DE FONDOS (PROTEGIDO POR RBAC) */}
+      {/* VISTA 1: PANEL SUPER ADMIN & ADMINISTRADOR DE FONDOS (CON AISLAMIENTO MULTI-TENANT) */}
       {activeRole === 'admin_cfo' && (
         <AdminRouteGuard 
           requiredRole="admin_or_socio" 
           onRedirectToAuthorized={(roleRedirect) => setActiveRole(roleRedirect as ActiveRole)}
         >
           <AdminInvestorDashboard
-            routes={routes}
-            clients={clients}
-            loans={loans}
-            expenses={expenses}
-            ledger={ledger}
-            collectorBases={collectorBases}
-            onAssignCollectorBase={handleAssignCollectorBase}
-            onUpdateCollectorBaseStatus={handleUpdateCollectorBaseStatus}
+            routes={tenantRoutes}
+            clients={tenantClients}
+            loans={tenantLoans}
+            expenses={tenantExpenses}
+            ledger={tenantLedger}
+            collectorBases={tenantCollectorBases}
+            onAssignCollectorBase={isSuperAdminRole ? undefined : handleAssignCollectorBase}
+            onUpdateCollectorBaseStatus={isSuperAdminRole ? undefined : handleUpdateCollectorBaseStatus}
             onCollectorCreated={(collector) => {
+              if (isSuperAdminRole) return;
               setRoutes(prev => {
                 const exists = prev.some(r => r.id === collector.assignedRouteId);
                 if (exists) {
@@ -924,6 +1000,7 @@ function MainAppContent() {
                     r.id === collector.assignedRouteId
                       ? {
                           ...r,
+                          organizationId: currentTenantId,
                           collectorName: collector.name,
                           zone: collector.routeZone || r.zone,
                           name: collector.routeZone || r.name,
@@ -939,6 +1016,7 @@ function MainAppContent() {
                     code: `RUTA-MED-${newRouteNumber}`,
                     name: collector.routeZone || `Ruta ${newRouteNumber}`,
                     zone: collector.routeZone || 'Centro / El Hueco',
+                    organizationId: currentTenantId,
                     collectorName: collector.name,
                     collectorPhone: collector.phone || '+57 314 000 0000',
                     baseFloatingCapital: 0,
@@ -963,7 +1041,7 @@ function MainAppContent() {
             onReassignClientRoute={handleReassignClientRoute}
             onConfirmReconciliation={handleConfirmReconciliation}
             onNavigateToTab={(tab) => setActiveRole(tab as ActiveRole)}
-            onOpenNewClientModal={() => setShowNewClientModal(true)}
+            onOpenNewClientModal={isSuperAdminRole ? undefined : () => setShowNewClientModal(true)}
           />
         </AdminRouteGuard>
       )}

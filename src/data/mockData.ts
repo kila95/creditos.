@@ -3,6 +3,7 @@ export interface RouteData {
   code: string;
   name: string;
   zone: string;
+  organizationId?: string;
   collectorName: string;
   collectorPhone: string;
   baseFloatingCapital: number;
@@ -30,6 +31,7 @@ export interface ClientProfile {
   address: string;
   neighborhood: string;
   routeId: string;
+  organizationId?: string;
   riskTier: 'A_excelente' | 'B_promedio' | 'C_alto_riesgo' | 'D_mora_critica' | 'X_vetado';
   daysOverdue: number;
   hasPreventiveBlock: boolean;
@@ -46,6 +48,7 @@ export interface LoanDetail {
   clientName: string;
   tradeName: string;
   routeId: string;
+  organizationId?: string;
   principal: number;
   interestRate: number; // Ej: 20% flat
   totalDebt: number;
@@ -69,6 +72,7 @@ export interface LedgerEntry {
   clientId: string;
   clientName: string;
   routeId: string;
+  organizationId?: string;
   amount: number;
   principalPortion: number;
   interestPortion: number;
@@ -83,6 +87,7 @@ export interface LedgerEntry {
 export interface RouteExpenseItem {
   id: string;
   routeId: string;
+  organizationId?: string;
   category: 'combustible_moto' | 'mantenimiento_moto' | 'alimentacion_viaticos' | 'telefonia_datos' | 'peajes_parqueaderos' | 'contingencia_territorial';
   amount: number;
   description: string;
@@ -95,6 +100,7 @@ export interface CollectorBase {
   collectorId: string;
   collectorName: string;
   routeId: string;
+  organizationId?: string;
   amount: number;
   weekStartDate: string;
   status: 'ACTIVA' | 'DEVUELTA';
@@ -107,15 +113,16 @@ export const INITIAL_ROUTES: RouteData[] = [
     code: 'RUTA-MED-01',
     name: 'Comuna 13 - San Javier',
     zone: 'San Javier, 20 de Julio, El Salado',
+    organizationId: 'org-medellin-01',
     collectorName: 'Jhon Alexander Zapata',
     collectorPhone: '+57 314 555 9012',
     baseFloatingCapital: 0,
     fixedDailyOpex: 45000,
     collectorCommissionRate: 3.5,
     targetRecoveryRate: 95.0,
-    activeLoansCount: 0,
-    totalPortfolio: 0,
-    dailyGrossExpected: 0,
+    activeLoansCount: 1,
+    totalPortfolio: 1200000,
+    dailyGrossExpected: 75000,
     dailyGrossCollected: 0,
     dailyExpenses: 0,
     par1Rate: 0,
@@ -128,15 +135,16 @@ export const INITIAL_ROUTES: RouteData[] = [
     code: 'RUTA-MED-02',
     name: 'Manrique & Aranjuez (Nororiental)',
     zone: 'Manrique Central, Las Granjas, Aranjuez',
+    organizationId: 'org-norte-02',
     collectorName: 'Carlos Mario Henao',
     collectorPhone: '+57 301 445 9932',
     baseFloatingCapital: 0,
     fixedDailyOpex: 50000,
     collectorCommissionRate: 4.0,
     targetRecoveryRate: 95.0,
-    activeLoansCount: 0,
-    totalPortfolio: 0,
-    dailyGrossExpected: 0,
+    activeLoansCount: 1,
+    totalPortfolio: 900000,
+    dailyGrossExpected: 50000,
     dailyGrossCollected: 0,
     dailyExpenses: 0,
     par1Rate: 0,
@@ -157,6 +165,7 @@ export const INITIAL_CLIENTS: ClientProfile[] = [
     address: 'Calle 48 # 53-18 Sector Maturin',
     neighborhood: 'Centro / El Hueco',
     routeId: 'route-1',
+    organizationId: 'org-medellin-01',
     riskTier: 'D_mora_critica',
     daysOverdue: 36,
     hasPreventiveBlock: true,
@@ -175,6 +184,7 @@ export const INITIAL_CLIENTS: ClientProfile[] = [
     address: 'Cra 45 # 72-14 La 45',
     neighborhood: 'Manrique & Aranjuez',
     routeId: 'route-2',
+    organizationId: 'org-norte-02',
     riskTier: 'D_mora_critica',
     daysOverdue: 32,
     hasPreventiveBlock: true,
@@ -193,6 +203,7 @@ export const INITIAL_LOANS: LoanDetail[] = [
     clientName: 'Hernán Darío Gaviria',
     tradeName: 'Chatarrería y Reciclaje El Hueco',
     routeId: 'route-1',
+    organizationId: 'org-medellin-01',
     principal: 1500000,
     interestRate: 20,
     totalDebt: 1800000,
@@ -215,6 +226,7 @@ export const INITIAL_LOANS: LoanDetail[] = [
     clientName: 'Marta Cecilia Quintero',
     tradeName: 'Confecciones y Remates Manrique',
     routeId: 'route-2',
+    organizationId: 'org-norte-02',
     principal: 1000000,
     interestRate: 20,
     totalDebt: 1200000,
@@ -237,5 +249,3 @@ export const INITIAL_LEDGER: LedgerEntry[] = [];
 export const INITIAL_EXPENSES: RouteExpenseItem[] = [];
 
 export const INITIAL_COLLECTOR_BASES: CollectorBase[] = [];
-
-

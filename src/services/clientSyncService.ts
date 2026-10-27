@@ -440,25 +440,33 @@ export async function createCustomLoanInDB(
 
       if (sbLoanError) {
         console.error('❌ [Supabase INSERT Error en tabla loans]:', sbLoanError);
-        const isRls =
-          sbLoanError.code === '42501' ||
-          sbLoanError.message.toLowerCase().includes('row-level security') ||
-          sbLoanError.message.toLowerCase().includes('policy');
+        const isNotFound404 =
+          sbLoanError.code === '404' ||
+          sbLoanError.code === 'PGRST205' ||
+          sbLoanError.message.includes('404') ||
+          sbLoanError.message.toLowerCase().includes('not found');
 
-        return {
-          data: null,
-          error: {
-            message: isRls
-              ? `Bloqueo por Política RLS en tabla 'loans': ${sbLoanError.message}`
-              : `Error de Supabase al insertar en 'loans': ${sbLoanError.message}`,
-            code: sbLoanError.code,
-            details: sbLoanError.details,
-            hint: isRls
-              ? 'Verifica que el usuario autenticado tenga permisos INSERT en public.loans para su ruta u organización.'
-              : sbLoanError.hint,
-            isRlsError: isRls,
-          },
-        };
+        if (!isNotFound404) {
+          const isRls =
+            sbLoanError.code === '42501' ||
+            sbLoanError.message.toLowerCase().includes('row-level security') ||
+            sbLoanError.message.toLowerCase().includes('policy');
+
+          return {
+            data: null,
+            error: {
+              message: isRls
+                ? `Bloqueo por Política RLS en tabla 'loans': ${sbLoanError.message}`
+                : `Error de Supabase al insertar en 'loans': ${sbLoanError.message}`,
+              code: sbLoanError.code,
+              details: sbLoanError.details,
+              hint: isRls
+                ? 'Verifica que el usuario autenticado tenga permisos INSERT en public.loans para su ruta u organización.'
+                : sbLoanError.hint,
+              isRlsError: isRls,
+            },
+          };
+        }
       }
     }
 
@@ -485,6 +493,17 @@ export async function createCustomLoanInDB(
     });
 
     if (!loanRes.ok) {
+      if (loanRes.status === 404) {
+        console.warn(
+          'ℹ️ [Fallback Persistencia Local] El endpoint /api/loans devolvió HTTP 404; préstamo guardado en caché local persistente.'
+        );
+        return {
+          data: createdLoan,
+          savedOffline: true,
+          error: null,
+        };
+      }
+
       const loanErrBody = await loanRes.json().catch(() => ({}));
       console.error('❌ [Database INSERT Error - /api/loans]:', loanErrBody);
       return {
@@ -524,12 +543,13 @@ export async function ensureRouteExistsInSupabaseAndDB(
   zone?: string,
   collectorName?: string
 ): Promise<string> {
-  const safeRouteId = routeId?.trim() || 'route-1';
+  const rawRoute = typeof routeId === 'string' ? routeId.trim() : '';
+  const safeRouteId =
+    rawRoute && rawRoute !== 'null' && rawRoute !== 'undefined' ? rawRoute : 'route-1';
 
   // 1. Validar / auto-crear en Supabase si está configurado
   if (isLiveSupabaseConfigured) {
     try {
-      // Usamos .maybeSingle() para evitar el error HTTP 404 de PostgREST si no hay filas
       const { data: existingRoute, error: checkError } = await supabase
         .from('routes')
         .select('id, name')
@@ -537,36 +557,38 @@ export async function ensureRouteExistsInSupabaseAndDB(
         .maybeSingle();
 
       if (!checkError && existingRoute?.id) {
-        // La ruta ya existe válidamente en Supabase
-      } else {
-        // La ruta no existe en Supabase: registrarla automáticamente
-        const routeName = `Ruta ${safeRouteId.replace(/^route-?/i, '').toUpperCase() || 'General'}`;
-        const { error: upsertErr } = await supabase
-          .from('routes')
-          .upsert(
-            {
-              id: safeRouteId,
-              name: routeName,
-              zone: zone || 'Medellín Metropolitana',
-              collector_name: collectorName || 'Cobrador de Ruta',
-              status: 'active',
-              target_daily_collection: 1500000,
-              operating_expense_budget: 80000,
-            },
-            { onConflict: 'id' }
-          );
+        return String(existingRoute.id);
+      }
 
-        if (upsertErr) {
-          console.warn('⚠️ [ensureRouteExistsInSupabaseAndDB] Advertencia al registrar ruta en Supabase:', upsertErr);
-          // Si falló por RLS u otra política, buscar cualquier ruta existente de respaldo
-          const { data: fallbackRoute } = await supabase
-            .from('routes')
-            .select('id')
-            .limit(1)
-            .maybeSingle();
-          if (fallbackRoute?.id) {
-            return fallbackRoute.id;
-          }
+      // Si no existe, intentar registrarla en public.routes
+      const routeName = `Ruta ${safeRouteId.replace(/^route-?/i, '').toUpperCase() || 'General'}`;
+      const { error: upsertErr } = await supabase
+        .from('routes')
+        .upsert(
+          {
+            id: safeRouteId,
+            name: routeName,
+            zone: zone || 'Medellín Metropolitana',
+            collector_name: collectorName || 'Cobrador de Ruta',
+            status: 'active',
+            target_daily_collection: 1500000,
+            operating_expense_budget: 80000,
+          },
+          { onConflict: 'id' }
+        );
+
+      if (upsertErr) {
+        console.warn(
+          '⚠️ [ensureRouteExistsInSupabaseAndDB] No se pudo insertar ruta con id textual; buscando ruta existente en public.routes:',
+          upsertErr
+        );
+        const { data: fallbackRoute } = await supabase
+          .from('routes')
+          .select('id')
+          .limit(1)
+          .maybeSingle();
+        if (fallbackRoute?.id) {
+          return String(fallbackRoute.id);
         }
       }
     } catch (sbErr) {
@@ -598,17 +620,21 @@ export async function ensureRouteExistsInSupabaseAndDB(
 }
 
 /**
- * 3. INSERCIÓN DE CLIENTE + PRÉSTAMO PERSONALIZADO CON CAPTURA ESTRICTA DE ERRORES, VALIDACIÓN DE RUTA Y SOPORTE OFFLINE
+ * 3. INSERCIÓN DE CLIENTE + PRÉSTAMO PERSONALIZADO CON AUDITORÍA EN CONSOLA, VALIDACIÓN DE RUTA Y SOPORTE OFFLINE
  */
 export async function insertClientAndLoanToDB(
   input: CreateClientRecordInput
 ): Promise<DatabaseOperationResult<{ client: ClientProfile; loan: LoanDetail }>> {
-  // 1. Validar y asegurar que la ruta exista en la tabla routes (o crearla) antes de insertar
-  const safeRouteId = await ensureRouteExistsInSupabaseAndDB(
+  // 1. Validar y asegurar que route_id nunca sea nulo ni inválido antes de construir el payload
+  const validatedRouteId = await ensureRouteExistsInSupabaseAndDB(
     input.routeId,
     input.neighborhood,
     'Cobrador de Ruta'
   );
+  const safeRouteId =
+    validatedRouteId && validatedRouteId !== 'null' && validatedRouteId !== 'undefined'
+      ? validatedRouteId
+      : 'route-1';
 
   const timestampSuffix = Date.now().toString().slice(-6);
   const clientId = input.id || `cli-${timestampSuffix}`;
@@ -626,8 +652,7 @@ export async function insertClientAndLoanToDB(
   const totalDebt = safePrincipal + totalInterest;
   const installmentAmount = roundCOP(totalDebt / safeTerm);
 
-  // El campo de cédula ya no es obligatorio: si el cliente en la calle no lo tiene, se genera un ID único
-  // para no bloquear la inserción en la base de datos ni provocar errores por valor nulo o duplicado
+  // El campo de cédula es opcional: si el cliente en la calle no lo tiene, se genera un ID único
   const hasDoc = input.document && input.document.trim().length > 0;
   const cleanDocument = hasDoc
     ? input.document.trim()
@@ -641,7 +666,7 @@ export async function insertClientAndLoanToDB(
     document: cleanDocument,
     phone: input.phone.trim(),
     address: input.address.trim(),
-    neighborhood: input.neighborhood.trim(),
+    neighborhood: input.neighborhood.trim() || 'Medellín Metropolitana',
     routeId: safeRouteId,
     riskTier: 'A_excelente',
     daysOverdue: 0,
@@ -675,6 +700,25 @@ export async function insertClientAndLoanToDB(
     todayPaid: false,
   };
 
+  // ESTRUCTURA EXACTA DE DATOS A INSERTAR EN LA TABLA 'clients'
+  const datosAInsertar = {
+    id: clientId,
+    document_id: cleanDocument,
+    name: input.name.trim(),
+    alias: input.tradeName?.trim() || input.name.trim(),
+    phone: input.phone.trim(),
+    business_type: input.category || 'Micronegocio Local',
+    address: input.address.trim(),
+    zone: input.neighborhood.trim() || 'Medellín Metropolitana',
+    route_id: safeRouteId,
+    risk_score: 80,
+    risk_level: 'verde',
+    credit_limit: safePrincipal * 2,
+  };
+
+  // Impresión explícita en consola justo antes de supabase.from('clients').insert(...)
+  console.log(datosAInsertar);
+
   // Respaldo inmediato en almacenamiento local por si el cobrador pierde señal en calle
   saveLocalCachedClient(createdClient);
   saveLocalCachedLoan(createdLoan);
@@ -691,53 +735,47 @@ export async function insertClientAndLoanToDB(
   try {
     // 1. Si Supabase directo está configurado, insertar en `public.clients` y `public.loans`
     if (isLiveSupabaseConfigured) {
-      // Inserción en clients con .maybeSingle() para evitar excepciones de 0 filas (404)
       const { error: sbError } = await supabase
         .from('clients')
-        .insert([
-          {
-            id: clientId,
-            document_id: cleanDocument,
-            name: input.name.trim(),
-            alias: input.tradeName?.trim() || input.name.trim(),
-            phone: input.phone.trim(),
-            business_type: input.category || 'Micronegocio Local',
-            address: input.address.trim(),
-            zone: input.neighborhood.trim(),
-            route_id: safeRouteId,
-            risk_score: 80,
-            risk_level: 'verde',
-            credit_limit: safePrincipal * 2,
-          },
-        ])
-        .select()
-        .maybeSingle();
+        .insert([datosAInsertar]);
 
       if (sbError) {
         console.error('❌ [Supabase INSERT Error en tabla clients]:', sbError);
-        const isRls =
-          sbError.code === '42501' ||
-          sbError.message.toLowerCase().includes('row-level security') ||
-          sbError.message.toLowerCase().includes('policy');
+        const isNotFound404 =
+          sbError.code === '404' ||
+          sbError.code === 'PGRST205' ||
+          sbError.message.includes('404') ||
+          sbError.message.toLowerCase().includes('not found') ||
+          sbError.message.toLowerCase().includes('schema cache');
 
-        return {
-          data: null,
-          error: {
-            message: isRls
-              ? `Bloqueo por Política de Seguridad (RLS) en Supabase: ${sbError.message}`
-              : `Error de Supabase al insertar en 'clients': ${sbError.message}`,
-            code: sbError.code,
-            details: sbError.details,
-            hint: isRls
-              ? 'Ejecuta la política CREATE POLICY "clients_insert_policy" ON public.clients FOR INSERT TO authenticated WITH CHECK (true); en el SQL Editor de Supabase.'
-              : sbError.hint,
-            isRlsError: isRls,
-          },
-        };
-      }
+        if (isNotFound404) {
+          console.warn(
+            '⚠️ La tabla "clients" devolvió 404 en Supabase. Intentando fallback en tabla "clientes" o continuando con persistencia en Cloud SQL / Local...'
+          );
+          await supabase.from('clientes').insert([datosAInsertar]);
+        } else {
+          const isRls =
+            sbError.code === '42501' ||
+            sbError.message.toLowerCase().includes('row-level security') ||
+            sbError.message.toLowerCase().includes('policy');
 
-      const { error: sbLoanErr } = await supabase.from('loans').insert([
-        {
+          return {
+            data: null,
+            error: {
+              message: isRls
+                ? `Bloqueo por Política de Seguridad (RLS) en Supabase: ${sbError.message}`
+                : `Error de Supabase al insertar en 'clients': ${sbError.message}`,
+              code: sbError.code,
+              details: sbError.details,
+              hint: isRls
+                ? 'Ejecuta la política CREATE POLICY "clients_insert_policy" ON public.clients FOR INSERT TO authenticated WITH CHECK (true); en el SQL Editor de Supabase.'
+                : sbError.hint,
+              isRlsError: isRls,
+            },
+          };
+        }
+      } else {
+        const datosPrestamoAInsertar = {
           id: loanId,
           client_id: clientId,
           route_id: safeRouteId,
@@ -752,15 +790,18 @@ export async function insertClientAndLoanToDB(
           status: 'active',
           start_date: todayStr,
           expected_end_date: dueDateStr,
-        },
-      ]);
+        };
+        const { error: sbLoanErr } = await supabase
+          .from('loans')
+          .insert([datosPrestamoAInsertar]);
 
-      if (sbLoanErr) {
-        console.error('❌ [Supabase INSERT Error en tabla loans]:', sbLoanErr);
+        if (sbLoanErr) {
+          console.error('❌ [Supabase INSERT Error en tabla loans]:', sbLoanErr);
+        }
       }
     }
 
-    // 2. Persistir en la base de datos PostgreSQL (Cloud SQL / Backend API)
+    // 2. Persistir en la base de datos PostgreSQL (Cloud SQL / Backend API /api/clients)
     const clientRes = await fetch('/api/clients', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -772,7 +813,7 @@ export async function insertClientAndLoanToDB(
         phone: input.phone.trim(),
         businessType: input.category || 'Micronegocio Local',
         address: input.address.trim(),
-        zone: input.neighborhood.trim(),
+        zone: input.neighborhood.trim() || 'Medellín Metropolitana',
         routeId: safeRouteId,
         riskScore: 80,
         riskLevel: 'verde',
@@ -781,6 +822,19 @@ export async function insertClientAndLoanToDB(
     });
 
     if (!clientRes.ok) {
+      // Si el entorno estático o preview devuelve HTTP 404 porque el proxy Express no está montado en esa URL,
+      // no bloqueamos la operación: el registro ya quedó guardado en caché local persistente (localStorage).
+      if (clientRes.status === 404) {
+        console.warn(
+          'ℹ️ [Fallback Persistencia Local] El endpoint /api/clients devolvió HTTP 404 en este entorno de despliegue; cliente y préstamo guardados de forma persistente en almacenamiento local.'
+        );
+        return {
+          data: { client: createdClient, loan: createdLoan },
+          savedOffline: true,
+          error: null,
+        };
+      }
+
       const errBody = await clientRes.json().catch(() => ({}));
       const errMsg =
         errBody.error || `HTTP ${clientRes.status}: Rechazo al insertar en la tabla clients.`;
@@ -790,7 +844,7 @@ export async function insertClientAndLoanToDB(
         error: {
           message: errMsg,
           code: String(clientRes.status),
-          hint: 'Verifica que la cédula (document_id) no esté duplicada y que la ruta asignada exista en la tabla routes.',
+          hint: 'Verifica la conexión con la base de datos o los permisos de escritura en la tabla clients.',
         },
       };
     }
@@ -817,7 +871,7 @@ export async function insertClientAndLoanToDB(
       }),
     });
 
-    if (!loanRes.ok) {
+    if (!loanRes.ok && loanRes.status !== 404) {
       const loanErrBody = await loanRes.json().catch(() => ({}));
       console.error('❌ [Database INSERT Error - /api/loans]:', loanErrBody);
       return {
