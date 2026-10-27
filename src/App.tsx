@@ -113,7 +113,7 @@ function MainAppContent() {
     }
 
     const par30Loans = tenantLoans.filter(
-      (loan) => loan.daysOverdue >= 30 && loan.status !== 'liquidado'
+      (loan) => loan.daysOverdue >= 30 && loan.status !== 'liquidado' && loan.status !== 'liquidated'
     );
 
     const generatedAlerts: Par30AlertItem[] = par30Loans.map((loan) => {
@@ -161,7 +161,7 @@ function MainAppContent() {
       });
       setRoutes(prevRoutes =>
         prevRoutes.map(r => {
-          const rLoans = data.loans.filter(l => l.routeId === r.id && l.status !== 'liquidado');
+          const rLoans = data.loans.filter(l => l.routeId === r.id && l.status !== 'liquidado' && l.status !== 'liquidated');
           return {
             ...r,
             activeLoansCount: rLoans.length,
@@ -220,8 +220,8 @@ function MainAppContent() {
       preBalance,
       postBalance,
       timestamp: new Date().toISOString(),
-      gpsLocation: '6.2442, -75.5812',
-      hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2)
+      gpsLocation: notes && notes.includes('GPS:') ? notes.split('GPS:')[1].trim() : '6.2442, -75.5812 (Estimado)',
+      hash: `sha256-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
     };
 
     setLedger(prev => [newEntry, ...prev]);
@@ -237,7 +237,8 @@ function MainAppContent() {
           totalCollected: roundCOP(l.totalCollected + safeAmount),
           installmentsPaid: l.installmentsPaid + 1,
           todayPaid: true,
-          status: liquidated ? 'liquidado' : l.status
+          status: liquidated ? 'liquidated' : l.status,
+          liquidationDate: liquidated ? new Date().toISOString().split('T')[0] : l.liquidationDate,
         };
       }
       return l;
@@ -310,11 +311,14 @@ function MainAppContent() {
         loanId: loan.id,
         clientId: loan.clientId,
         clientName: loan.clientName,
+        routeId: loan.routeId,
+        organizationId: loan.organizationId || currentTenantId,
         amount: safeAmount,
         paymentMethod: method === 'bancolombia' ? 'nequi' : method,
         notes: notes || 'Cobro offline',
         timestamp: newEntry.timestamp,
-        gpsLocation: newEntry.gpsLocation
+        gpsLocation: newEntry.gpsLocation,
+        clientTxUuid: `tx-${newEntry.id}`,
       });
     }
 

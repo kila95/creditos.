@@ -91,7 +91,8 @@ app.post('/api/clients', requireAuth, async (req: AuthRequest, res) => {
     const client = await createClient(req.body);
     res.status(201).json(client);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    const isDup = err.message?.includes('Ya existe') || err.message?.includes('23505');
+    res.status(isDup ? 409 : 500).json({ error: err.message, code: isDup ? '23505' : undefined });
   }
 });
 
@@ -212,7 +213,8 @@ app.post('/api/admins', requireAuth, async (req: AuthRequest, res) => {
     const created = await createAdminUser(req.body);
     res.status(201).json(created);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    const isDup = err.message?.includes('Ya existe') || err.message?.includes('23505');
+    res.status(isDup ? 409 : 500).json({ error: err.message, code: isDup ? '23505' : undefined });
   }
 });
 
@@ -231,7 +233,8 @@ app.post('/api/collectors', requireAuth, async (req: AuthRequest, res) => {
     const created = await createCollectorUser(req.body);
     res.status(201).json(created);
   } catch (err: any) {
-    res.status(500).json({ error: err.message });
+    const isDup = err.message?.includes('Ya existe') || err.message?.includes('23505');
+    res.status(isDup ? 409 : 500).json({ error: err.message, code: isDup ? '23505' : undefined });
   }
 });
 

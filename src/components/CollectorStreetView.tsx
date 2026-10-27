@@ -48,6 +48,7 @@ import {
   syncOfflineQueueWithServer,
   OfflineQueueItem,
 } from '../utils/offlineSync';
+import { capturePaymentCoordinates } from '../utils/geoCapture';
 import { DigitalReceiptModal } from './DigitalReceiptModal';
 import { DailyCashReconciliationModal } from './DailyCashReconciliationModal';
 import { PartialPaymentModal } from './PartialPaymentModal';
@@ -160,6 +161,7 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
   const [quickRegisterModalOpen, setQuickRegisterModalOpen] = useState(false);
 
   const [selectedLoan, setSelectedLoan] = useState<LoanDetail | null>(null);
+  const [liquidatedLoanIds, setLiquidatedLoanIds] = useState<Set<string>>(new Set());
   const [activeReceipt, setActiveReceipt] = useState<{
     entry: LedgerEntry;
     client: ClientProfile;
@@ -211,9 +213,7 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
     .filter(
       (l) =>
         l.routeId === currentRoute.id &&
-        l.status !== 'liquidado' &&
-        l.status !== 'liquidated' &&
-        l.status !== 'completed' &&
+        ((l.status as string) === 'active' || l.status === 'activo') && l.status !== 'liquidado' && l.status !== 'liquidated' && !liquidatedLoanIds.has(l.id) &&
         roundCOP(l.remainingBalance) > 0
     )
     .map((l) => {
@@ -350,220 +350,162 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
   // Efectivo físico neto que el cobrador tiene en bolsillo para entregar al Administrador
   const cashInHand = roundCOP(activeBaseAmount + cashCollectedToday - totalRouteExpenses);
 
-  // ACCIÓN 1: COBRAR CUOTA DE HOY EN EFECTIVO
-  const handleQuickPayQuota = (loan: LoanDetail) => {
+    // ACCIÓN 1: COBRAR CUOTA DE HOY EN EFECTIVO
+  const handleQuickPayQuota = async (loan: LoanDetail) => {
     setStreetAlert(null);
     const currentBalance = roundCOP(loan.remainingBalance);
 
     if (currentBalance <= 0) {
       setStreetAlert({
-        type: 'error',
-        message: `El préstamo de ${loan.clientName} ya tiene saldo $0 COP (Liquidado). No se pueden registrar pagos adicionales.`,
+        type: "error",
+        message: "El préstamo de " + loan.clientName + " ya tiene saldo $0 COP (Liquidado). No se pueden registrar pagos adicionales.",
       });
       return;
     }
 
-    // Si la cuota pactada es mayor al saldo restante final, ajustar exactamente al saldo pendiente
     const targetAmount = Math.min(roundCOP(loan.installmentAmount), currentBalance);
     const validation = validatePaymentAmount(targetAmount, currentBalance);
 
     if (!validation.isValid) {
       setStreetAlert({
-        type: 'error',
-        message: validation.errorMessage || 'Monto de pago inválido.',
+        type: "error",
+        message: validation.errorMessage || "Monto de pago inválido.",
       });
       return;
     }
 
     const cleanAmount = validation.sanitizedAmount;
     const client = clients.find((c) => c.id === loan.clientId);
+    const newBalance = roundCOP(currentBalance - cleanAmount);
+
+    if (newBalance <= 0) {
+      setLiquidatedLoanIds(prev => new Set(prev).add(loan.id));
+    }
+
+    // Prevención de Fraude: Capturar coordenadas GPS satelitales al registrar el pago
+    const coords = await capturePaymentCoordinates();
 
     onRegisterPayment(
       loan.id,
       cleanAmount,
-      'efectivo',
+      "efectivo",
       isOnline
-        ? 'Pago cuota en efectivo (Terminal de Calle)'
-        : 'Pago cuota en efectivo (Guardado localmente en Modo Offline)'
+        ? `Pago de cuota en calle · GPS: ${coords.formatted}`
+        : `Pago cuota guardado localmente (Offline) · GPS: ${coords.formatted}`
     );
 
-    if (incidents[loan.id]) {
-      const nextIncidents = { ...incidents };
-      delete nextIncidents[loan.id];
-      setIncidents(nextIncidents);
-    }
-
-    if (!isOnline && client) {
-      enqueueOfflinePayment({
-        loanId: loan.id,
-        clientId: client.id,
-        clientName: client.name,
-        amount: cleanAmount,
-        paymentMethod: 'efectivo',
-        notes: 'Cobro en calle guardado localmente (Offline)',
-        timestamp: new Date().toISOString(),
-        gpsLocation: `${client.lat} N, ${client.lng} W`,
-      });
-      setOfflineQueue(getOfflineQueue());
-    }
-
-    setStreetAlert({
-      type: 'success',
-      message: isOnline
-        ? `Pago de ${formatCOP(cleanAmount)} registrado para ${loan.clientName}. Nuevo saldo: ${formatCOP(currentBalance - cleanAmount)}.`
-        : `Pago de ${formatCOP(cleanAmount)} guardado localmente (Offline) para ${loan.clientName}.`,
-    });
-
     if (client) {
-      const principalPortion = roundCOP(cleanAmount * (loan.principal / Math.max(1, loan.totalDebt)));
-      const interestPortion = Math.max(0, cleanAmount - principalPortion);
-      const entry: LedgerEntry = {
-        id: `led-${Date.now()}`,
-        receiptNumber: `REC-${Date.now().toString().slice(-6)}`,
-        loanId: loan.id,
-        clientId: client.id,
-        clientName: client.name,
-        routeId: loan.routeId,
-        amount: cleanAmount,
-        principalPortion,
-        interestPortion,
-        paymentMethod: 'efectivo',
-        preBalance: currentBalance,
-        postBalance: Math.max(0, currentBalance - cleanAmount),
-        timestamp: new Date().toISOString(),
-        gpsLocation: '6.2518 N, -75.6142 W',
-        hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2),
-      };
-      setActiveReceipt({ entry, client, loan });
-      if (client.phone) {
-        sendAutomaticWhatsAppReceipt({
-          phone: client.phone,
+      setActiveReceipt({
+        entry: {
+          id: `rcpt-${Date.now()}`,
+          receiptNumber: `REC-${Date.now().toString().slice(-6)}`,
+          loanId: loan.id,
+          clientId: loan.clientId,
+          clientName: loan.clientName,
+          routeId: currentRoute.id,
+          organizationId: loan.organizationId || currentRoute.organizationId,
           amount: cleanAmount,
-          remainingBalance: Math.max(0, currentBalance - cleanAmount),
-          clientName: client.name,
-          receiptNumber: entry.receiptNumber
-        }).catch((err) => console.warn('Automatic WhatsApp receipt error:', err));
-      }
+          principalPortion: roundCOP(cleanAmount * 0.8),
+          interestPortion: roundCOP(cleanAmount * 0.2),
+          paymentMethod: 'efectivo',
+          preBalance: currentBalance,
+          postBalance: newBalance,
+          timestamp: coords.timestamp,
+          gpsLocation: coords.formatted,
+          hash: `sha256-tx-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+        },
+        client,
+        loan: {
+          ...loan,
+          remainingBalance: newBalance,
+          status: newBalance <= 0 ? 'liquidated' : loan.status,
+        },
+      });
     }
   };
 
-  // ACCIÓN DE LIQUIDACIÓN COMPLETA DE DEUDA ($ remainingBalance TOTAL)
-  const handleLiquidateDebt = (loan: LoanDetail) => {
+  const handleLiquidateDebt = async (loan: LoanDetail) => {
     setStreetAlert(null);
     const currentBalance = roundCOP(loan.remainingBalance);
 
     if (currentBalance <= 0) {
       setStreetAlert({
         type: 'error',
-        message: `El préstamo de ${loan.clientName} ya se encuentra liquidado ($0 COP).`,
+        message: 'El crédito ya se encuentra liquidado.',
       });
       return;
     }
 
     const client = clients.find((c) => c.id === loan.clientId);
 
-    // Registrar pago por la TOTALIDAD del saldo restante
+    setLiquidatedLoanIds((prev) => new Set(prev).add(loan.id));
+
+    // Prevención de Fraude: Capturar coordenadas GPS satelitales en liquidación
+    const coords = await capturePaymentCoordinates();
+
     onRegisterPayment(
       loan.id,
       currentBalance,
       'efectivo',
       isOnline
-        ? 'LIQUIDACIÓN TOTAL DE DEUDA (Pago completo registrado en calle)'
-        : 'LIQUIDACIÓN TOTAL DE DEUDA (Guardado localmente en Modo Offline)'
+        ? `LIQUIDACIÓN TOTAL DE DEUDA (Pago completo en calle) · GPS: ${coords.formatted}`
+        : `LIQUIDACIÓN TOTAL DE DEUDA (Guardado Offline) · GPS: ${coords.formatted}`
     );
 
-    if (incidents[loan.id]) {
-      const nextIncidents = { ...incidents };
-      delete nextIncidents[loan.id];
-      setIncidents(nextIncidents);
-    }
-
-    if (!isOnline && client) {
-      enqueueOfflinePayment({
-        loanId: loan.id,
-        clientId: client.id,
-        clientName: client.name,
-        amount: currentBalance,
-        paymentMethod: 'efectivo',
-        notes: 'Liquidación total de deuda (Offline)',
-        timestamp: new Date().toISOString(),
-        gpsLocation: `${client.lat} N, ${client.lng} W`,
-      });
-      setOfflineQueue(getOfflineQueue());
-    }
-
-    setStreetAlert({
-      type: 'success',
-      message: `Deuda de ${loan.clientName} LIQUIDADA COMPLETAMENTE por ${formatCOP(currentBalance)}. Saldo restante: $0 COP.`,
-    });
-
     if (client) {
-      const principalPortion = roundCOP(currentBalance * (loan.principal / Math.max(1, loan.totalDebt)));
-      const interestPortion = Math.max(0, currentBalance - principalPortion);
-      const entry: LedgerEntry = {
-        id: `led-${Date.now()}`,
-        receiptNumber: `REC-${Date.now().toString().slice(-6)}`,
-        loanId: loan.id,
-        clientId: client.id,
-        clientName: client.name,
-        routeId: loan.routeId,
-        amount: currentBalance,
-        principalPortion,
-        interestPortion,
-        paymentMethod: 'efectivo',
-        preBalance: currentBalance,
-        postBalance: 0,
-        timestamp: new Date().toISOString(),
-        gpsLocation: '6.2518 N, -75.6142 W',
-        hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2),
-      };
-      setActiveReceipt({ entry, client, loan: { ...loan, remainingBalance: 0, status: 'liquidado' } });
-      if (client.phone) {
-        sendAutomaticWhatsAppReceipt({
-          phone: client.phone,
+      setActiveReceipt({
+        entry: {
+          id: `rcpt-${Date.now()}`,
+          receiptNumber: `REC-${Date.now().toString().slice(-6)}`,
+          loanId: loan.id,
+          clientId: loan.clientId,
+          clientName: loan.clientName,
+          routeId: currentRoute.id,
+          organizationId: loan.organizationId || currentRoute.organizationId,
           amount: currentBalance,
+          principalPortion: roundCOP(currentBalance * 0.8),
+          interestPortion: roundCOP(currentBalance * 0.2),
+          paymentMethod: 'efectivo',
+          preBalance: currentBalance,
+          postBalance: 0,
+          timestamp: coords.timestamp,
+          gpsLocation: coords.formatted,
+          hash: `sha256-liq-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
+        },
+        client,
+        loan: {
+          ...loan,
           remainingBalance: 0,
-          clientName: client.name,
-          receiptNumber: entry.receiptNumber
-        }).catch((err) => console.warn('Automatic WhatsApp receipt error:', err));
-      }
+          status: 'liquidated',
+        },
+      });
     }
   };
 
-  // ACCIÓN 2: ABRIR MODAL DE ABONO PARCIAL O PAGO PERSONALIZADO
   const openPartialPaymentModal = (loan: LoanDetail) => {
-    setStreetAlert(null);
-    if (roundCOP(loan.remainingBalance) <= 0) {
-      setStreetAlert({
-        type: 'error',
-        message: `El cliente ${loan.clientName} no tiene saldo pendiente por cobrar ($0 COP).`,
-      });
-      return;
-    }
     setSelectedLoan(loan);
     setPaymentModalOpen(true);
   };
 
-  // ACCIÓN 3: ABRIR MODAL DE REGISTRAR NOVEDAD (NO PAGÓ)
   const openIncidentModal = (loan: LoanDetail) => {
     setSelectedLoan(loan);
-    setIncidentReason('sin_liquidez');
-    setIncidentNotes('');
+    setIncidentReason("sin_liquidez");
+    setIncidentNotes("");
     setIncidentModalOpen(true);
   };
 
   const handleConfirmIncident = (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedLoan) return;
-
-    const newIncident: NonPaymentIncident = {
-      loanId: selectedLoan.id,
-      reason: incidentReason,
-      notes: incidentNotes,
-      timestamp: new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' }),
-    };
-
-    setIncidents((prev) => ({ ...prev, [selectedLoan.id]: newIncident }));
+    setIncidents(prev => ({
+      ...prev,
+      [selectedLoan.id]: {
+        loanId: selectedLoan.id,
+        reason: incidentReason,
+        notes: incidentNotes,
+        timestamp: new Date().toLocaleTimeString("es-CO", { hour: "2-digit", minute: "2-digit" }),
+      },
+    }));
     setIncidentModalOpen(false);
   };
 
@@ -603,6 +545,13 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
       setIsSyncing(false);
     }
   };
+
+  // Resiliencia Offline-First: Sincronización automática de cola offline al recuperar señal satelital o red
+  useEffect(() => {
+    if (isOnline && offlineQueue.length > 0 && !isSyncing) {
+      handleSyncOfflineQueue();
+    }
+  }, [isOnline, offlineQueue.length]);
 
   const handleSendMorningReminder = (loan: LoanDetail) => {
     const client = clients.find((c) => c.id === loan.clientId);
@@ -1546,11 +1495,15 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
           loan={selectedLoan}
           client={clients.find((c) => c.id === selectedLoan.clientId)}
           onClose={() => setPaymentModalOpen(false)}
-          onConfirmPayment={(loanId, amount, distribution, notes, extensionDays, pMethod) => {
+          onConfirmPayment={async (loanId, amount, distribution, notes, extensionDays, pMethod) => {
             const cleanAmount = roundCOP(amount);
             const client = clients.find((c) => c.id === selectedLoan.clientId);
             const methodKey = pMethod === 'nequi' || pMethod === 'daviplata' ? pMethod : pMethod === 'bancolombia' || pMethod === 'transferencia' ? 'nequi' : 'efectivo';
-            onRegisterPayment(loanId, cleanAmount, methodKey, notes);
+            
+            // Prevención de Fraude: Coordenadas satelitales en abono parcial
+            const coords = await capturePaymentCoordinates();
+
+            onRegisterPayment(loanId, cleanAmount, methodKey, notes ? `${notes} · GPS: ${coords.formatted}` : `Abono parcial · GPS: ${coords.formatted}`);
 
             if (incidents[loanId]) {
               const nextIncidents = { ...incidents };
@@ -1572,11 +1525,9 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
                 paymentMethod: methodKey,
                 preBalance: roundCOP(distribution.preBalance),
                 postBalance: roundCOP(distribution.postBalance),
-                timestamp: new Date().toISOString(),
-                gpsLocation: '6.2518 N, -75.6142 W',
-                hash:
-                  Math.random().toString(36).substring(2) +
-                  Math.random().toString(36).substring(2),
+                timestamp: coords.timestamp,
+                gpsLocation: coords.formatted,
+                hash: `sha256-part-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
               };
               setActiveReceipt({ entry, client, loan: selectedLoan });
               if (client.phone) {

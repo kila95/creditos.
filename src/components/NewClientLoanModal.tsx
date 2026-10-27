@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import { useAuth } from '../context/AuthContext';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   UserPlus,
@@ -30,6 +31,7 @@ interface NewClientLoanModalProps {
   routes: RouteData[];
   clients?: ClientProfile[];
   defaultSelectedClientId?: string;
+  suggestedAmount?: number;
   onClose: () => void;
   onClientCreated: (newClient: ClientProfile, newLoan: LoanDetail) => void;
   onLoanCreatedForExistingClient?: (newLoan: LoanDetail) => void;
@@ -39,10 +41,13 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
   routes,
   clients = [],
   defaultSelectedClientId,
+  suggestedAmount,
   onClose,
   onClientCreated,
   onLoanCreatedForExistingClient,
 }) => {
+  const { profile } = useAuth();
+
   // Modo de operación: 'existing_client' (vincular a client_id existente) o 'new_client' (registrar cliente y crear préstamo)
   const [mode, setMode] = useState<'existing_client' | 'new_client'>(
     defaultSelectedClientId || clients.length > 0 ? 'existing_client' : 'new_client'
@@ -67,8 +72,18 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
 
   // =========================================================================
   // 1. CAMPOS NUMÉRICOS LIBRES DEL PRÉSTAMO Y FRECUENCIA DE PAGO
+  // Regla 1: Usar suggestedAmount (monto original + 20%) como valor inicial
   // =========================================================================
-  const [principalInput, setPrincipalInput] = useState<string>('500000'); // Monto libre en COP
+  const [principalInput, setPrincipalInput] = useState<string>(
+    suggestedAmount && suggestedAmount > 0 ? String(suggestedAmount) : '500000'
+  ); // Monto en COP
+
+  // Sincronizar monto inicial si suggestedAmount cambia dinámicamente
+  useEffect(() => {
+    if (suggestedAmount && suggestedAmount > 0) {
+      setPrincipalInput(String(suggestedAmount));
+    }
+  }, [suggestedAmount]);
   const [interestRateInput, setInterestRateInput] = useState<string>('20'); // Porcentaje de interés libre (%)
   const [termInstallmentsInput, setTermInstallmentsInput] = useState<string>('24'); // Número de cuotas según frecuencia
   const [modality, setModality] = useState<LoanModality>('diaria'); // Frecuencia: diaria, semanal, quincenal, mensual
@@ -91,6 +106,9 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
   );
 
   const numericPrincipal = schedule.principal;
+  const isOverSuggestedLimit = Boolean(
+    suggestedAmount && suggestedAmount > 0 && numericPrincipal > suggestedAmount
+  );
   const numericInterestRate = schedule.interestRate;
   const numericTermInstallments = schedule.numberOfInstallments;
   const calculatedInterestCOP = schedule.totalInterest;
@@ -139,6 +157,14 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
       return;
     }
 
+    // Regla 2: Validación de Seguridad contra el tope máximo aprobado (suggestedAmount)
+    if (suggestedAmount && suggestedAmount > 0 && numericPrincipal > suggestedAmount) {
+      setErrorMsg(
+        `El monto ingresado (${formatCOP(numericPrincipal)}) supera el monto máximo aprobado de ${formatCOP(suggestedAmount)}. Ajuste el valor a un monto igual o menor al tope permitido.`
+      );
+      return;
+    }
+
     if (numericTermInstallments <= 0) {
       setErrorMsg('El Plazo / Número de Cuotas debe ser al menos 1.');
       return;
@@ -154,11 +180,17 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
         return;
       }
 
+      const userOrgId = profile?.organizationId || 'org-medellin-01';
+      const userCreatorId = profile?.id || 'usr-admin-001';
+
       const { data: createdLoan, error } = await createCustomLoanInDB({
         clientId: selectedExistingClient.id,
         clientName: selectedExistingClient.name,
         tradeName: selectedExistingClient.tradeName,
         routeId: selectedExistingClient.routeId || routeId,
+        organizationId: userOrgId,
+        tenantId: userOrgId,
+        createdBy: userCreatorId,
         principal: numericPrincipal,
         interestRate: numericInterestRate,
         termInstallments: numericTermInstallments,
@@ -170,9 +202,16 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
 
       if (error || !createdLoan) {
         console.error('❌ [Error al insertar préstamo en tabla loans]:', error);
+        const isDuplicate =
+          error?.code === '23505' ||
+          error?.message?.includes('23505') ||
+          error?.message?.toLowerCase().includes('ya existe');
+
         setErrorMsg(
-          error?.message ||
-            'La base de datos rechazó el préstamo. Verifica las políticas RLS en la tabla loans.'
+          isDuplicate
+            ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
+            : error?.message ||
+              'La base de datos rechazó el préstamo. Verifica las políticas RLS en la tabla loans.'
         );
         setErrorDetails({ code: error?.code, hint: error?.hint });
         return;
@@ -207,6 +246,9 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
       ? `route-${customRouteName.toLowerCase().trim().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').slice(0, 20)}`
       : (routeId || 'route-1');
 
+    const userOrgId = profile?.organizationId || 'org-medellin-01';
+    const userCreatorId = profile?.id || 'usr-admin-001';
+
     const { data, error } = await insertClientAndLoanToDB({
       name: name.trim(),
       tradeName: tradeName.trim() || name.trim(),
@@ -216,6 +258,9 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
       address: address.trim(),
       neighborhood: neighborhood.trim(),
       routeId: targetRouteId,
+      organizationId: userOrgId,
+      tenantId: userOrgId,
+      createdBy: userCreatorId,
       guarantorName: guarantorName.trim(),
       guarantorPhone: guarantorPhone.trim(),
       principal: numericPrincipal,
@@ -229,9 +274,16 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
 
     if (error || !data) {
       console.error('❌ [Error al insertar cliente/préstamo]:', error);
+      const isDuplicate =
+        error?.code === '23505' ||
+        error?.message?.includes('23505') ||
+        error?.message?.toLowerCase().includes('ya existe');
+
       setErrorMsg(
-        error?.message ||
-          'La base de datos rechazó el registro. Verifica las políticas RLS en clients y loans.'
+        isDuplicate
+          ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
+          : error?.message ||
+            'La base de datos rechazó el registro. Verifica las políticas RLS en clients y loans.'
       );
       setErrorDetails({
         code: error?.code,
@@ -493,27 +545,59 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
             </h3>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-              {/* CAMPO 1: MONTO DEL PRÉSTAMO LIBRE */}
+              {/* CAMPO 1: MONTO DEL PRÉSTAMO LIBRE CON TOPE MÁXIMO DINÁMICO */}
               <div>
-                <label className="text-slate-300 font-medium block mb-1">
-                  Monto del Préstamo (COP) *
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-slate-300 font-medium block">
+                    Monto a prestar (COP) *
+                  </label>
+                  {suggestedAmount && suggestedAmount > 0 && (
+                    <span className="text-[10px] font-mono text-emerald-400 bg-emerald-950/70 border border-emerald-500/30 px-1.5 py-0.5 rounded">
+                      Tope +20%
+                    </span>
+                  )}
+                </div>
                 <div className="relative">
-                  <DollarSign className="w-3.5 h-3.5 text-emerald-400 absolute left-3 top-2.5" />
+                  <DollarSign
+                    className={`w-3.5 h-3.5 absolute left-3 top-2.5 transition-colors ${
+                      isOverSuggestedLimit ? 'text-red-400' : 'text-emerald-400'
+                    }`}
+                  />
                   <input
                     type="number"
                     required
                     min={1000}
+                    max={suggestedAmount && suggestedAmount > 0 ? suggestedAmount : undefined}
                     step="any"
                     placeholder="Ej. 500000"
                     value={principalInput}
                     onChange={(e) => setPrincipalInput(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-700 focus:border-emerald-500 rounded-lg pl-8 pr-3 py-2 text-white font-mono tabular-nums font-bold text-sm focus:outline-none"
+                    className={`w-full bg-slate-950 border ${
+                      isOverSuggestedLimit
+                        ? 'border-red-500 focus:border-red-500 text-red-100 ring-1 ring-red-500'
+                        : 'border-slate-700 focus:border-emerald-500 text-white'
+                    } rounded-lg pl-8 pr-3 py-2 font-mono tabular-nums font-bold text-sm focus:outline-none transition-colors`}
                   />
                 </div>
-                <span className="text-[10px] text-slate-400 font-mono mt-1 block">
-                  {formatCOP(numericPrincipal)}
-                </span>
+
+                {/* Helper text de monto máximo aprobado y alerta visual si excede el tope */}
+                <div className="mt-1.5 space-y-1">
+                  {suggestedAmount && suggestedAmount > 0 && (
+                    <p className="text-[11px] text-emerald-400 font-medium">
+                      Monto máximo aprobado: {formatCOP(suggestedAmount)}
+                    </p>
+                  )}
+                  {isOverSuggestedLimit ? (
+                    <p className="text-[11px] text-red-400 font-semibold flex items-center gap-1.5 bg-red-950/50 border border-red-500/40 p-1.5 rounded-md animate-pulse">
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0 text-red-400" />
+                      <span>El monto supera el tope máximo aprobado ({formatCOP(suggestedAmount!)}). Debe reducir el valor.</span>
+                    </p>
+                  ) : (
+                    <span className="text-[10px] text-slate-400 font-mono block">
+                      Desembolso: {formatCOP(numericPrincipal)}
+                    </span>
+                  )}
+                </div>
               </div>
 
               {/* CAMPO 2: PORCENTAJE DE INTERÉS O TASA LIBRE */}

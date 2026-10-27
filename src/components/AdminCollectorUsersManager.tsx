@@ -288,7 +288,12 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
     setIsSubmitting(false);
 
     if (error || !createdProfile) {
-      setErrorMsg(error || 'No se pudo crear el usuario cobrador.');
+      const isDup = error?.includes('23505') || error?.toLowerCase().includes('ya existe');
+      setErrorMsg(
+        isDup
+          ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
+          : error || 'No se pudo crear el usuario cobrador.'
+      );
       return;
     }
 

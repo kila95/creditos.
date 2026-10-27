@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { RouteData, ClientProfile, LoanDetail } from '../data/mockData';
 import { formatCOP } from '../utils/financialCalculations';
+import { useAuth } from '../context/AuthContext';
 import {
   insertClientAndLoanToDB,
   createCustomLoanInDB,
@@ -43,6 +44,7 @@ export const QuickClientRouteRegistrationModal: React.FC<QuickClientRouteRegistr
   onClientRegistered,
   onLoanCreatedForExistingClient,
 }) => {
+  const { profile } = useAuth();
   // Modo en calle: crear préstamo a un cliente ya existente en la ruta o registrar cliente nuevo + préstamo
   const [mode, setMode] = useState<'new_client' | 'existing_client'>('new_client');
   const [selectedClientId, setSelectedClientId] = useState<string>(routeClients[0]?.id || '');
@@ -169,6 +171,9 @@ export const QuickClientRouteRegistrationModal: React.FC<QuickClientRouteRegistr
     const safeRouteId = currentRoute?.id || 'route-1';
     const safeZone = currentRoute?.zone || 'Medellín Metropolitana';
 
+    const userOrgId = profile?.organizationId || 'org-medellin-01';
+    const userCreatorId = profile?.id || 'usr-admin-001';
+
     const { data, error } = await insertClientAndLoanToDB({
       name: name.trim(),
       tradeName: tradeName.trim() || name.trim(),
@@ -178,6 +183,9 @@ export const QuickClientRouteRegistrationModal: React.FC<QuickClientRouteRegistr
       address: address.trim(),
       neighborhood: safeZone,
       routeId: safeRouteId,
+      organizationId: userOrgId,
+      tenantId: userOrgId,
+      createdBy: userCreatorId,
       principal: numericPrincipal,
       interestRate: numericInterestRate,
       termDays: numericTermInstallments,
@@ -188,9 +196,16 @@ export const QuickClientRouteRegistrationModal: React.FC<QuickClientRouteRegistr
 
     if (error || !data) {
       console.error('❌ [Error al insertar cliente/préstamo]:', error);
+      const isDuplicate =
+        error?.code === '23505' ||
+        error?.message?.includes('23505') ||
+        error?.message?.toLowerCase().includes('ya existe');
+
       setErrorMessage(
-        error?.message ||
-          'La base de datos rechazó el registro. Verifica las políticas RLS (INSERT) en clients y loans.'
+        isDuplicate
+          ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
+          : error?.message ||
+            'La base de datos rechazó el registro. Verifica las políticas RLS (INSERT) en clients y loans.'
       );
       setErrorDetails({
         code: error?.code,

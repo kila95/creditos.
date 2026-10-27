@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { RouteData, ClientProfile, LoanDetail, RouteExpenseItem, LedgerEntry, CollectorBase } from '../data/mockData';
 import { CollectorStreetView } from './CollectorStreetView';
+import { LiquidatedHistoryView } from './LiquidatedHistoryView';
 import { EnRutaLogo } from './EnRutaLogo';
 
 interface CollectorLayoutProps {
@@ -36,7 +37,7 @@ interface CollectorLayoutProps {
   collectorName: string;
 }
 
-export type CollectorTab = 'route_list' | 'shift_closing' | 'expenses';
+export type CollectorTab = 'route_list' | 'liquidated_history' | 'shift_closing' | 'expenses';
 
 export const CollectorLayout: React.FC<CollectorLayoutProps> = ({
   currentRoute,
@@ -59,7 +60,8 @@ export const CollectorLayout: React.FC<CollectorLayoutProps> = ({
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
 
   const navItems = [
-    { id: 'route_list' as CollectorTab, label: 'Recorrido y Clientes', icon: Wallet, description: 'Lista de cobros del día' },
+    { id: 'route_list' as CollectorTab, label: 'Ruta del Día', icon: Wallet, description: 'Lista de cobros y clientes del día' },
+    { id: 'liquidated_history' as CollectorTab, label: 'Historial Liquidados', icon: CheckCircle2, description: 'Créditos saldados y viabilidad de renovación' },
     { id: 'shift_closing' as CollectorTab, label: 'Cierre de Caja y Arqueo', icon: ClipboardCheck, description: 'Entrega de efectivo al Admin' },
   ];
 
@@ -87,6 +89,34 @@ export const CollectorLayout: React.FC<CollectorLayoutProps> = ({
               </p>
             </div>
           </div>
+        </div>
+
+        {/* Pestañas de Navegación Rápida en Pantallas Medianas/Grandes */}
+        <div className="hidden md:flex items-center gap-1.5 bg-slate-950/60 p-1 rounded-xl border border-slate-800">
+          <button
+            type="button"
+            onClick={() => setActiveTab('route_list')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer ${
+              activeTab === 'route_list'
+                ? 'bg-emerald-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+            }`}
+          >
+            <Wallet className="w-3.5 h-3.5" />
+            <span>Ruta del Día</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('liquidated_history')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer ${
+              activeTab === 'liquidated_history'
+                ? 'bg-emerald-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+            }`}
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            <span>Historial Liquidados</span>
+          </button>
         </div>
 
         <button
@@ -197,21 +227,33 @@ export const CollectorLayout: React.FC<CollectorLayoutProps> = ({
 
       {/* Área Central de Contenido Dinámico (Renderizado Condicional) */}
       <main className="flex-1 p-3 sm:p-6 lg:p-8 max-w-[1440px] w-full mx-auto overflow-y-auto">
-        <CollectorStreetView
-          currentRoute={currentRoute}
-          clients={clients}
-          loans={loans}
-          expenses={expenses}
-          ledger={ledger}
-          activeCollectorBase={activeCollectorBase}
-          onRegisterPayment={onRegisterPayment}
-          onRegisterExpense={onRegisterExpense}
-          onConfirmReconciliation={onConfirmReconciliation}
-          onRegisterNewClient={onRegisterNewClient}
-          onCreateLoanForExistingClient={onCreateLoanForExistingClient}
-          onSyncDatabase={onSyncDatabase}
-          onOpenNewClientModal={onOpenNewClientModal}
-        />
+        {activeTab === 'liquidated_history' && (
+          <LiquidatedHistoryView
+            organizationId={currentRoute.organizationId || 'org-medellin-01'}
+            loans={loans}
+            clients={clients}
+            routes={[currentRoute]}
+            onOpenNewClientModal={onOpenNewClientModal}
+          />
+        )}
+
+        {activeTab !== 'liquidated_history' && (
+          <CollectorStreetView
+            currentRoute={currentRoute}
+            clients={clients}
+            loans={loans}
+            expenses={expenses}
+            ledger={ledger}
+            activeCollectorBase={activeCollectorBase}
+            onRegisterPayment={onRegisterPayment}
+            onRegisterExpense={onRegisterExpense}
+            onConfirmReconciliation={onConfirmReconciliation}
+            onRegisterNewClient={onRegisterNewClient}
+            onCreateLoanForExistingClient={onCreateLoanForExistingClient}
+            onSyncDatabase={onSyncDatabase}
+            onOpenNewClientModal={onOpenNewClientModal}
+          />
+        )}
       </main>
     </div>
   );

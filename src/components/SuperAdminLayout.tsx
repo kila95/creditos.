@@ -19,7 +19,7 @@ import { AuditLogView } from './AuditLogView';
 import { INITIAL_AUDIT_LOGS } from '../data/auditLogData';
 import { formatCOP } from '../utils/financialCalculations';
 
-export type SuperAdminTab = 'dashboard' | 'tenants' | 'admins' | 'audit' | 'subscriptions';
+export type SuperAdminTab = 'dashboard' | 'admins' | 'audit' | 'subscriptions';
 
 export const SuperAdminLayout: React.FC = () => {
   const { profile, logout } = useAuth();
@@ -35,8 +35,7 @@ export const SuperAdminLayout: React.FC = () => {
 
   const navItems = [
     { id: 'dashboard' as SuperAdminTab, label: 'Métricas Globales', icon: LayoutDashboard, desc: 'KPIs del SaaS e ingresos MRR' },
-    { id: 'tenants' as SuperAdminTab, label: 'Gestión de Tenants', icon: Building2, desc: 'Organizaciones e inquilinos' },
-    { id: 'admins' as SuperAdminTab, label: 'Gestión de Administradores', icon: Users, desc: 'Cuentas Admin y fondos' },
+    { id: 'admins' as SuperAdminTab, label: 'Gestión de Administradores', icon: Users, desc: 'Aprovisionamiento de Fondos y cuentas Admin' },
     { id: 'audit' as SuperAdminTab, label: 'Auditoría de Seguridad', icon: ShieldCheck, desc: 'Trazabilidad SHA-256' },
     { id: 'subscriptions' as SuperAdminTab, label: 'Suscripciones y Cobros', icon: CreditCard, desc: 'Planes y estados de cobro' },
   ];
@@ -266,10 +265,10 @@ export const SuperAdminLayout: React.FC = () => {
                   <p className="text-xs text-slate-400">Resumen rápido de las organizaciones conectadas a la plataforma</p>
                 </div>
                 <button
-                  onClick={() => setActiveTab('tenants')}
-                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition-colors"
+                  onClick={() => setActiveTab('admins')}
+                  className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition-colors cursor-pointer"
                 >
-                  Gestionar Todos
+                  Gestionar Administradores
                 </button>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -293,7 +292,6 @@ export const SuperAdminLayout: React.FC = () => {
           </div>
         )}
 
-        {activeTab === 'tenants' && <SuperAdminTenantsManager />}
         {activeTab === 'admins' && <SuperAdminTenantsManager />}
         {activeTab === 'audit' && <AuditLogView logs={INITIAL_AUDIT_LOGS} />}
         {activeTab === 'subscriptions' && <SuperAdminTenantsManager />}

@@ -416,9 +416,16 @@ export async function registerNewAdminAccount(input: {
 
       if (signUpError) {
         console.error('❌ [Supabase Auth SignUp Error - Admin]:', signUpError);
+        const isDuplicate =
+          signUpError.message?.toLowerCase().includes('already registered') ||
+          signUpError.message?.toLowerCase().includes('already exists') ||
+          (signUpError as any).code === '23505';
+
         return {
           profile: null,
-          error: `Error en Supabase Auth (auth.users): ${signUpError.message}`,
+          error: isDuplicate
+            ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
+            : `Error en Supabase Auth (auth.users): ${signUpError.message}`,
         };
       }
 
@@ -433,6 +440,7 @@ export async function registerNewAdminAccount(input: {
           full_name: input.fullName.trim(),
           role: 'admin',
           organization_id: generatedOrgId,
+          tenant_id: generatedOrgId,
           organization_name: input.organizationName.trim(),
           created_by: input.createdBySuperAdminId,
           phone: input.phone?.trim() || null,
@@ -443,9 +451,17 @@ export async function registerNewAdminAccount(input: {
 
       if (profileError) {
         console.error('❌ [Supabase Profiles Upsert Error - Admin]:', profileError);
+        const isDuplicate =
+          profileError.code === '23505' ||
+          profileError.message?.includes('23505') ||
+          profileError.message?.toLowerCase().includes('unique') ||
+          profileError.message?.toLowerCase().includes('duplicate key');
+
         return {
           profile: null,
-          error: `Error al vincular perfil Admin en tabla profiles (RLS): ${profileError.message}`,
+          error: isDuplicate
+            ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
+            : `Error al vincular perfil Admin en tabla profiles (RLS): ${profileError.message}`,
         };
       }
     }
@@ -560,17 +576,27 @@ export async function registerNewCollectorAccount(input: {
             assigned_route_id: input.assignedRouteId,
             route_zone: cleanRouteZone,
             organization_id: orgId,
+            tenant_id: orgId,
             organization_name: orgName,
             created_by: creatorId,
+            document_id: input.documentId?.trim() || null,
+            phone: input.phone?.trim() || null,
           },
         },
       });
 
       if (signUpError) {
         console.error('❌ [Supabase Auth SignUp Error]:', signUpError);
+        const isDuplicate =
+          signUpError.message?.toLowerCase().includes('already registered') ||
+          signUpError.message?.toLowerCase().includes('already exists') ||
+          (signUpError as any).code === '23505';
+
         return {
           profile: null,
-          error: `Error en Supabase Auth (auth.users): ${signUpError.message}`,
+          error: isDuplicate
+            ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
+            : `Error en Supabase Auth (auth.users): ${signUpError.message}`,
         };
       }
 
@@ -578,7 +604,8 @@ export async function registerNewCollectorAccount(input: {
         generatedUid = signUpData.user.id;
       }
 
-      // 1. Guardar el perfil del cobrador incluyendo `route_zone` en la tabla `profiles`
+      // 1. Guardar el perfil del cobrador incluyendo `route_zone` y `tenant_id` en la tabla `profiles`
+      // Esperar obligatoriamente a que se complete la inserción
       const { error: profileError } = await supabase.from('profiles').upsert([
         {
           id: generatedUid,
@@ -588,6 +615,7 @@ export async function registerNewCollectorAccount(input: {
           assigned_route_id: input.assignedRouteId,
           route_zone: cleanRouteZone,
           organization_id: orgId,
+          tenant_id: orgId,
           organization_name: orgName,
           created_by: creatorId,
           phone: input.phone?.trim() || null,
@@ -598,9 +626,17 @@ export async function registerNewCollectorAccount(input: {
 
       if (profileError) {
         console.error('❌ [Supabase Profiles Upsert Error]:', profileError);
+        const isDuplicate =
+          profileError.code === '23505' ||
+          profileError.message?.includes('23505') ||
+          profileError.message?.toLowerCase().includes('unique') ||
+          profileError.message?.toLowerCase().includes('duplicate key');
+
         return {
           profile: null,
-          error: `Error al vincular perfil en tabla profiles (RLS): ${profileError.message}`,
+          error: isDuplicate
+            ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
+            : `Error al vincular perfil en tabla profiles (RLS): ${profileError.message}`,
         };
       }
 
@@ -626,6 +662,7 @@ export async function registerNewCollectorAccount(input: {
         assignedRouteId: input.assignedRouteId,
         routeZone: cleanRouteZone,
         organizationId: orgId,
+        tenantId: orgId,
         organizationName: orgName,
         createdBy: creatorId,
         phone: input.phone?.trim() || '',
@@ -636,9 +673,16 @@ export async function registerNewCollectorAccount(input: {
     if (!apiRes.ok) {
       const errBody = await apiRes.json().catch(() => ({}));
       console.error('❌ [Error creando cobrador en /api/collectors]:', errBody);
+      const isDuplicate =
+        apiRes.status === 409 ||
+        errBody?.code === '23505' ||
+        errBody?.error?.includes('Ya existe');
+
       return {
         profile: null,
-        error: errBody.error || 'No se pudo registrar el cobrador en la base de datos.',
+        error: isDuplicate
+          ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
+          : errBody.error || 'No se pudo registrar el cobrador en la base de datos.',
       };
     }
 

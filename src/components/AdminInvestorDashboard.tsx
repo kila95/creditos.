@@ -89,12 +89,12 @@ type AdminTab =
   | 'dashboard'
   | 'gestion_cobradores'
   | 'lista_clientes'
+  | 'liquidated_history'
+  | 'liquidados_historico'
   | 'scoring_riesgo'
   | 'cierre_caja'
   | 'simulador_cfo'
-  | 'auditoria'
-  | 'auditoria'
-  | 'liquidados_historico';
+  | 'auditoria';
 
 export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
   routes,
@@ -481,6 +481,22 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
             <button
               type="button"
               onClick={() => {
+                setActiveTab('liquidated_history');
+                setMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'liquidated_history' || activeTab === 'liquidados_historico'
+                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950/50'
+                  : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
+              }`}
+            >
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+              {!sidebarCollapsed && <span>4. Historial Liquidados</span>}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
                 setActiveTab('scoring_riesgo');
                 setMobileMenuOpen(false);
               }}
@@ -491,7 +507,7 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
               }`}
             >
               <BrainCircuit className="w-4 h-4 shrink-0" />
-              {!sidebarCollapsed && <span>4. Scoring & Alertas PAR 30</span>}
+              {!sidebarCollapsed && <span>5. Scoring & Alertas PAR 30</span>}
             </button>
 
             <button
@@ -507,7 +523,7 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
               }`}
             >
               <FileCheck className="w-4 h-4 shrink-0" />
-              {!sidebarCollapsed && <span>5. Monitoreo de Rutas & Arqueos</span>}
+              {!sidebarCollapsed && <span>6. Monitoreo de Rutas & Arqueos</span>}
             </button>
 
             <button
@@ -523,7 +539,7 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
               }`}
             >
               <Calculator className="w-4 h-4 shrink-0" />
-              {!sidebarCollapsed && <span>6. Simulador Financiero TEA</span>}
+              {!sidebarCollapsed && <span>7. Simulador Financiero TEA</span>}
             </button>
 
             <button
@@ -539,26 +555,8 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
               }`}
             >
               <ShieldAlert className="w-4 h-4 shrink-0" />
-              {!sidebarCollapsed && <span>7. Bitácora SHA-256</span>}
+              {!sidebarCollapsed && <span>8. Bitácora SHA-256</span>}
             </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setActiveTab('liquidados_historico');
-                setMobileMenuOpen(false);
-              }}
-              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                activeTab === 'liquidados_historico'
-                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950/50'
-                  : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
-              }`}
-            >
-              <CheckCircle2 className="w-4 h-4 shrink-0" />
-              {!sidebarCollapsed && <span>8. Historial de Liquidados</span>}
-            </button>
-
-// Removed sidebar menu for payments
           </nav>
         </div>
 
@@ -1316,10 +1314,16 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
         )}
 
         {/* =====================================================================
-            VISTA 8: HISTORIAL DE CRÉDITOS LIQUIDADOS (.eq('status', 'liquidated'))
+            VISTA: HISTORIAL DE CRÉDITOS LIQUIDADOS (.eq('status', 'liquidated'))
            ===================================================================== */}
-        {activeTab === 'liquidados_historico' && (
-          <LiquidatedHistoryView organizationId={profile?.organizationId || 'org-medellin-01'} />
+        {(activeTab === 'liquidated_history' || activeTab === 'liquidados_historico') && (
+          <LiquidatedHistoryView
+            organizationId={profile?.organizationId || 'org-medellin-01'}
+            loans={loans}
+            clients={clients}
+            routes={routes}
+            onOpenNewClientModal={onOpenNewClientModal}
+          />
         )}
 
 // Removed payment tab content

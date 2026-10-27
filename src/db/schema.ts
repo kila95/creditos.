@@ -24,7 +24,7 @@ export const users = pgTable('users', {
   assignedRouteId: text('assigned_route_id'),
   routeZone: text('route_zone'), // Zona o Comuna de Medellín asignada (ej: 'Laureles / Estadio', 'Centro / El Hueco', etc.)
   phone: text('phone'),
-  documentId: text('document_id'),
+  documentId: text('document_id').unique(),
   isActive: boolean('is_active').notNull().default(true),
   partnerEquityPct: numeric('partner_equity_pct', { precision: 5, scale: 2 }),
   createdAt: timestamp('created_at').defaultNow(),
@@ -48,7 +48,7 @@ export const routes = pgTable('routes', {
 // 3. CLIENTES / DEUDORES
 export const clients = pgTable('clients', {
   id: text('id').primaryKey(),
-  documentId: text('document_id'), // Opcional en calle: no bloquea la creación si el deudor no tiene cédula a mano
+  documentId: text('document_id').unique(), // Restricción UNIQUE para evitar duplicados
   name: text('name').notNull(),
   alias: text('alias'),
   phone: text('phone').notNull(),

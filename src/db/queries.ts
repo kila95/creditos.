@@ -154,12 +154,13 @@ export async function recordPayment(entry: {
     }).returning();
 
     // 2. Actualizar saldo y cuotas del préstamo
+    const isLiquidated = entry.postBalance <= 0;
     await db.update(loans)
       .set({
         remainingBalance: entry.postBalance.toString(),
         lastPaymentDate: entry.timestamp,
         paidDays: sql`${loans.paidDays} + 1`,
-        status: entry.postBalance <= 0 ? 'completed' : 'active',
+        status: isLiquidated ? 'liquidated' : 'active',
       })
       .where(eq(loans.id, entry.loanId));
 
@@ -303,6 +304,9 @@ export async function createClient(data: {
       ? data.documentId!.trim()
       : `CC-PENDIENTE-${Date.now().toString().slice(-6)}-${Math.floor(1000 + Math.random() * 9000)}`;
 
+    const safeOrgId = data.organizationId || (data as any).tenantId || 'org-medellin-01';
+    const safeCreatedBy = data.createdBy || (data as any).adminId || 'usr-admin-001';
+
     const inserted = await db.insert(clients).values({
       id: data.id,
       documentId: safeDocumentId,
@@ -313,8 +317,8 @@ export async function createClient(data: {
       address: data.address,
       zone: data.zone,
       routeId: safeRouteId,
-      organizationId: data.organizationId || 'org-medellin-01',
-      createdBy: data.createdBy || 'usr-admin-001',
+      organizationId: safeOrgId,
+      createdBy: safeCreatedBy,
       riskScore: data.riskScore ?? 75,
       riskLevel: data.riskLevel ?? 'verde',
       creditLimit: data.creditLimit.toString(),
@@ -322,6 +326,17 @@ export async function createClient(data: {
     return inserted[0];
   } catch (error: any) {
     console.error('Error al insertar cliente en Cloud SQL:', error);
+    const isDuplicate =
+      error?.code === '23505' ||
+      error?.cause?.code === '23505' ||
+      error?.message?.includes('23505') ||
+      error?.message?.toLowerCase().includes('unique') ||
+      error?.message?.toLowerCase().includes('duplicate key');
+
+    if (isDuplicate) {
+      throw new Error('Error: Ya existe un usuario o cliente registrado con este documento o correo.', { cause: error });
+    }
+
     const detail = error?.message || 'Error desconocido en base de datos';
     throw new Error(`Error al registrar nuevo cliente en tabla clients: ${detail}`, { cause: error });
   }
@@ -556,6 +571,17 @@ export async function createAdminUser(data: {
     });
   } catch (error: any) {
     console.error('Error al crear administrador en Cloud SQL:', error);
+    const isDuplicate =
+      error?.code === '23505' ||
+      error?.cause?.code === '23505' ||
+      error?.message?.includes('23505') ||
+      error?.message?.toLowerCase().includes('unique') ||
+      error?.message?.toLowerCase().includes('duplicate key');
+
+    if (isDuplicate) {
+      throw new Error('Error: Ya existe un usuario o cliente registrado con este documento o correo.', { cause: error });
+    }
+
     const detail = error?.message || 'Error desconocido al crear administrador';
     throw new Error(`No se pudo registrar el administrador: ${detail}`, { cause: error });
   }
@@ -591,6 +617,7 @@ export async function createCollectorUser(data: {
     return await db.transaction(async (tx) => {
       const normalizedEmail = data.email.trim().toLowerCase();
       const cleanZone = (data.routeZone || 'Centro / El Hueco').trim();
+      const cleanDoc = data.documentId && data.documentId.trim().length > 0 ? data.documentId.trim() : null;
 
       const inserted = await tx
         .insert(users)
@@ -606,7 +633,7 @@ export async function createCollectorUser(data: {
           assignedRouteId: data.assignedRouteId,
           routeZone: cleanZone,
           phone: data.phone || '',
-          documentId: data.documentId || '',
+          documentId: cleanDoc,
           isActive: true,
         })
         .returning();
@@ -674,6 +701,17 @@ export async function createCollectorUser(data: {
     });
   } catch (error: any) {
     console.error('Error al crear cobrador en Cloud SQL:', error);
+    const isDuplicate =
+      error?.code === '23505' ||
+      error?.cause?.code === '23505' ||
+      error?.message?.includes('23505') ||
+      error?.message?.toLowerCase().includes('unique') ||
+      error?.message?.toLowerCase().includes('duplicate key');
+
+    if (isDuplicate) {
+      throw new Error('Error: Ya existe un usuario o cliente registrado con este documento o correo.', { cause: error });
+    }
+
     const detail = error?.message || 'Error desconocido al crear usuario cobrador';
     throw new Error(`No se pudo registrar el cobrador: ${detail}`, { cause: error });
   }

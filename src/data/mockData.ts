@@ -4,6 +4,8 @@ export interface RouteData {
   name: string;
   zone: string;
   organizationId?: string;
+  tenantId?: string;
+  createdBy?: string;
   collectorName: string;
   collectorPhone: string;
   baseFloatingCapital: number;
@@ -32,6 +34,8 @@ export interface ClientProfile {
   neighborhood: string;
   routeId: string;
   organizationId?: string;
+  tenantId?: string;
+  createdBy?: string;
   riskTier: 'A_excelente' | 'B_promedio' | 'C_alto_riesgo' | 'D_mora_critica' | 'X_vetado';
   daysOverdue: number;
   hasPreventiveBlock: boolean;
@@ -60,7 +64,10 @@ export interface LoanDetail {
   remainingBalance: number;
   disbursedDate: string;
   dueDate: string;
+  liquidationDate?: string;
   daysOverdue: number;
+  tenantId?: string;
+  createdBy?: string;
   status: 'activo' | 'liquidado' | 'liquidated' | 'completed' | 'mora_severa' | 'refinanciado';
   todayPaid: boolean;
   paymentDays?: number[]; // Días de cobro programados (0 = Dom, 1 = Lun, 2 = Mar, 3 = Mié, 4 = Jue, 5 = Vie, 6 = Sáb)
@@ -193,7 +200,64 @@ export const INITIAL_CLIENTS: ClientProfile[] = [
     guarantorPhone: '3004128890',
     lat: 6.2685,
     lng: -75.5521
-  }
+  },
+  {
+    id: "cli-liq-01",
+    name: "Gloria Estella Morales",
+    tradeName: "Variedades y Abarrotes La Esquina",
+    category: "Abarrotes / Víveres",
+    document: "32456789",
+    phone: "3127894561",
+    address: "Cra 76 # 35-12 San Javier",
+    neighborhood: "Comuna 13 - San Javier",
+    routeId: "route-1",
+    organizationId: "org-medellin-01",
+    riskTier: "A_excelente",
+    daysOverdue: 0,
+    hasPreventiveBlock: false,
+    guarantorName: "Jorge Iván Morales",
+    guarantorPhone: "3118901234",
+    lat: 6.2510,
+    lng: -75.6130
+  },
+  {
+    id: "cli-liq-02",
+    name: "Carlos Mario Restrepo",
+    tradeName: "Taller de Motos y Repuestos Don Mario",
+    category: "Servicios / Mecánica",
+    document: "70543210",
+    phone: "3186543219",
+    address: "Calle 44 # 82-45 La América",
+    neighborhood: "La América / San Juan",
+    routeId: "route-1",
+    organizationId: "org-medellin-01",
+    riskTier: "B_promedio",
+    daysOverdue: 3,
+    hasPreventiveBlock: false,
+    guarantorName: "Luz Dary Restrepo",
+    guarantorPhone: "3007654321",
+    lat: 6.2480,
+    lng: -75.6020
+  },
+  {
+    id: "cli-liq-03",
+    name: "Jhon Jairo Arboleda",
+    tradeName: "Comidas Rápidas El Paisa Nocturno",
+    category: "Restaurante / Comidas",
+    document: "98765432",
+    phone: "3159871234",
+    address: "Cra 92 # 42B-10 Belencito",
+    neighborhood: "Belencito Corazón",
+    routeId: "route-1",
+    organizationId: "org-medellin-01",
+    riskTier: "C_alto_riesgo",
+    daysOverdue: 12,
+    hasPreventiveBlock: false,
+    guarantorName: "Faber Arboleda",
+    guarantorPhone: "3145678901",
+    lat: 6.2390,
+    lng: -75.6180
+  },
 ];
 
 export const INITIAL_LOANS: LoanDetail[] = [

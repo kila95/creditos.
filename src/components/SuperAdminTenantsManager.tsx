@@ -12,7 +12,6 @@ import {
   CheckCircle2,
   Loader2,
   RefreshCw,
-  LogIn,
   KeyRound,
   Layers,
 } from 'lucide-react';
@@ -149,7 +148,12 @@ export const SuperAdminTenantsManager: React.FC = () => {
       });
 
       if (error || !createdAdmin) {
-        setErrorMsg(error || 'No se pudo registrar la cuenta de Administrador.');
+        const isDup = error?.includes('23505') || error?.toLowerCase().includes('ya existe');
+        setErrorMsg(
+          isDup
+            ? 'Error: Ya existe un usuario o cliente registrado con este documento o correo.'
+            : error || 'No se pudo registrar la cuenta de Administrador.'
+        );
         return;
       }
 
@@ -182,10 +186,6 @@ export const SuperAdminTenantsManager: React.FC = () => {
     } finally {
       setIsSubmitting(false);
     }
-  };
-
-  const handleInspectAdminSession = (admin: RegisteredAdminRecord) => {
-    alert(`Para iniciar sesión como ${admin.fullName}, por favor cierre sesión e ingrese con el correo: ${admin.email}`);
   };
 
   return (
@@ -400,7 +400,6 @@ export const SuperAdminTenantsManager: React.FC = () => {
                       <th className="py-2 px-2.5">Administrador ('admin')</th>
                       <th className="py-2 px-2.5">Credenciales</th>
                       <th className="py-2 px-2.5">Jerarquía RLS</th>
-                      <th className="py-2 px-2.5 text-right">Simular Vista</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/70 text-xs">
@@ -431,17 +430,6 @@ export const SuperAdminTenantsManager: React.FC = () => {
                             created_by: {adm.createdBy || 'usr-super-000'}
                           </span>
                         </td>
-                        <td className="py-2.5 px-2.5 text-right">
-                          <button
-                            type="button"
-                            onClick={() => handleInspectAdminSession(adm)}
-                            className="px-2.5 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 border border-indigo-500/30 text-[11px] font-bold inline-flex items-center gap-1.5 transition-colors cursor-pointer"
-                            title="Entrar a la vista aislada de este Administrador"
-                          >
-                            <LogIn className="w-3.5 h-3.5" />
-                            Ver como este Admin
-                          </button>
-                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -452,7 +440,7 @@ export const SuperAdminTenantsManager: React.FC = () => {
 
           <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-400">
             <span>
-              Como <strong className="text-amber-300">super_admin</strong> tienes visibilidad global de todos los fondos. Haz clic en <strong>"Ver como este Admin"</strong> para auditar el aislamiento RLS de cada administrador.
+              Como <strong className="text-amber-300">super_admin</strong> tienes visibilidad y control global de aprovisionamiento de fondos con estricto aislamiento multi-tenant.
             </span>
           </div>
         </div>
