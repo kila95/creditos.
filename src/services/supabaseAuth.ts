@@ -1,15 +1,43 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { UserProfile, UserRole, AuthSession } from '../types/auth';
 
-// Configuración de Supabase (Variables de entorno con fallback amigable)
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://demo-rutacapital.supabase.co';
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.demo-key';
+// Configuración y sanitización de Variables de Entorno (.env)
+const rawEnvSupabaseUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim();
+const rawEnvSupabaseAnonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
+
+// Evita errores 404 por URLs mal formadas (ej. si el .env incluye "/rest/v1" o "/" al final)
+export const supabaseUrl = rawEnvSupabaseUrl
+  ? rawEnvSupabaseUrl.replace(/\/rest\/v1\/?$/i, '').replace(/\/+$/, '')
+  : 'https://demo-rutacapital.supabase.co';
+
+export const supabaseAnonKey =
+  rawEnvSupabaseAnonKey || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.demo-key';
 
 export const isLiveSupabaseConfigured = Boolean(
-  import.meta.env.VITE_SUPABASE_URL && 
-  import.meta.env.VITE_SUPABASE_ANON_KEY &&
-  !import.meta.env.VITE_SUPABASE_URL.includes('demo-rutacapital')
+  rawEnvSupabaseUrl &&
+  rawEnvSupabaseAnonKey &&
+  !rawEnvSupabaseUrl.includes('demo-rutacapital') &&
+  rawEnvSupabaseUrl !== 'undefined'
 );
+
+/**
+ * Helper de diagnóstico para auditar variables .env y endpoints REST/Auth/Edge antes de cada llamada
+ */
+export function logSupabaseConnectionAudit(context: string, tableName: string, extraPayload?: Record<string, unknown>) {
+  console.log(`🚨 [AUDITORÍA SUPABASE - ${context}]`, {
+    env_VITE_SUPABASE_URL_raw: import.meta.env.VITE_SUPABASE_URL ?? 'UNDEFINED ❌',
+    env_VITE_SUPABASE_URL_sanitized: supabaseUrl,
+    env_VITE_SUPABASE_ANON_KEY_status: import.meta.env.VITE_SUPABASE_ANON_KEY
+      ? `DEFINIDA ✅ (${String(import.meta.env.VITE_SUPABASE_ANON_KEY).slice(0, 14)}...)`
+      : 'UNDEFINED ❌',
+    isLiveSupabaseConfigured,
+    targetAuthEndpoint: `${supabaseUrl}/auth/v1/signup`,
+    targetRestTableEndpoint: `${supabaseUrl}/rest/v1/${tableName}`,
+    targetEdgeFunctionEndpoint: `${supabaseUrl}/functions/v1/admin-provision-user`,
+    tableNameVerified: tableName,
+    ...(extraPayload || {}),
+  });
+}
 
 // Cliente real de Supabase
 export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
@@ -418,38 +446,49 @@ export async function registerNewAdminAccount(input: {
     .slice(0, 16)}-${Date.now().toString().slice(-4)}`;
 
   try {
+    // Log de auditoría obligatorio justo antes de llamar a la base de datos
+    logSupabaseConnectionAudit('registerNewAdminAccount (Crear Admin)', 'profiles', {
+      email: normalizedEmail,
+      organizationId: generatedOrgId,
+    });
+
     if (isLiveSupabaseConfigured) {
       let provisionedViaEdgeFunction = false;
+      const useEdgeFunction = import.meta.env.VITE_USE_EDGE_FUNCTION === 'true';
 
-      // PASO A: Intentar aprovisionamiento Server-to-Server mediante Edge Function (supabase-admin)
-      const { data: fnData, error: fnError } = await supabase.functions.invoke('admin-provision-user', {
-        body: {
-          email: normalizedEmail,
-          password: input.password,
-          fullName: input.fullName.trim(),
-          role: 'admin',
-          organizationId: generatedOrgId,
-          tenantId: generatedOrgId,
-          organizationName: input.organizationName.trim(),
-          createdBy: input.createdBySuperAdminId,
-          phone: input.phone?.trim() || null,
-          documentId: input.documentId?.trim() || null,
-        },
-      });
+      // PASO A (Opcional si la Edge Function ya fue desplegada con `supabase functions deploy admin-provision-user`)
+      if (useEdgeFunction) {
+        console.log('🌐 [DEBUG Edge Function Invoke] Apuntando a:', `${supabaseUrl}/functions/v1/admin-provision-user`);
+        const { data: fnData, error: fnError } = await supabase.functions.invoke('admin-provision-user', {
+          body: {
+            email: normalizedEmail,
+            password: input.password,
+            fullName: input.fullName.trim(),
+            role: 'admin',
+            organizationId: generatedOrgId,
+            tenantId: generatedOrgId,
+            organizationName: input.organizationName.trim(),
+            createdBy: input.createdBySuperAdminId,
+            phone: input.phone?.trim() || null,
+            documentId: input.documentId?.trim() || null,
+          },
+        });
 
-      if (!fnError && fnData?.user?.id) {
-        generatedUid = fnData.user.id;
-        provisionedViaEdgeFunction = true;
-      } else if (fnError && !fnError.message?.toLowerCase().includes('failed to send a request') && !fnError.message?.includes('404')) {
-        console.error('❌ [Edge Function admin-provision-user Error]:', fnError);
-        return {
-          profile: null,
-          error: `Error al guardar en base de datos (Edge Function): ${fnError.message}`,
-        };
+        const fnStatus = (fnError as any)?.context?.status;
+        if (!fnError && fnData?.user?.id) {
+          generatedUid = fnData.user.id;
+          provisionedViaEdgeFunction = true;
+        } else if (fnError) {
+          console.warn(
+            `⚠️ [Edge Function admin-provision-user HTTP ${fnStatus || 'Error'}]: La función no está desplegada o devolvió 404. Usando flujo directo Auth + REST /rest/v1/profiles.`,
+            fnError
+          );
+        }
       }
 
-      // PASO B: Si la Edge Function aún no está desplegada en el proyecto, usar cliente aislado en memoria (sin alterar sesión actual)
+      // PASO B: Flujo estándar sin romper sesión actual (Cliente aislado en memoria -> /auth/v1/signup + /rest/v1/profiles)
       if (!provisionedViaEdgeFunction) {
+        console.log('🌐 [DEBUG Supabase Auth SignUp] Apuntando a:', `${supabaseUrl}/auth/v1/signup`);
         const isolatedClient = createIsolatedAuthClient();
         const { data: signUpData, error: signUpError } = await isolatedClient.auth.signUp({
           email: normalizedEmail,
@@ -469,7 +508,11 @@ export async function registerNewAdminAccount(input: {
         });
 
         if (signUpError) {
-          console.error('❌ [Supabase Auth SignUp Error - Admin]:', signUpError);
+          console.error('❌ [Supabase Auth SignUp Error - Admin]:', {
+            endpoint: `${supabaseUrl}/auth/v1/signup`,
+            status: (signUpError as any)?.status,
+            message: signUpError.message,
+          });
           const isDuplicate =
             signUpError.message?.toLowerCase().includes('already registered') ||
             signUpError.message?.toLowerCase().includes('already exists') ||
@@ -479,7 +522,7 @@ export async function registerNewAdminAccount(input: {
             profile: null,
             error: isDuplicate
               ? 'Error al guardar en base de datos: Ya existe un usuario registrado con este correo electrónico.'
-              : `Error al guardar en base de datos (Supabase Auth): ${signUpError.message}`,
+              : `Error al guardar en base de datos (Supabase Auth [${(signUpError as any)?.status || 'ERR'}]): ${signUpError.message}`,
           };
         }
 
@@ -493,7 +536,19 @@ export async function registerNewAdminAccount(input: {
 
         generatedUid = signUpData.user.id;
 
-        // Insertar explícitamente en public.profiles usando la sesión del SuperAdmin y capturar cualquier error RLS
+        const { data: currentAuthUser } = await supabase.auth.getUser();
+        const safeCreatedByUuid = currentAuthUser?.user?.id || null;
+
+        console.log('🌐 [DEBUG Supabase REST INSERT] Apuntando a tabla exacta:', `${supabaseUrl}/rest/v1/profiles`, {
+          id: generatedUid,
+          email: normalizedEmail,
+          role: 'admin',
+          organization_id: generatedOrgId,
+          tenant_id: generatedOrgId,
+          created_by: safeCreatedByUuid,
+        });
+
+        // Insertar explícitamente en public.profiles (con 's' al final) y capturar cualquier error 404 o RLS
         const { data: profileRow, error: profileError } = await supabase
           .from('profiles')
           .upsert(
@@ -506,7 +561,7 @@ export async function registerNewAdminAccount(input: {
                 organization_id: generatedOrgId,
                 tenant_id: generatedOrgId,
                 organization_name: input.organizationName.trim(),
-                created_by: input.createdBySuperAdminId,
+                created_by: safeCreatedByUuid,
                 phone: input.phone?.trim() || null,
                 document_id: input.documentId?.trim() || null,
                 is_active: true,
@@ -518,7 +573,19 @@ export async function registerNewAdminAccount(input: {
           .single();
 
         if (profileError || !profileRow) {
-          console.error('❌ [Supabase Profiles INSERT Error - Admin]:', profileError);
+          console.error('❌ [Supabase Profiles INSERT Error - Admin]:', {
+            endpoint: `${supabaseUrl}/rest/v1/profiles`,
+            code: profileError?.code,
+            message: profileError?.message,
+            details: profileError?.details,
+            hint: profileError?.hint,
+          });
+          const isTableNotFound404 =
+            profileError?.code === '42P01' ||
+            profileError?.code === 'PGRST205' ||
+            profileError?.message?.includes('404') ||
+            profileError?.message?.toLowerCase().includes('could not find the table');
+
           const isDuplicate =
             profileError?.code === '23505' ||
             profileError?.message?.includes('23505') ||
@@ -527,7 +594,9 @@ export async function registerNewAdminAccount(input: {
 
           return {
             profile: null,
-            error: isDuplicate
+            error: isTableNotFound404
+              ? `Error 404 en ${supabaseUrl}/rest/v1/profiles: La tabla 'public.profiles' no existe en tu proyecto Supabase. Ejecuta el script SQL (005_fix_rls_insert_persistence.sql) en el SQL Editor de Supabase.`
+              : isDuplicate
               ? 'Error al guardar en base de datos: Ya existe un administrador con este documento o correo.'
               : `Error al guardar en base de datos (tabla profiles / RLS): ${profileError?.message || 'Inserción rechazada'}`,
           };
@@ -628,45 +697,57 @@ export async function registerNewCollectorAccount(input: {
   const cleanRouteZone = input.routeZone.trim() || 'Centro / El Hueco';
 
   try {
+    // Log de auditoría obligatorio justo antes de llamar a la base de datos
+    logSupabaseConnectionAudit('registerNewCollectorAccount (Crear Cobrador)', 'profiles', {
+      email: normalizedEmail,
+      assignedRouteId: input.assignedRouteId,
+      organizationId: orgId,
+    });
+
     if (isLiveSupabaseConfigured) {
       // Obtener el auth.uid() real del Admin autenticado para cumplir la política RLS de tenant_id
       const { data: currentAuthData } = await supabase.auth.getUser();
-      const effectiveCreatorUid = currentAuthData?.user?.id || creatorId;
-      const effectiveTenantId = input.organizationId || effectiveCreatorUid;
+      const effectiveCreatorUid = currentAuthData?.user?.id || null;
+      const effectiveTenantId = input.organizationId || effectiveCreatorUid || orgId;
 
       let provisionedViaEdgeFunction = false;
+      const useEdgeFunction = import.meta.env.VITE_USE_EDGE_FUNCTION === 'true';
 
-      // PASO A: Intentar creación mediante Edge Function (supabase-admin) sin tocar la sesión actual
-      const { data: fnData, error: fnError } = await supabase.functions.invoke('admin-provision-user', {
-        body: {
-          email: normalizedEmail,
-          password: input.password,
-          fullName: input.fullName.trim(),
-          role: 'collector',
-          assignedRouteId: input.assignedRouteId,
-          routeZone: cleanRouteZone,
-          organizationId: effectiveTenantId,
-          tenantId: effectiveTenantId,
-          organizationName: orgName,
-          createdBy: effectiveCreatorUid,
-          phone: input.phone?.trim() || null,
-          documentId: input.documentId?.trim() || null,
-        },
-      });
+      // PASO A (Opcional si la Edge Function ya fue desplegada)
+      if (useEdgeFunction) {
+        console.log('🌐 [DEBUG Edge Function Invoke] Apuntando a:', `${supabaseUrl}/functions/v1/admin-provision-user`);
+        const { data: fnData, error: fnError } = await supabase.functions.invoke('admin-provision-user', {
+          body: {
+            email: normalizedEmail,
+            password: input.password,
+            fullName: input.fullName.trim(),
+            role: 'collector',
+            assignedRouteId: input.assignedRouteId,
+            routeZone: cleanRouteZone,
+            organizationId: effectiveTenantId,
+            tenantId: effectiveTenantId,
+            organizationName: orgName,
+            createdBy: effectiveCreatorUid,
+            phone: input.phone?.trim() || null,
+            documentId: input.documentId?.trim() || null,
+          },
+        });
 
-      if (!fnError && fnData?.user?.id) {
-        generatedUid = fnData.user.id;
-        provisionedViaEdgeFunction = true;
-      } else if (fnError && !fnError.message?.toLowerCase().includes('failed to send a request') && !fnError.message?.includes('404')) {
-        console.error('❌ [Edge Function admin-provision-user Error - Collector]:', fnError);
-        return {
-          profile: null,
-          error: `Error al guardar en base de datos (Edge Function): ${fnError.message}`,
-        };
+        const fnStatus = (fnError as any)?.context?.status;
+        if (!fnError && fnData?.user?.id) {
+          generatedUid = fnData.user.id;
+          provisionedViaEdgeFunction = true;
+        } else if (fnError) {
+          console.warn(
+            `⚠️ [Edge Function admin-provision-user HTTP ${fnStatus || 'Error'}]: La función no está desplegada o devolvió 404. Usando flujo directo Auth + REST /rest/v1/profiles.`,
+            fnError
+          );
+        }
       }
 
-      // PASO B: Si la Edge Function no está desplegada, usar cliente 100% aislado en memoria
+      // PASO B: Flujo estándar con cliente 100% aislado en memoria (No altera la sesión actual ni depende de Edge Function desplegada)
       if (!provisionedViaEdgeFunction) {
+        console.log('🌐 [DEBUG Supabase Auth SignUp] Apuntando a:', `${supabaseUrl}/auth/v1/signup`);
         const isolatedClient = createIsolatedAuthClient();
         const { data: signUpData, error: signUpError } = await isolatedClient.auth.signUp({
           email: normalizedEmail,
@@ -688,7 +769,11 @@ export async function registerNewCollectorAccount(input: {
         });
 
         if (signUpError) {
-          console.error('❌ [Supabase Auth SignUp Error - Collector]:', signUpError);
+          console.error('❌ [Supabase Auth SignUp Error - Collector]:', {
+            endpoint: `${supabaseUrl}/auth/v1/signup`,
+            status: (signUpError as any)?.status,
+            message: signUpError.message,
+          });
           const isDuplicate =
             signUpError.message?.toLowerCase().includes('already registered') ||
             signUpError.message?.toLowerCase().includes('already exists') ||
@@ -698,7 +783,7 @@ export async function registerNewCollectorAccount(input: {
             profile: null,
             error: isDuplicate
               ? 'Error al guardar en base de datos: Ya existe un cobrador o usuario con este correo electrónico.'
-              : `Error al guardar en base de datos (Supabase Auth): ${signUpError.message}`,
+              : `Error al guardar en base de datos (Supabase Auth [${(signUpError as any)?.status || 'ERR'}]): ${signUpError.message}`,
           };
         }
 
@@ -712,7 +797,16 @@ export async function registerNewCollectorAccount(input: {
 
         generatedUid = signUpData.user.id;
 
-        // 1. Guardar el perfil del cobrador en public.profiles pasando el tenant_id / created_by del Admin
+        console.log('🌐 [DEBUG Supabase REST INSERT] Apuntando a tabla exacta:', `${supabaseUrl}/rest/v1/profiles`, {
+          id: generatedUid,
+          email: normalizedEmail,
+          role: 'collector',
+          organization_id: effectiveTenantId,
+          tenant_id: effectiveTenantId,
+          created_by: effectiveCreatorUid,
+        });
+
+        // 1. Guardar el perfil del cobrador en public.profiles (con 's' al final) pasando el tenant_id / created_by del Admin
         const { data: profileRow, error: profileError } = await supabase
           .from('profiles')
           .upsert(
@@ -739,7 +833,19 @@ export async function registerNewCollectorAccount(input: {
           .single();
 
         if (profileError || !profileRow) {
-          console.error('❌ [Supabase Profiles INSERT Error - Collector]:', profileError);
+          console.error('❌ [Supabase Profiles INSERT Error - Collector]:', {
+            endpoint: `${supabaseUrl}/rest/v1/profiles`,
+            code: profileError?.code,
+            message: profileError?.message,
+            details: profileError?.details,
+            hint: profileError?.hint,
+          });
+          const isTableNotFound404 =
+            profileError?.code === '42P01' ||
+            profileError?.code === 'PGRST205' ||
+            profileError?.message?.includes('404') ||
+            profileError?.message?.toLowerCase().includes('could not find the table');
+
           const isDuplicate =
             profileError?.code === '23505' ||
             profileError?.message?.includes('23505') ||
@@ -748,13 +854,16 @@ export async function registerNewCollectorAccount(input: {
 
           return {
             profile: null,
-            error: isDuplicate
+            error: isTableNotFound404
+              ? `Error 404 en ${supabaseUrl}/rest/v1/profiles: La tabla 'public.profiles' no existe en tu proyecto Supabase. Ejecuta el script SQL (005_fix_rls_insert_persistence.sql) en el SQL Editor de Supabase.`
+              : isDuplicate
               ? 'Error al guardar en base de datos: Ya existe un usuario registrado con este documento o correo.'
               : `Error al guardar en base de datos (tabla profiles / RLS): ${profileError?.message || 'Permiso de escritura denegado'}`,
           };
         }
 
         // 2. Actualizar la tabla routes en Supabase asociando la zona y el cobrador
+        console.log('🌐 [DEBUG Supabase REST UPSERT] Apuntando a tabla exacta:', `${supabaseUrl}/rest/v1/routes`);
         const { error: routeUpdateError } = await supabase
           .from('routes')
           .upsert(
@@ -775,7 +884,7 @@ export async function registerNewCollectorAccount(input: {
           );
 
         if (routeUpdateError) {
-          console.error('❌ [Supabase Routes Upsert Error]:', routeUpdateError);
+          console.warn('⚠️ [Supabase Routes Upsert Warning]:', routeUpdateError);
         }
       }
     }

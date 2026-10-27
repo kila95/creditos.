@@ -1,4 +1,4 @@
-import { supabase, isLiveSupabaseConfigured } from './supabaseAuth';
+import { supabase, isLiveSupabaseConfigured, supabaseUrl, logSupabaseConnectionAudit } from './supabaseAuth';
 import { ClientProfile, LoanDetail, INITIAL_CLIENTS, INITIAL_LOANS } from '../data/mockData';
 import { roundCOP } from '../utils/financialCalculations';
 
@@ -857,6 +857,11 @@ export async function insertClientAndLoanToDB(
   try {
     // 1. Si Supabase está configurado, insertar en `public.clients` y `public.loans` con captura estricta de errores
     if (isLiveSupabaseConfigured) {
+      logSupabaseConnectionAudit('insertClientAndLoanToDB (Crear Cliente)', 'clients', {
+        endpoint: `${supabaseUrl}/rest/v1/clients`,
+        payload: datosAInsertar,
+      });
+
       const { data: sbInsertedClient, error: sbError } = await supabase
         .from('clients')
         .insert([datosAInsertar])
@@ -916,6 +921,11 @@ export async function insertClientAndLoanToDB(
         expected_end_date: dueDateStr,
         payment_days: paymentDays,
       };
+
+      logSupabaseConnectionAudit('insertClientAndLoanToDB (Crear Préstamo)', 'loans', {
+        endpoint: `${supabaseUrl}/rest/v1/loans`,
+        payload: datosPrestamoAInsertar,
+      });
 
       const { data: sbInsertedLoan, error: sbLoanErr } = await supabase
         .from('loans')
