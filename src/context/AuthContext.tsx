@@ -95,7 +95,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     initAuth();
 
+    // Safety timeout for loading
+    const timer = setTimeout(() => {
+      setLoading(false);
+    }, 10000);
+
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, authSession) => {
+      clearTimeout(timer);
       if (event === 'SIGNED_OUT' || event === 'USER_UPDATED') {
         localStorage.clear();
         sessionStorage.clear();
@@ -135,6 +141,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     return () => {
       isMounted = false;
+      clearTimeout(timer);
       subscription.unsubscribe();
     };
   }, []);

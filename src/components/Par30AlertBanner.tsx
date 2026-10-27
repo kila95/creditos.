@@ -31,7 +31,7 @@ export interface Par30AlertItem {
   remainingBalance: number;
   installmentAmount: number;
   termDays: number;
-  status: 'activo' | 'liquidado' | 'mora_severa' | 'refinanciado';
+  status: 'activo' | 'liquidado' | 'liquidated' | 'completed' | 'mora_severa' | 'refinanciado';
   legalDispatched?: boolean;
 }
 

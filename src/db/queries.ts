@@ -7,7 +7,9 @@ import {
   dailyLedger, 
   cashDrawerSessions, 
   auditLogs,
-  collectorBases
+  collectorBases,
+  liquidatedLoansHistory,
+  adminPayments
 } from './schema.ts';
 import { eq, desc, sql, and, or } from 'drizzle-orm';
 
@@ -706,3 +708,67 @@ export async function authenticateUserFromDB(email: string, password: string, de
 }
 
 
+export async function getLiquidatedHistory(organizationId: string) {
+  try {
+    return await db
+      .select()
+      .from(liquidatedLoansHistory)
+      .where(eq(liquidatedLoansHistory.organizationId, organizationId))
+      .orderBy(desc(liquidatedLoansHistory.liquidationDate));
+  } catch (error) {
+    console.error('Error al consultar historial de liquidados en Cloud SQL:', error);
+    throw new Error('No se pudo obtener el historial de préstamos liquidados.', { cause: error });
+  }
+}
+
+export async function getAdminPayments(organizationId?: string) {
+  try {
+    return await db.select().from(adminPayments).orderBy(desc(adminPayments.createdAt));
+  } catch (error) {
+    console.error('Error al consultar pagos de administradores en Cloud SQL:', error);
+    throw new Error('No se pudo obtener el historial de pagos de administradores.', { cause: error });
+  }
+}
+
+export async function recordAdminPayment(data: {
+  id: string;
+  adminId: number;
+  amount: number;
+  referenceNumber: string;
+  proofUrl?: string;
+}) {
+  try {
+    const inserted = await db.insert(adminPayments).values({
+      id: data.id,
+      adminId: data.adminId,
+      amount: data.amount.toString(),
+      referenceNumber: data.referenceNumber,
+      proofUrl: data.proofUrl || null,
+      status: 'pending',
+    }).returning();
+
+    return inserted[0];
+  } catch (error) {
+    console.error('Error al registrar pago de administrador:', error);
+    throw new Error('Error al registrar el pago de administrador.', { cause: error });
+  }
+}
+
+export async function approveAdminPayment(paymentId: string, verifierUid: string, notes?: string) {
+  try {
+    const updated = await db
+      .update(adminPayments)
+      .set({
+        status: 'approved',
+        verifiedBy: verifierUid,
+        verificationNotes: notes || null,
+      })
+      .where(eq(adminPayments.id, paymentId))
+      .returning();
+
+    return updated[0];
+  } catch (error) {
+    console.error('Error al aprobar pago de administrador:', error);
+    throw new Error('Error al aprobar el pago de administrador.', { cause: error });
+  }
+}

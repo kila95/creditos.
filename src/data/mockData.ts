@@ -61,7 +61,7 @@ export interface LoanDetail {
   disbursedDate: string;
   dueDate: string;
   daysOverdue: number;
-  status: 'activo' | 'liquidado' | 'mora_severa' | 'refinanciado';
+  status: 'activo' | 'liquidado' | 'liquidated' | 'completed' | 'mora_severa' | 'refinanciado';
   todayPaid: boolean;
   paymentDays?: number[]; // Días de cobro programados (0 = Dom, 1 = Lun, 2 = Mar, 3 = Mié, 4 = Jue, 5 = Vie, 6 = Sáb)
 }

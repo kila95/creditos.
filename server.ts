@@ -19,7 +19,11 @@ import {
   createAdminUser,
   getAllCollectors,
   createCollectorUser,
-  authenticateUserFromDB
+  authenticateUserFromDB,
+  getLiquidatedHistory,
+  getAdminPayments,
+  recordAdminPayment,
+  approveAdminPayment
 } from './src/db/queries.ts';
 
 const app = express();
@@ -179,6 +183,20 @@ app.patch('/api/collector-bases/:id', requireAuth, async (req: AuthRequest, res)
   }
 });
 
+// API: Historial de Liquidados
+app.get('/api/liquidated-history', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const organizationId = req.query.organizationId as string;
+    if (!organizationId) {
+      return res.status(400).json({ error: 'organizationId es requerido.' });
+    }
+    const data = await getLiquidatedHistory(organizationId);
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // API: Gestión de Administradores por el Super Admin (Nivel 1 -> Nivel 2)
 app.get('/api/admins', requireAuth, async (req: AuthRequest, res) => {
   try {
@@ -269,6 +287,35 @@ app.post('/api/send-whatsapp-receipt', async (req, res) => {
       message: text,
       provider: process.env.TWILIO_ACCOUNT_SID ? 'Twilio WhatsApp API' : 'Direct Meta Graph / WhatsApp Gateway'
     });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API: Pagos de Administradores
+app.get('/api/admin-payments', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const data = await getAdminPayments();
+    res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/admin-payments', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const payment = await recordAdminPayment(req.body);
+    res.status(201).json(payment);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.patch('/api/admin-payments/:id/approve', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { verifierUid, notes } = req.body;
+    const updated = await approveAdminPayment(req.params.id, verifierUid, notes);
+    res.json(updated);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { SuperAdminTenantsManager } from './SuperAdminTenantsManager';
 import { AuditLogView } from './AuditLogView';
+import { SuperAdminPaymentApprovalView } from './SuperAdminPaymentApprovalView';
 import { INITIAL_AUDIT_LOGS, AuditLogItem } from '../data/auditLogData';
 import { formatCOP } from '../utils/financialCalculations';
 import { useAuth } from '../context/AuthContext';
@@ -319,6 +320,7 @@ export const SuperAdminDashboardView: React.FC = () => {
       case 'subscriptions':
         return (
           <div className="space-y-6">
+            <SuperAdminPaymentApprovalView />
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg">
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-slate-800">
                 <div>

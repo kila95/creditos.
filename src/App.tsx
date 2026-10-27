@@ -197,7 +197,12 @@ function MainAppContent() {
 
     const safeAmount = roundCOP(amount);
     const preBalance = loan.remainingBalance;
-    const postBalance = Math.max(0, roundCOP(preBalance - safeAmount));
+    const rawPostBalance = preBalance - safeAmount;
+
+    // 1. Condición Matemática Segura: balance <= 0 fuerza el saldo a 0 y estado 'liquidado'/'liquidated'
+    const postBalance = rawPostBalance <= 0 ? 0 : roundCOP(rawPostBalance);
+    const isLiquidated = postBalance <= 0;
+
     const interestPortion = roundCOP(safeAmount * 0.20);
     const principalPortion = Math.max(0, roundCOP(safeAmount - interestPortion));
 
@@ -221,15 +226,18 @@ function MainAppContent() {
 
     setLedger(prev => [newEntry, ...prev]);
 
+    // 3. Filtro Frontal y Recarga Inmediata: Actualización inmediata en estado local React
     setLoans(prev => prev.map(l => {
       if (l.id === loanId) {
+        const rem = roundCOP(l.remainingBalance - safeAmount);
+        const liquidated = rem <= 0;
         return {
           ...l,
-          remainingBalance: postBalance,
+          remainingBalance: liquidated ? 0 : rem,
           totalCollected: roundCOP(l.totalCollected + safeAmount),
           installmentsPaid: l.installmentsPaid + 1,
           todayPaid: true,
-          status: postBalance === 0 ? 'liquidado' : l.status
+          status: liquidated ? 'liquidado' : l.status
         };
       }
       return l;
@@ -245,6 +253,7 @@ function MainAppContent() {
       return r;
     }));
 
+    // 2. Actualización Doble en Supabase (Cadena: INSERT diario_ledger -> UPDATE loans)
     if (isOnline) {
       if (isLiveSupabaseConfigured) {
         supabase.from('daily_ledger').insert([{
@@ -263,17 +272,37 @@ function MainAppContent() {
           timestamp: newEntry.timestamp,
           gps_location: newEntry.gpsLocation,
           hash: newEntry.hash,
-        }]).then(({ error }) => {
-          if (error) console.warn('⚠️ [Supabase daily_ledger insert]:', error);
-        });
+        }]).then(({ error: insertErr }) => {
+          if (insertErr) {
+            console.warn('⚠️ [Supabase daily_ledger insert]:', insertErr);
+          }
 
-        supabase.from('loans').update({
-          remaining_balance: postBalance,
-          last_payment_date: newEntry.timestamp,
-          paid_days: loan.installmentsPaid + 1,
-          status: postBalance === 0 ? 'completed' : 'active',
-        }).eq('id', loanId).then(({ error }) => {
-          if (error) console.warn('⚠️ [Supabase loans update]:', error);
+          // Operaciones en cadena: Inmediatamente UPDATE a la tabla loans cambiando status a liquidated
+          supabase.from('loans').update({
+            remaining_balance: postBalance,
+            last_payment_date: newEntry.timestamp,
+            paid_days: loan.installmentsPaid + 1,
+            status: isLiquidated ? 'liquidated' : 'active',
+          }).eq('id', loanId).then(({ error: updateErr }) => {
+            if (updateErr) console.warn('⚠️ [Supabase loans update]:', updateErr);
+            
+            // Si el crédito se liquidó, guardar en historial inmutable
+            if (isLiquidated) {
+              supabase.from('liquidated_loans_history').insert([{
+                id: `liq-${loanId}`,
+                loan_id: loanId,
+                client_id: loan.clientId,
+                client_name: loan.clientName,
+                organization_id: loan.organizationId || 'org-medellin-01',
+                final_principal_amount: loan.principal,
+                total_paid: loan.totalDebt - loan.remainingBalance + safeAmount,
+                liquidation_date: new Date().toISOString(),
+                loan_snapshot: loan
+              }]).then(({ error: liqErr }) => {
+                if (liqErr) console.warn('⚠️ [Supabase liquidated_loans_history insert]:', liqErr);
+              });
+            }
+          });
         });
       }
     } else {
@@ -556,7 +585,19 @@ function MainAppContent() {
       </>
     );
   } else {
-    return <div>Cargando panel o rol no autorizado...</div>;
+    // Si el rol no es reconocido, cerrar sesión y enviar a inicio
+    return (
+      <div className="min-h-screen bg-[#0d1b2a] text-slate-100 flex flex-col justify-center items-center p-4 text-center">
+        <h2 className="text-2xl font-bold mb-4">Rol no autorizado o desconocido</h2>
+        <p className="text-slate-400 mb-6">Redirigiendo a la página de inicio...</p>
+        <button
+          onClick={logout}
+          className="px-6 py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl transition-all"
+        >
+          Volver al Inicio
+        </button>
+      </div>
+    );
   }
 }
 

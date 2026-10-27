@@ -214,10 +214,13 @@ export const PartialPaymentModal: React.FC<PartialPaymentModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => handleSelectPreset(maxAllowedBalance)}
-                className="py-2.5 px-2 rounded-lg bg-indigo-950/70 hover:bg-indigo-900/70 text-indigo-300 font-semibold text-xs transition-colors border border-indigo-500/40 cursor-pointer font-mono tabular-nums"
+                onClick={() => {
+                  handleSelectPreset(maxAllowedBalance);
+                  setCollectorNotes('Liquidación total de deuda (Saldo $0 COP)');
+                }}
+                className="py-2.5 px-2 rounded-lg bg-teal-950/90 hover:bg-teal-900/90 text-teal-200 font-bold text-xs transition-colors border border-teal-500/50 cursor-pointer font-mono tabular-nums shadow-sm"
               >
-                Liquidar Saldo
+                Liquidar Saldo Total
               </button>
             </div>
           </div>
@@ -255,8 +258,8 @@ export const PartialPaymentModal: React.FC<PartialPaymentModalProps> = ({
 
               <div className="flex justify-between items-center pt-2 border-t border-slate-800 text-white font-bold">
                 <span>Nuevo Saldo Pendiente del Cliente:</span>
-                <span className="font-mono text-emerald-400 text-sm tabular-nums">
-                  {formatCOP(distribution.postBalance)}
+                <span className={`font-mono text-sm tabular-nums ${distribution.postBalance <= 0 ? 'text-teal-300 font-black' : 'text-emerald-400'}`}>
+                  {formatCOP(distribution.postBalance)} {distribution.postBalance <= 0 ? '(Liquidado $0 COP)' : ''}
                 </span>
               </div>
             </div>
@@ -335,10 +338,18 @@ export const PartialPaymentModal: React.FC<PartialPaymentModalProps> = ({
             <button
               type="submit"
               disabled={!paymentCheck.isValid}
-              className="flex-1 min-h-[46px] py-3 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500 text-white rounded-xl font-bold text-xs shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              className={`flex-1 min-h-[46px] py-3 text-white rounded-xl font-bold text-xs shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+                partialAmount >= maxAllowedBalance
+                  ? 'bg-teal-600 hover:bg-teal-500'
+                  : 'bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-500'
+              }`}
             >
               <CheckCircle2 className="w-4 h-4" />
-              <span>Confirmar Pago ({formatCOP(partialAmount)})</span>
+              <span>
+                {partialAmount >= maxAllowedBalance
+                  ? `LIQUIDAR DEUDA TOTAL (${formatCOP(maxAllowedBalance)})`
+                  : `Confirmar Pago (${formatCOP(partialAmount)})`}
+              </span>
             </button>
           </div>
         </form>

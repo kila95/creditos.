@@ -144,6 +144,19 @@ export const auditLogs = pgTable('audit_logs', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+// 7.5. HISTORIAL DE CRÉDITOS LIQUIDADOS (IMMUTABLE)
+export const liquidatedLoansHistory = pgTable('liquidated_loans_history', {
+  id: text('id').primaryKey(),
+  loanId: text('loan_id').notNull(),
+  clientId: text('client_id').notNull(),
+  clientName: text('client_name').notNull(),
+  organizationId: text('organization_id').notNull(), // Tenant separator
+  finalPrincipalAmount: numeric('final_principal_amount', { precision: 12, scale: 2 }).notNull(),
+  totalPaid: numeric('total_paid', { precision: 12, scale: 2 }).notNull(),
+  liquidationDate: timestamp('liquidation_date').defaultNow().notNull(),
+  loanSnapshot: jsonb('loan_snapshot').notNull(), // Immutable JSON representation of the closed loan
+});
+
 // 8. GESTIÓN DE BASES SEMANALES PARA COBRADORES (COLLECTOR BASES)
 export const collectorBases = pgTable('collector_bases', {
   id: text('id').primaryKey(), // UUID
@@ -177,9 +190,30 @@ export const loansRelations = relations(loans, ({ one, many }) => ({
   ledgerEntries: many(dailyLedger),
 }));
 
+// 9. PAGOS DE MENSUALIDADES ADMINISTRADORES
+export const adminPayments = pgTable('admin_payments', {
+  id: text('id').primaryKey(),
+  adminId: integer('admin_id').notNull().references(() => users.id),
+  amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+  referenceNumber: text('reference_number').notNull(),
+  paymentDate: timestamp('payment_date').defaultNow().notNull(),
+  proofUrl: text('proof_url'), // URL de la imagen del recibo
+  status: text('status').notNull().default('pending'), // 'pending' | 'approved' | 'rejected'
+  verifiedBy: text('verified_by'), // UID del super_admin
+  verificationNotes: text('verification_notes'),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 export const routesRelations = relations(routes, ({ many }) => ({
   clients: many(clients),
   loans: many(loans),
   cashDrawerSessions: many(cashDrawerSessions),
+}));
+
+export const adminPaymentsRelations = relations(adminPayments, ({ one }) => ({
+  admin: one(users, {
+    fields: [adminPayments.adminId],
+    references: [users.id],
+  }),
 }));
 

@@ -205,10 +205,17 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
     loadRouteData();
   }, [currentRoute.id]);
 
-  // 1. FILTRADO ESTRICTO POR RUTA ASIGNADA Y VINCULACIÓN CON TABLA CLIENTS
+  // 1. FILTRADO ESTRICTO POR RUTA ASIGNADA Y EXCLUSIÓN DE CRÉDITOS LIQUIDADOS
   const routeClients = clients.filter((c) => c.routeId === currentRoute.id);
   const rawRouteLoans = loans
-    .filter((l) => l.routeId === currentRoute.id)
+    .filter(
+      (l) =>
+        l.routeId === currentRoute.id &&
+        l.status !== 'liquidado' &&
+        l.status !== 'liquidated' &&
+        l.status !== 'completed' &&
+        roundCOP(l.remainingBalance) > 0
+    )
     .map((l) => {
       const matchedClient = routeClients.find((c) => c.id === l.clientId);
       return {
@@ -222,10 +229,10 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
       };
     });
 
-  // Garantizar que cualquier cliente en `clients` aparezca en la lista
-  const loanClientIds = new Set(rawRouteLoans.map((l) => l.clientId));
+  // Garantizar que únicamente clientes verdaderamente sin ningún préstamo registrado aparezcan como huérfanos
+  const allLoanClientIds = new Set(loans.map((l) => l.clientId));
   const orphanClientLoans: LoanDetail[] = routeClients
-    .filter((c) => !loanClientIds.has(c.id))
+    .filter((c) => !allLoanClientIds.has(c.id))
     .map((c) => ({
       id: `loan-sync-${c.id}`,
       code: `PREST-${c.id.slice(-4).toUpperCase()}`,
@@ -343,8 +350,8 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
   // Efectivo físico neto que el cobrador tiene en bolsillo para entregar al Administrador
   const cashInHand = roundCOP(activeBaseAmount + cashCollectedToday - totalRouteExpenses);
 
-  // ACCIÓN 1: COBRAR CUOTA EN EFECTIVO CON VALIDACIÓN ESTRICTA DE SALDO PENDIENTE
-  const handleQuickPayFull = (loan: LoanDetail) => {
+  // ACCIÓN 1: COBRAR CUOTA DE HOY EN EFECTIVO
+  const handleQuickPayQuota = (loan: LoanDetail) => {
     setStreetAlert(null);
     const currentBalance = roundCOP(loan.remainingBalance);
 
@@ -433,6 +440,89 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
           phone: client.phone,
           amount: cleanAmount,
           remainingBalance: Math.max(0, currentBalance - cleanAmount),
+          clientName: client.name,
+          receiptNumber: entry.receiptNumber
+        }).catch((err) => console.warn('Automatic WhatsApp receipt error:', err));
+      }
+    }
+  };
+
+  // ACCIÓN DE LIQUIDACIÓN COMPLETA DE DEUDA ($ remainingBalance TOTAL)
+  const handleLiquidateDebt = (loan: LoanDetail) => {
+    setStreetAlert(null);
+    const currentBalance = roundCOP(loan.remainingBalance);
+
+    if (currentBalance <= 0) {
+      setStreetAlert({
+        type: 'error',
+        message: `El préstamo de ${loan.clientName} ya se encuentra liquidado ($0 COP).`,
+      });
+      return;
+    }
+
+    const client = clients.find((c) => c.id === loan.clientId);
+
+    // Registrar pago por la TOTALIDAD del saldo restante
+    onRegisterPayment(
+      loan.id,
+      currentBalance,
+      'efectivo',
+      isOnline
+        ? 'LIQUIDACIÓN TOTAL DE DEUDA (Pago completo registrado en calle)'
+        : 'LIQUIDACIÓN TOTAL DE DEUDA (Guardado localmente en Modo Offline)'
+    );
+
+    if (incidents[loan.id]) {
+      const nextIncidents = { ...incidents };
+      delete nextIncidents[loan.id];
+      setIncidents(nextIncidents);
+    }
+
+    if (!isOnline && client) {
+      enqueueOfflinePayment({
+        loanId: loan.id,
+        clientId: client.id,
+        clientName: client.name,
+        amount: currentBalance,
+        paymentMethod: 'efectivo',
+        notes: 'Liquidación total de deuda (Offline)',
+        timestamp: new Date().toISOString(),
+        gpsLocation: `${client.lat} N, ${client.lng} W`,
+      });
+      setOfflineQueue(getOfflineQueue());
+    }
+
+    setStreetAlert({
+      type: 'success',
+      message: `Deuda de ${loan.clientName} LIQUIDADA COMPLETAMENTE por ${formatCOP(currentBalance)}. Saldo restante: $0 COP.`,
+    });
+
+    if (client) {
+      const principalPortion = roundCOP(currentBalance * (loan.principal / Math.max(1, loan.totalDebt)));
+      const interestPortion = Math.max(0, currentBalance - principalPortion);
+      const entry: LedgerEntry = {
+        id: `led-${Date.now()}`,
+        receiptNumber: `REC-${Date.now().toString().slice(-6)}`,
+        loanId: loan.id,
+        clientId: client.id,
+        clientName: client.name,
+        routeId: loan.routeId,
+        amount: currentBalance,
+        principalPortion,
+        interestPortion,
+        paymentMethod: 'efectivo',
+        preBalance: currentBalance,
+        postBalance: 0,
+        timestamp: new Date().toISOString(),
+        gpsLocation: '6.2518 N, -75.6142 W',
+        hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2),
+      };
+      setActiveReceipt({ entry, client, loan: { ...loan, remainingBalance: 0, status: 'liquidado' } });
+      if (client.phone) {
+        sendAutomaticWhatsAppReceipt({
+          phone: client.phone,
+          amount: currentBalance,
+          remainingBalance: 0,
           clientName: client.name,
           receiptNumber: entry.receiptNumber
         }).catch((err) => console.warn('Automatic WhatsApp receipt error:', err));
@@ -1237,36 +1327,51 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
                           </button>
                         </div>
                       ) : (
-                        <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
-                          {/* Botón Primario Táctil: Cobrar Cuota */}
-                          <button
-                            type="button"
-                            onClick={() => handleQuickPayFull(loan)}
-                            className="sm:col-span-6 min-h-[48px] py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs sm:text-sm font-bold shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
-                          >
-                            <CheckCircle2 className="w-4 h-4" />
-                            <span>Cobrar Cuota ({formatCOP(effectiveQuota)})</span>
-                          </button>
+                        <div className="flex flex-col gap-2">
+                          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                            {/* Botón 1: Cobrar Cuota de Hoy */}
+                            <button
+                              type="button"
+                              onClick={() => handleQuickPayQuota(loan)}
+                              className="sm:col-span-6 min-h-[48px] py-3 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs sm:text-sm font-bold shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-4 h-4 text-emerald-200" />
+                              <span>Cobrar Cuota ({formatCOP(effectiveQuota)})</span>
+                            </button>
 
-                          {/* Botón 2: Abono / Otro Monto */}
-                          <button
-                            type="button"
-                            onClick={() => openPartialPaymentModal(loan)}
-                            className="sm:col-span-3 min-h-[48px] py-3 px-3 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-200 border border-indigo-500/30 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                          >
-                            <Coins className="w-4 h-4 text-indigo-400" />
-                            <span>Otro Monto</span>
-                          </button>
+                            {/* Botón 2: Liquidar Deuda Total */}
+                            <button
+                              type="button"
+                              onClick={() => handleLiquidateDebt(loan)}
+                              className="sm:col-span-6 min-h-[48px] py-3 px-3 bg-teal-600 hover:bg-teal-500 text-white rounded-xl text-xs sm:text-sm font-bold shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                              title="Liquidar la totalidad de la deuda restante de este cliente"
+                            >
+                              <Coins className="w-4 h-4 text-emerald-200" />
+                              <span>Liquidar Deuda ({formatCOP(loan.remainingBalance)})</span>
+                            </button>
+                          </div>
 
-                          {/* Botón 3: No Pagó */}
-                          <button
-                            type="button"
-                            onClick={() => openIncidentModal(loan)}
-                            className="sm:col-span-3 min-h-[48px] py-3 px-3 bg-slate-800 hover:bg-rose-950/50 text-slate-300 hover:text-rose-200 border border-slate-700 hover:border-rose-500/40 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                          >
-                            <XCircle className="w-4 h-4 text-rose-400" />
-                            <span>No Pagó</span>
-                          </button>
+                          <div className="grid grid-cols-2 gap-2">
+                            {/* Botón 3: Abono / Otro Monto */}
+                            <button
+                              type="button"
+                              onClick={() => openPartialPaymentModal(loan)}
+                              className="min-h-[44px] py-2.5 px-3 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-200 border border-indigo-500/30 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                            >
+                              <Coins className="w-4 h-4 text-indigo-400" />
+                              <span>Otro Monto / Abono</span>
+                            </button>
+
+                            {/* Botón 4: No Pagó */}
+                            <button
+                              type="button"
+                              onClick={() => openIncidentModal(loan)}
+                              className="min-h-[44px] py-2.5 px-3 bg-slate-800 hover:bg-rose-950/50 text-slate-300 hover:text-rose-200 border border-slate-700 hover:border-rose-500/40 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                            >
+                              <XCircle className="w-4 h-4 text-rose-400" />
+                              <span>No Pagó</span>
+                            </button>
+                          </div>
                         </div>
                       )}
 
