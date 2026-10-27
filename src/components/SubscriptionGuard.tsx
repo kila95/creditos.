@@ -9,10 +9,12 @@ import {
   ExternalLink,
   RefreshCw,
   Sparkles,
+  X,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { supabase, isLiveSupabaseConfigured } from '../services/supabaseAuth';
 import { formatCOP } from '../utils/financialCalculations';
+import { SubscriptionCheckout } from './SubscriptionCheckout';
 
 export interface TenantSubscriptionInfo {
   tenantId: string;
@@ -33,6 +35,7 @@ export const SubscriptionGuard: React.FC<SubscriptionGuardProps> = ({ children }
   const [subscription, setSubscription] = useState<TenantSubscriptionInfo | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isProcessingPayment, setIsProcessingPayment] = useState<boolean>(false);
+  const [showWompiModal, setShowWompiModal] = useState<boolean>(false);
 
   // Super Admin siempre tiene acceso maestro irrestricto
   if (isSuperAdmin) {
@@ -210,30 +213,56 @@ export const SubscriptionGuard: React.FC<SubscriptionGuardProps> = ({ children }
         <div className="space-y-3 pt-2">
           <button
             type="button"
-            onClick={handlePaySubscription}
-            disabled={isProcessingPayment}
-            className="w-full py-3.5 px-6 bg-gradient-to-r from-emerald-600 via-emerald-500 to-teal-500 hover:from-emerald-500 hover:to-teal-400 disabled:opacity-50 text-white font-black text-sm uppercase tracking-wider rounded-2xl shadow-lg shadow-emerald-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer"
+            onClick={() => setShowWompiModal(true)}
+            className="w-full py-3.5 px-6 bg-gradient-to-r from-amber-500 via-amber-400 to-yellow-400 hover:from-amber-400 hover:to-yellow-300 text-slate-950 font-black text-sm uppercase tracking-wider rounded-2xl shadow-lg shadow-amber-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer"
           >
-            {isProcessingPayment ? (
-              <>
-                <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>Conectando con Pasarela de Pago...</span>
-              </>
-            ) : (
-              <>
-                <CreditCard className="w-4 h-4" />
-                <span>Pagar Suscripción ({formatCOP(180000)} COP)</span>
-                <ExternalLink className="w-4 h-4 ml-1 opacity-70" />
-              </>
-            )}
+            <CreditCard className="w-4 h-4 text-slate-950" />
+            <span>Pagar Suscripción Wompi ({formatCOP(subscription?.monthlyFeeCop || 180000)})</span>
+            <ExternalLink className="w-4 h-4 ml-1 opacity-70" />
           </button>
 
           <p className="text-[11px] text-slate-500 flex items-center justify-center gap-1.5 font-mono">
             <Lock className="w-3 h-3 text-emerald-400" />
-            Transacción encriptada · Activación inmediata vía Webhook Server-to-Server
+            Integridad SHA-256 Bancolombia · Activación Server-to-Server
           </p>
         </div>
       </div>
+
+      {/* MODAL DE CHECKOUT WOMPI */}
+      {showWompiModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="relative w-full max-w-lg">
+            <button
+              type="button"
+              onClick={() => setShowWompiModal(false)}
+              className="absolute top-4 right-4 z-10 p-2 text-slate-400 hover:text-white bg-slate-800 rounded-full cursor-pointer shadow-md"
+              title="Cerrar pasarela"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <SubscriptionCheckout
+              tenantId={tenantId}
+              adminEmail={profile?.email || 'admin@rutacapital.co'}
+              adminName={profile?.fullName || 'Administrador'}
+              amountCOP={subscription?.monthlyFeeCop || 180000}
+              onPaymentSuccess={(txId) => {
+                setShowWompiModal(false);
+                const renewedSub: TenantSubscriptionInfo = {
+                  tenantId,
+                  adminId: profile?.id || 'usr-admin-001',
+                  status: 'active',
+                  currentPeriodEnd: new Date(Date.now() + 30 * 86400000).toISOString(),
+                  monthlyFeeCop: 180000,
+                  routesQuota: 1,
+                };
+                localStorage.setItem(`enruta_sub_${tenantId}`, JSON.stringify(renewedSub));
+                setSubscription(renewedSub);
+              }}
+              onPaymentCancel={() => setShowWompiModal(false)}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 };
