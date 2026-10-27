@@ -59,6 +59,8 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
   const [address, setAddress] = useState('');
   const [neighborhood, setNeighborhood] = useState('Comuna 13 - San Javier');
   const [routeId, setRouteId] = useState(routes[0]?.id || 'route-1');
+  const [isCustomRoute, setIsCustomRoute] = useState(false);
+  const [customRouteName, setCustomRouteName] = useState('');
   const [guarantorName, setGuarantorName] = useState('');
   const [guarantorPhone, setGuarantorPhone] = useState('');
 
@@ -179,13 +181,18 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
     }
 
     // CASO B: Registrar Nuevo Cliente + Insertar su Préstamo en `loans`
-    if (!name.trim() || !document.trim() || !phone.trim() || !address.trim()) {
+    // El campo de Cédula NO es obligatorio para no bloquear la inserción de clientes en calle
+    if (!name.trim() || !phone.trim() || !address.trim()) {
       setIsSubmitting(false);
       setErrorMsg(
-        'Por favor completa los datos obligatorios del cliente (Nombre, Cédula, Teléfono y Dirección).'
+        'Por favor completa los datos obligatorios del cliente (Nombre, Teléfono / WhatsApp y Dirección).'
       );
       return;
     }
+
+    const targetRouteId = isCustomRoute && customRouteName.trim()
+      ? `route-${customRouteName.toLowerCase().trim().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').slice(0, 20)}`
+      : (routeId || 'route-1');
 
     const { data, error } = await insertClientAndLoanToDB({
       name: name.trim(),
@@ -195,7 +202,7 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
       category,
       address: address.trim(),
       neighborhood: neighborhood.trim(),
-      routeId,
+      routeId: targetRouteId,
       guarantorName: guarantorName.trim(),
       guarantorPhone: guarantorPhone.trim(),
       principal: numericPrincipal,
@@ -370,12 +377,11 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
 
                   <div>
                     <label className="text-slate-300 font-medium block mb-1">
-                      Cédula de Ciudadanía (C.C.) *
+                      Cédula de Ciudadanía <span className="text-xs text-slate-400 font-normal">(Opcional en calle)</span>
                     </label>
                     <input
                       type="text"
-                      required
-                      placeholder="Ej. 1017384920"
+                      placeholder="Ej. 1017384920 (o en blanco)"
                       value={document}
                       onChange={(e) => setDocument(e.target.value)}
                       className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
@@ -395,20 +401,41 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
                   </div>
 
                   <div>
-                    <label className="text-slate-300 font-medium block mb-1">
-                      Ruta de Cobro Asignada *
-                    </label>
-                    <select
-                      value={routeId}
-                      onChange={(e) => setRouteId(e.target.value)}
-                      className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
-                    >
-                      {routes.map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.name} ({r.collectorName})
-                        </option>
-                      ))}
-                    </select>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-slate-300 font-medium block">
+                        Ruta de Cobro Asignada *
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setIsCustomRoute(!isCustomRoute)}
+                        className="text-[11px] text-emerald-400 hover:text-emerald-300 underline cursor-pointer"
+                      >
+                        {isCustomRoute ? '← Seleccionar ruta existente' : '+ Nueva Ruta'}
+                      </button>
+                    </div>
+
+                    {isCustomRoute ? (
+                      <input
+                        type="text"
+                        required
+                        placeholder="Nombre de la nueva ruta (ej: Ruta Poblado Sur)"
+                        value={customRouteName}
+                        onChange={(e) => setCustomRouteName(e.target.value)}
+                        className="w-full bg-slate-900 border border-emerald-500/80 rounded-lg px-3 py-2 text-white focus:outline-none"
+                      />
+                    ) : (
+                      <select
+                        value={routeId}
+                        onChange={(e) => setRouteId(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-emerald-500"
+                      >
+                        {routes.map((r) => (
+                          <option key={r.id} value={r.id}>
+                            {r.name} ({r.collectorName || 'Cobrador'})
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </div>
 
                   <div>

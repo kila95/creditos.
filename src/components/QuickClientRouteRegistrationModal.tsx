@@ -166,6 +166,9 @@ export const QuickClientRouteRegistrationModal: React.FC<QuickClientRouteRegistr
       return;
     }
 
+    const safeRouteId = currentRoute?.id || 'route-1';
+    const safeZone = currentRoute?.zone || 'Medellín Metropolitana';
+
     const { data, error } = await insertClientAndLoanToDB({
       name: name.trim(),
       tradeName: tradeName.trim() || name.trim(),
@@ -173,8 +176,8 @@ export const QuickClientRouteRegistrationModal: React.FC<QuickClientRouteRegistr
       phone: phone.trim(),
       category: 'Micronegocio Local',
       address: address.trim(),
-      neighborhood: currentRoute.zone,
-      routeId: currentRoute.id,
+      neighborhood: safeZone,
+      routeId: safeRouteId,
       principal: numericPrincipal,
       interestRate: numericInterestRate,
       termDays: numericTermInstallments,

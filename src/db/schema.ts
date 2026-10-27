@@ -48,7 +48,7 @@ export const routes = pgTable('routes', {
 // 3. CLIENTES / DEUDORES
 export const clients = pgTable('clients', {
   id: text('id').primaryKey(),
-  documentId: text('document_id').notNull().unique(),
+  documentId: text('document_id'), // Opcional en calle: no bloquea la creación si el deudor no tiene cédula a mano
   name: text('name').notNull(),
   alias: text('alias'),
   phone: text('phone').notNull(),

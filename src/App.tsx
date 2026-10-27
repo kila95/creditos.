@@ -57,6 +57,7 @@ import { AuthProvider, useAuth } from './context/AuthContext';
 import { useOnlineStatus, syncOfflineQueueWithServer, enqueueOfflinePayment } from './utils/offlineSync';
 import { fetchClientsAndLoansFromDB } from './services/clientSyncService';
 import { roundCOP, validatePaymentAmount } from './utils/financialCalculations';
+import { Par30AlertBanner, Par30AlertItem } from './components/Par30AlertBanner';
 
 export type { ActiveRole };
 
@@ -77,6 +78,41 @@ function MainAppContent() {
   const [collectorBases, setCollectorBases] = useState<CollectorBase[]>(INITIAL_COLLECTOR_BASES);
   const [auditLogs, setAuditLogs] = useState<AuditLogItem[]>(INITIAL_AUDIT_LOGS);
   const [showNewClientModal, setShowNewClientModal] = useState<boolean>(false);
+
+  // Estado global de alertas PAR 30 (Mora >= 30 días) y despachos de cobro prejurídico
+  const [activeAlerts, setActiveAlerts] = useState<Par30AlertItem[]>([]);
+  const [legalDispatches, setLegalDispatches] = useState<Record<string, boolean>>({});
+
+  // Hook useEffect global que monitorea el estado 'loans' y filtra por 'daysOverdue >= 30' (PAR 30)
+  useEffect(() => {
+    const par30Loans = loans.filter(
+      (loan) => loan.daysOverdue >= 30 && loan.status !== 'liquidado'
+    );
+
+    const generatedAlerts: Par30AlertItem[] = par30Loans.map((loan) => {
+      const matchedClient = clients.find((c) => c.id === loan.clientId);
+      return {
+        id: `par30-alert-${loan.id}`,
+        loanId: loan.id,
+        loanCode: loan.code,
+        clientId: loan.clientId,
+        clientName: loan.clientName,
+        tradeName: loan.tradeName,
+        phone: matchedClient?.phone,
+        guarantorName: matchedClient?.guarantorName,
+        guarantorPhone: matchedClient?.guarantorPhone,
+        routeId: loan.routeId,
+        daysOverdue: loan.daysOverdue,
+        remainingBalance: roundCOP(loan.remainingBalance),
+        installmentAmount: roundCOP(loan.installmentAmount),
+        termDays: loan.termDays,
+        status: loan.status,
+        legalDispatched: Boolean(legalDispatches[loan.id]),
+      };
+    });
+
+    setActiveAlerts(generatedAlerts);
+  }, [loans, clients, legalDispatches]);
 
   // Estado de conexión y latencia con Cloud SQL
   const [cloudSqlStatus, setCloudSqlStatus] = useState<'connected' | 'offline' | 'checking'>('checking');
@@ -498,7 +534,7 @@ function MainAppContent() {
     if (!loan) return;
 
     const targetTerm = newTerm ?? (loan.termDays + 15);
-    const targetInstallment = newInstallment ?? Math.round(loan.remainingBalance / targetTerm);
+    const targetInstallment = roundCOP(newInstallment ?? (loan.remainingBalance / targetTerm));
 
     setLoans(prev => prev.map(l => {
       if (l.id === loanId) {
@@ -506,10 +542,23 @@ function MainAppContent() {
           ...l,
           termDays: targetTerm,
           installmentAmount: targetInstallment,
+          daysOverdue: 0,
           status: 'refinanciado'
         };
       }
       return l;
+    }));
+
+    setClients(prev => prev.map(c => {
+      if (c.id === loan.clientId) {
+        return {
+          ...c,
+          daysOverdue: 0,
+          hasPreventiveBlock: false,
+          riskTier: 'B_promedio'
+        };
+      }
+      return c;
     }));
 
     const auditEvent: AuditLogItem = {
@@ -520,13 +569,101 @@ function MainAppContent() {
       action: 'REESTRUCTURACION_PLAZO',
       targetEntity: `loans (${loan.clientName})`,
       targetId: loan.id,
-      oldValue: `term: ${loan.termDays}d, cuota: $${loan.installmentAmount.toLocaleString()}`,
-      newValue: `term: ${targetTerm}d, cuota: $${targetInstallment.toLocaleString()}, status: refinanciado`,
-      justification: `Reestructuración autorizada ante mora de ${loan.daysOverdue} días para recuperar capital en sector.`,
+      oldValue: `term: ${loan.termDays}d, cuota: $${loan.installmentAmount.toLocaleString()}, mora: ${loan.daysOverdue}d`,
+      newValue: `term: ${targetTerm}d, cuota: $${targetInstallment.toLocaleString()}, mora: 0d, status: refinanciado`,
+      justification: `Reestructuración autorizada ante mora de ${loan.daysOverdue} días (PAR 30) para recuperar capital en sector.`,
       ipAddress: '190.157.24.81',
       immutableHash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2)
     };
     setAuditLogs(prev => [auditEvent, ...prev]);
+  };
+
+  const handleInitiateLegalCollection = (alertItem: Par30AlertItem, legalNotes: string) => {
+    setLegalDispatches(prev => ({ ...prev, [alertItem.loanId]: true }));
+
+    setClients(prev => prev.map(c => {
+      if (c.id === alertItem.clientId) {
+        return {
+          ...c,
+          hasPreventiveBlock: true,
+          riskTier: 'X_vetado'
+        };
+      }
+      return c;
+    }));
+
+    const auditEvent: AuditLogItem = {
+      id: `aud-legal-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+      actor: profile?.email || 'admin_cfo@rutacapital.co',
+      role: 'Administrador CFO',
+      action: 'BLOQUEO_PREVENTIVO',
+      targetEntity: `cobro_prejuridico (${alertItem.clientName} - ${alertItem.loanCode})`,
+      targetId: alertItem.loanId,
+      oldValue: `mora: ${alertItem.daysOverdue} días, estado_legal: sin_iniciar`,
+      newValue: `estado_legal: COBRO_PREJURIDICO_ACTIVO, saldo_exigible: $${alertItem.remainingBalance.toLocaleString()} COP`,
+      justification: legalNotes,
+      ipAddress: '190.157.24.81',
+      immutableHash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2),
+      severity: 'alerta_critica'
+    };
+    setAuditLogs(prev => [auditEvent, ...prev]);
+  };
+
+  const handleSimulatePar30Case = () => {
+    const suffix = Date.now().toString().slice(-4);
+    const newClientId = `cli-par30-${suffix}`;
+    const newLoanId = `loan-par30-${suffix}`;
+    const simulatedOverdueDays = 31 + Math.floor(Math.random() * 14);
+    const simulatedPrincipal = 800000;
+    const simulatedTotal = 960000;
+    const simulatedRemaining = 720000;
+    const simulatedQuota = 40000;
+
+    const newPar30Client: ClientProfile = {
+      id: newClientId,
+      name: `Deudor PAR-30 #${suffix}`,
+      tradeName: `Distribuidora Mayorista #${suffix}`,
+      category: 'Comercio / Abarrotes',
+      document: `71${suffix}90`,
+      phone: '3124589021',
+      address: 'Calle 50 # 52-19',
+      neighborhood: 'Centro / El Hueco',
+      routeId: 'route-1',
+      riskTier: 'D_mora_critica',
+      daysOverdue: simulatedOverdueDays,
+      hasPreventiveBlock: true,
+      guarantorName: 'Fiador Solidario Registrado',
+      guarantorPhone: '3004567890',
+      lat: 6.2518,
+      lng: -75.5681
+    };
+
+    const newPar30Loan: LoanDetail = {
+      id: newLoanId,
+      code: `PREST-R1-${suffix}`,
+      clientId: newClientId,
+      clientName: newPar30Client.name,
+      tradeName: newPar30Client.tradeName,
+      routeId: 'route-1',
+      principal: simulatedPrincipal,
+      interestRate: 20,
+      totalDebt: simulatedTotal,
+      installmentAmount: simulatedQuota,
+      termDays: 24,
+      modality: 'diaria',
+      installmentsPaid: 6,
+      totalCollected: simulatedTotal - simulatedRemaining,
+      remainingBalance: simulatedRemaining,
+      disbursedDate: '2026-08-20',
+      dueDate: '2026-09-18',
+      daysOverdue: simulatedOverdueDays,
+      status: 'mora_severa',
+      todayPaid: false
+    };
+
+    setClients(prev => [newPar30Client, ...prev]);
+    setLoans(prev => [newPar30Loan, ...prev]);
   };
 
   const handleToggleClientBlock = (clientId: string) => {
@@ -755,6 +892,14 @@ function MainAppContent() {
           <span>Modo Desconectado Activado: Cobros guardados localmente para sincronización posterior.</span>
         </div>
       )}
+
+      {/* BANNER PERSISTENTE SUPERIOR DE ALERTAS PAR 30 (MORA >= 30 DÍAS) */}
+      <Par30AlertBanner
+        activeAlerts={activeAlerts}
+        onRestructureLoan={handleRestructureLoan}
+        onInitiateLegalCollection={handleInitiateLegalCollection}
+        onSimulatePar30Case={handleSimulatePar30Case}
+      />
 
       {/* VISTA 1: PANEL SUPER ADMIN & ADMINISTRADOR DE FONDOS (PROTEGIDO POR RBAC) */}
       {activeRole === 'admin_cfo' && (

@@ -211,8 +211,8 @@ CREATE TABLE public.clients (
   user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
   organization_id TEXT NOT NULL DEFAULT 'org-medellin-01',
   created_by UUID REFERENCES auth.users(id) ON DELETE SET NULL,
-  document_type VARCHAR(10) NOT NULL DEFAULT 'CC',
-  document_number VARCHAR(30) NOT NULL UNIQUE,
+  document_type VARCHAR(10) DEFAULT 'CC',
+  document_number VARCHAR(60) DEFAULT NULL, -- Campo opcional: no bloquea la creación de clientes en calle
   first_name VARCHAR(60) NOT NULL,
   last_name VARCHAR(60) NOT NULL,
   trade_name VARCHAR(120) NOT NULL,

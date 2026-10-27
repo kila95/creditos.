@@ -1,5 +1,5 @@
 import { supabase, isLiveSupabaseConfigured } from './supabaseAuth';
-import { ClientProfile, LoanDetail } from '../data/mockData';
+import { ClientProfile, LoanDetail, INITIAL_CLIENTS, INITIAL_LOANS } from '../data/mockData';
 import { roundCOP } from '../utils/financialCalculations';
 
 export type LoanModality = 'diaria' | 'semanal' | 'quincenal' | 'mensual';
@@ -218,12 +218,12 @@ export async function fetchClientsAndLoansFromDB(
       lng: -75.6142,
     }));
 
-    // Fusionar clientes guardados localmente en modo offline
-    const offlineClients = getLocalCachedClients();
+    // Fusionar clientes guardados localmente en modo offline y registros base PAR 30
+    const offlineClients = [...getLocalCachedClients(), ...INITIAL_CLIENTS];
     const mappedClientIds = new Set(mappedClients.map((c) => c.id));
     for (const oc of offlineClients) {
       if (!mappedClientIds.has(oc.id)) {
-        mappedClients.unshift(oc);
+        mappedClients.push(oc);
         mappedClientIds.add(oc.id);
       }
     }
@@ -241,10 +241,30 @@ export async function fetchClientsAndLoansFromDB(
       const remBalance = roundCOP(l.remainingBalance ?? l.remaining_balance ?? totalAmount);
       const totalDaysCount = Math.max(1, roundCOP(l.totalDays || l.total_days || 24));
       const rawModality = (l.modality || 'diaria') as LoanModality;
+      const dueDateStr = l.expectedEndDate || l.expected_end_date || '';
+
+      // Calcular días en mora si la fecha límite ya venció o si viene reportado en el registro
+      let calculatedOverdue = roundCOP(l.daysOverdue ?? l.days_overdue ?? matchedClient?.daysOverdue ?? 0);
+      if (calculatedOverdue === 0 && dueDateStr && remBalance > 0) {
+        const dueMs = new Date(dueDateStr).getTime();
+        const nowMs = Date.now();
+        if (!isNaN(dueMs) && nowMs > dueMs) {
+          calculatedOverdue = Math.max(0, Math.floor((nowMs - dueMs) / (1000 * 60 * 60 * 24)));
+        }
+      }
+
+      const isCompleted = l.status === 'completed' || l.status === 'liquidado' || remBalance === 0;
+      const resolvedStatus: LoanDetail['status'] = isCompleted
+        ? 'liquidado'
+        : l.status === 'refinanciado'
+        ? 'refinanciado'
+        : calculatedOverdue >= 30 || l.status === 'defaulted' || l.status === 'mora_severa'
+        ? 'mora_severa'
+        : 'activo';
 
       return {
         id: String(l.id),
-        code: `PREST-${String(l.id).slice(-6).toUpperCase()}`,
+        code: l.code || `PREST-${String(l.id).slice(-6).toUpperCase()}`,
         clientId: cId,
         clientName: matchedClient ? matchedClient.name : l.client_name || 'Deudor Registrado',
         tradeName: matchedClient ? matchedClient.tradeName : l.trade_name || 'Micronegocio',
@@ -259,19 +279,19 @@ export async function fetchClientsAndLoansFromDB(
         totalCollected: Math.max(0, totalAmount - remBalance),
         remainingBalance: remBalance,
         disbursedDate: l.startDate || l.start_date || new Date().toISOString().split('T')[0],
-        dueDate: l.expectedEndDate || l.expected_end_date || '',
-        daysOverdue: 0,
-        status: l.status === 'completed' || remBalance === 0 ? 'liquidado' : 'activo',
+        dueDate: dueDateStr,
+        daysOverdue: isCompleted ? 0 : calculatedOverdue,
+        status: resolvedStatus,
         todayPaid: false,
       };
     });
 
-    // Fusionar préstamos guardados localmente en modo offline
-    const offlineLoans = getLocalCachedLoans();
+    // Fusionar préstamos guardados localmente en modo offline y casos PAR 30 activos
+    const offlineLoans = [...getLocalCachedLoans(), ...INITIAL_LOANS];
     const mappedLoanIds = new Set(mappedLoans.map((l) => l.id));
     for (const ol of offlineLoans) {
       if (!mappedLoanIds.has(ol.id)) {
-        mappedLoans.unshift(ol);
+        mappedLoans.push(ol);
         mappedLoanIds.add(ol.id);
       }
     }
@@ -340,9 +360,12 @@ export async function fetchClientsAndLoansFromDB(
 export async function createCustomLoanInDB(
   input: CreateCustomLoanInput
 ): Promise<DatabaseOperationResult<LoanDetail>> {
+  // Asegurar que la ruta exista en routes antes de registrar el préstamo
+  const safeRouteId = await ensureRouteExistsInSupabaseAndDB(input.routeId);
+
   const timestampSuffix = Date.now().toString().slice(-6);
   const loanId = `loan-${timestampSuffix}`;
-  const loanCode = `PREST-${input.routeId.slice(-2).toUpperCase()}-${timestampSuffix.slice(-4)}`;
+  const loanCode = `PREST-${safeRouteId.slice(-2).toUpperCase()}-${timestampSuffix.slice(-4)}`;
   const todayStr = new Date().toISOString().split('T')[0];
 
   const safePrincipal = Math.max(1000, roundCOP(input.principal));
@@ -362,7 +385,7 @@ export async function createCustomLoanInDB(
     clientId: input.clientId,
     clientName: input.clientName,
     tradeName: input.tradeName || input.clientName,
-    routeId: input.routeId,
+    routeId: safeRouteId,
     principal: safePrincipal,
     interestRate: safeRate,
     totalDebt,
@@ -400,7 +423,7 @@ export async function createCustomLoanInDB(
           {
             id: loanId,
             client_id: input.clientId,
-            route_id: input.routeId,
+            route_id: safeRouteId,
             principal_amount: safePrincipal,
             interest_rate: safeRate,
             total_amount: totalDebt,
@@ -413,9 +436,7 @@ export async function createCustomLoanInDB(
             start_date: todayStr,
             expected_end_date: dueDateStr,
           },
-        ])
-        .select()
-        .single();
+        ]);
 
       if (sbLoanError) {
         console.error('❌ [Supabase INSERT Error en tabla loans]:', sbLoanError);
@@ -448,7 +469,7 @@ export async function createCustomLoanInDB(
       body: JSON.stringify({
         id: loanId,
         clientId: input.clientId,
-        routeId: input.routeId,
+        routeId: safeRouteId,
         principalAmount: safePrincipal,
         interestRate: safeRate,
         totalAmount: totalDebt,
@@ -494,15 +515,105 @@ export async function createCustomLoanInDB(
 }
 
 /**
- * 3. INSERCIÓN DE CLIENTE + PRÉSTAMO PERSONALIZADO CON CAPTURA ESTRICTA DE ERRORES Y SOPORTE OFFLINE
+ * Valida la existencia de la ruta en la tabla 'routes' de Supabase y en la base de datos Cloud SQL.
+ * Si la ruta no existe, la crea/registra automáticamente para garantizar integridad referencial
+ * y evitar errores HTTP 404 o rechazos de clave foránea.
+ */
+export async function ensureRouteExistsInSupabaseAndDB(
+  routeId: string,
+  zone?: string,
+  collectorName?: string
+): Promise<string> {
+  const safeRouteId = routeId?.trim() || 'route-1';
+
+  // 1. Validar / auto-crear en Supabase si está configurado
+  if (isLiveSupabaseConfigured) {
+    try {
+      // Usamos .maybeSingle() para evitar el error HTTP 404 de PostgREST si no hay filas
+      const { data: existingRoute, error: checkError } = await supabase
+        .from('routes')
+        .select('id, name')
+        .eq('id', safeRouteId)
+        .maybeSingle();
+
+      if (!checkError && existingRoute?.id) {
+        // La ruta ya existe válidamente en Supabase
+      } else {
+        // La ruta no existe en Supabase: registrarla automáticamente
+        const routeName = `Ruta ${safeRouteId.replace(/^route-?/i, '').toUpperCase() || 'General'}`;
+        const { error: upsertErr } = await supabase
+          .from('routes')
+          .upsert(
+            {
+              id: safeRouteId,
+              name: routeName,
+              zone: zone || 'Medellín Metropolitana',
+              collector_name: collectorName || 'Cobrador de Ruta',
+              status: 'active',
+              target_daily_collection: 1500000,
+              operating_expense_budget: 80000,
+            },
+            { onConflict: 'id' }
+          );
+
+        if (upsertErr) {
+          console.warn('⚠️ [ensureRouteExistsInSupabaseAndDB] Advertencia al registrar ruta en Supabase:', upsertErr);
+          // Si falló por RLS u otra política, buscar cualquier ruta existente de respaldo
+          const { data: fallbackRoute } = await supabase
+            .from('routes')
+            .select('id')
+            .limit(1)
+            .maybeSingle();
+          if (fallbackRoute?.id) {
+            return fallbackRoute.id;
+          }
+        }
+      }
+    } catch (sbErr) {
+      console.warn('⚠️ [ensureRouteExistsInSupabaseAndDB] Excepción verificando ruta en Supabase:', sbErr);
+    }
+  }
+
+  // 2. Validar / auto-crear en Cloud SQL (Backend API /api/routes)
+  try {
+    const isBrowserOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+    if (isBrowserOnline) {
+      await fetch('/api/routes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: safeRouteId,
+          zone: zone || 'Medellín Metropolitana',
+          collectorName: collectorName || 'Cobrador de Zona',
+        }),
+      }).catch((fetchErr) => {
+        console.warn('⚠️ No se pudo contactar endpoint /api/routes:', fetchErr);
+      });
+    }
+  } catch (err) {
+    console.warn('⚠️ [ensureRouteExistsInSupabaseAndDB] Excepción en /api/routes:', err);
+  }
+
+  return safeRouteId;
+}
+
+/**
+ * 3. INSERCIÓN DE CLIENTE + PRÉSTAMO PERSONALIZADO CON CAPTURA ESTRICTA DE ERRORES, VALIDACIÓN DE RUTA Y SOPORTE OFFLINE
  */
 export async function insertClientAndLoanToDB(
   input: CreateClientRecordInput
 ): Promise<DatabaseOperationResult<{ client: ClientProfile; loan: LoanDetail }>> {
+  // 1. Validar y asegurar que la ruta exista en la tabla routes (o crearla) antes de insertar
+  const safeRouteId = await ensureRouteExistsInSupabaseAndDB(
+    input.routeId,
+    input.neighborhood,
+    'Cobrador de Ruta'
+  );
+
   const timestampSuffix = Date.now().toString().slice(-6);
   const clientId = input.id || `cli-${timestampSuffix}`;
   const loanId = `loan-${timestampSuffix}`;
-  const loanCode = `PREST-${input.routeId.slice(-2).toUpperCase()}-${timestampSuffix.slice(-4)}`;
+  const loanCode = `PREST-${safeRouteId.slice(-2).toUpperCase()}-${timestampSuffix.slice(-4)}`;
   const todayStr = new Date().toISOString().split('T')[0];
 
   const safePrincipal = Math.max(1000, roundCOP(input.principal));
@@ -514,8 +625,13 @@ export async function insertClientAndLoanToDB(
   const totalInterest = roundCOP(safePrincipal * (safeRate / 100));
   const totalDebt = safePrincipal + totalInterest;
   const installmentAmount = roundCOP(totalDebt / safeTerm);
-  const cleanDocument =
-    input.document.trim() || `CC-${Math.floor(1000000000 + Math.random() * 900000000)}`;
+
+  // El campo de cédula ya no es obligatorio: si el cliente en la calle no lo tiene, se genera un ID único
+  // para no bloquear la inserción en la base de datos ni provocar errores por valor nulo o duplicado
+  const hasDoc = input.document && input.document.trim().length > 0;
+  const cleanDocument = hasDoc
+    ? input.document.trim()
+    : `CC-PENDIENTE-${Date.now().toString().slice(-6)}-${Math.floor(1000 + Math.random() * 9000)}`;
 
   const createdClient: ClientProfile = {
     id: clientId,
@@ -526,7 +642,7 @@ export async function insertClientAndLoanToDB(
     phone: input.phone.trim(),
     address: input.address.trim(),
     neighborhood: input.neighborhood.trim(),
-    routeId: input.routeId,
+    routeId: safeRouteId,
     riskTier: 'A_excelente',
     daysOverdue: 0,
     hasPreventiveBlock: false,
@@ -542,7 +658,7 @@ export async function insertClientAndLoanToDB(
     clientId,
     clientName: createdClient.name,
     tradeName: createdClient.tradeName,
-    routeId: input.routeId,
+    routeId: safeRouteId,
     principal: safePrincipal,
     interestRate: safeRate,
     totalDebt,
@@ -575,6 +691,7 @@ export async function insertClientAndLoanToDB(
   try {
     // 1. Si Supabase directo está configurado, insertar en `public.clients` y `public.loans`
     if (isLiveSupabaseConfigured) {
+      // Inserción en clients con .maybeSingle() para evitar excepciones de 0 filas (404)
       const { error: sbError } = await supabase
         .from('clients')
         .insert([
@@ -587,14 +704,14 @@ export async function insertClientAndLoanToDB(
             business_type: input.category || 'Micronegocio Local',
             address: input.address.trim(),
             zone: input.neighborhood.trim(),
-            route_id: input.routeId,
+            route_id: safeRouteId,
             risk_score: 80,
             risk_level: 'verde',
             credit_limit: safePrincipal * 2,
           },
         ])
         .select()
-        .single();
+        .maybeSingle();
 
       if (sbError) {
         console.error('❌ [Supabase INSERT Error en tabla clients]:', sbError);
@@ -623,7 +740,7 @@ export async function insertClientAndLoanToDB(
         {
           id: loanId,
           client_id: clientId,
-          route_id: input.routeId,
+          route_id: safeRouteId,
           principal_amount: safePrincipal,
           interest_rate: safeRate,
           total_amount: totalDebt,
@@ -656,7 +773,7 @@ export async function insertClientAndLoanToDB(
         businessType: input.category || 'Micronegocio Local',
         address: input.address.trim(),
         zone: input.neighborhood.trim(),
-        routeId: input.routeId,
+        routeId: safeRouteId,
         riskScore: 80,
         riskLevel: 'verde',
         creditLimit: safePrincipal * 2,
@@ -685,7 +802,7 @@ export async function insertClientAndLoanToDB(
       body: JSON.stringify({
         id: loanId,
         clientId,
-        routeId: input.routeId,
+        routeId: safeRouteId,
         principalAmount: safePrincipal,
         interestRate: safeRate,
         totalAmount: totalDebt,

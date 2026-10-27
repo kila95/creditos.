@@ -166,9 +166,43 @@ export async function getAuditLogs() {
   }
 }
 
+export async function ensureRouteExists(routeId: string, zone?: string, collectorName?: string) {
+  try {
+    const safeRouteId = routeId?.trim() || 'route-1';
+    const existing = await db.select().from(routes).where(eq(routes.id, safeRouteId)).limit(1);
+    if (existing.length > 0) {
+      return existing[0];
+    }
+
+    // Auto-registrar la ruta si no existe para garantizar integridad referencial y evitar 404
+    const cleanName = `Ruta ${safeRouteId.replace(/^route-?/i, '').toUpperCase() || 'General'}`;
+    const cleanZone = zone?.trim() || 'Medellín Metropolitana';
+    const cleanCollector = collectorName?.trim() || 'Cobrador de Zona';
+
+    const inserted = await db.insert(routes).values({
+      id: safeRouteId,
+      name: cleanName,
+      zone: cleanZone,
+      collectorName: cleanCollector,
+      targetDailyCollection: '1500000',
+      operatingExpenseBudget: '80000',
+      status: 'active',
+      organizationId: 'org-medellin-01',
+      createdBy: 'usr-admin-001',
+    }).returning();
+
+    return inserted[0];
+  } catch (err) {
+    console.warn(`[ensureRouteExists] Advertencia al validar/crear ruta ${routeId}:`, err);
+    // Si la ruta ya existía o hubo condición de carrera, retornar la primera ruta válida
+    const fallback = await db.select().from(routes).limit(1);
+    return fallback[0] || null;
+  }
+}
+
 export async function createClient(data: {
   id: string;
-  documentId: string;
+  documentId?: string;
   name: string;
   alias?: string;
   phone: string;
@@ -183,16 +217,27 @@ export async function createClient(data: {
   creditLimit: number;
 }) {
   try {
+    // 1. Garantizar que la ruta exista en la tabla routes para evitar errores de clave foránea o 404
+    const safeRouteId = data.routeId?.trim() || 'route-1';
+    await ensureRouteExists(safeRouteId, data.zone);
+
+    // 2. Si el campo de cédula no se proporciona en calle, generar un identificador único seguro
+    // para no bloquear la inserción en la base de datos ni fallar por valor nulo o duplicado
+    const hasDoc = data.documentId && data.documentId.trim().length > 0;
+    const safeDocumentId = hasDoc
+      ? data.documentId!.trim()
+      : `CC-PENDIENTE-${Date.now().toString().slice(-6)}-${Math.floor(1000 + Math.random() * 9000)}`;
+
     const inserted = await db.insert(clients).values({
       id: data.id,
-      documentId: data.documentId,
+      documentId: safeDocumentId,
       name: data.name,
       alias: data.alias || null,
       phone: data.phone,
       businessType: data.businessType,
       address: data.address,
       zone: data.zone,
-      routeId: data.routeId,
+      routeId: safeRouteId,
       organizationId: data.organizationId || 'org-medellin-01',
       createdBy: data.createdBy || 'usr-admin-001',
       riskScore: data.riskScore ?? 75,
@@ -224,10 +269,13 @@ export async function createLoan(data: {
   expectedEndDate: string;
 }) {
   try {
+    const safeRouteId = data.routeId?.trim() || 'route-1';
+    await ensureRouteExists(safeRouteId);
+
     const inserted = await db.insert(loans).values({
       id: data.id,
       clientId: data.clientId,
-      routeId: data.routeId,
+      routeId: safeRouteId,
       principalAmount: data.principalAmount.toString(),
       interestRate: data.interestRate.toString(),
       totalAmount: data.totalAmount.toString(),

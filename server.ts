@@ -3,6 +3,7 @@ import { createServer as createViteServer } from 'vite';
 import { requireAuth, AuthRequest } from './src/middleware/auth.ts';
 import { 
   getAllRoutes, 
+  ensureRouteExists,
   getAllClients, 
   createClient,
   getAllLoans, 
@@ -47,6 +48,25 @@ app.get('/api/routes', requireAuth, async (req: AuthRequest, res) => {
   try {
     const data = await getAllRoutes();
     res.json(data);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/routes', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { id, zone, collectorName } = req.body;
+    const route = await ensureRouteExists(id, zone, collectorName);
+    res.status(201).json(route);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/routes/:id', requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const route = await ensureRouteExists(req.params.id);
+    res.json(route);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

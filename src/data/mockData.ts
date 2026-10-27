@@ -146,9 +146,91 @@ export const INITIAL_ROUTES: RouteData[] = [
   }
 ];
 
-export const INITIAL_CLIENTS: ClientProfile[] = [];
+export const INITIAL_CLIENTS: ClientProfile[] = [
+  {
+    id: 'cli-par30-01',
+    name: 'Hernán Darío Gaviria',
+    tradeName: 'Chatarrería y Reciclaje El Hueco',
+    category: 'Reciclaje / Mayorista',
+    document: '71384920',
+    phone: '3104558891',
+    address: 'Calle 48 # 53-18 Sector Maturin',
+    neighborhood: 'Centro / El Hueco',
+    routeId: 'route-1',
+    riskTier: 'D_mora_critica',
+    daysOverdue: 36,
+    hasPreventiveBlock: true,
+    guarantorName: 'Luis Eduardo Gaviria',
+    guarantorPhone: '3116789012',
+    lat: 6.2498,
+    lng: -75.5702
+  },
+  {
+    id: 'cli-par30-02',
+    name: 'Marta Cecilia Quintero',
+    tradeName: 'Confecciones y Remates Manrique',
+    category: 'Textil / Confección',
+    document: '43589102',
+    phone: '3147823340',
+    address: 'Cra 45 # 72-14 La 45',
+    neighborhood: 'Manrique & Aranjuez',
+    routeId: 'route-2',
+    riskTier: 'D_mora_critica',
+    daysOverdue: 32,
+    hasPreventiveBlock: true,
+    guarantorName: 'Jorge Eliécer Quintero',
+    guarantorPhone: '3004128890',
+    lat: 6.2685,
+    lng: -75.5521
+  }
+];
 
-export const INITIAL_LOANS: LoanDetail[] = [];
+export const INITIAL_LOANS: LoanDetail[] = [
+  {
+    id: 'loan-par30-01',
+    code: 'PREST-R1-8901',
+    clientId: 'cli-par30-01',
+    clientName: 'Hernán Darío Gaviria',
+    tradeName: 'Chatarrería y Reciclaje El Hueco',
+    routeId: 'route-1',
+    principal: 1500000,
+    interestRate: 20,
+    totalDebt: 1800000,
+    installmentAmount: 75000,
+    termDays: 24,
+    modality: 'diaria',
+    installmentsPaid: 8,
+    totalCollected: 600000,
+    remainingBalance: 1200000,
+    disbursedDate: '2026-08-25',
+    dueDate: '2026-09-20',
+    daysOverdue: 36,
+    status: 'mora_severa',
+    todayPaid: false
+  },
+  {
+    id: 'loan-par30-02',
+    code: 'PREST-R2-7412',
+    clientId: 'cli-par30-02',
+    clientName: 'Marta Cecilia Quintero',
+    tradeName: 'Confecciones y Remates Manrique',
+    routeId: 'route-2',
+    principal: 1000000,
+    interestRate: 20,
+    totalDebt: 1200000,
+    installmentAmount: 50000,
+    termDays: 24,
+    modality: 'diaria',
+    installmentsPaid: 6,
+    totalCollected: 300000,
+    remainingBalance: 900000,
+    disbursedDate: '2026-08-29',
+    dueDate: '2026-09-24',
+    daysOverdue: 32,
+    status: 'mora_severa',
+    todayPaid: false
+  }
+];
 
 export const INITIAL_LEDGER: LedgerEntry[] = [];
 
