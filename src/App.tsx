@@ -39,6 +39,7 @@ import {
 } from './data/mockData';
 import { INITIAL_AUDIT_LOGS, AuditLogItem } from './data/auditLogData';
 import { AdminInvestorDashboard } from './components/AdminInvestorDashboard';
+import { SuperAdminDashboardView } from './components/SuperAdminDashboardView';
 import { CollectorStreetView } from './components/CollectorStreetView';
 import { ClientBorrowerView } from './components/ClientBorrowerView';
 import { SupabaseSqlViewer } from './components/SupabaseSqlViewer';
@@ -56,6 +57,7 @@ import { ResponsiveAppShell, ActiveRole, ViewportMode } from './components/Respo
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { useOnlineStatus, syncOfflineQueueWithServer, enqueueOfflinePayment } from './utils/offlineSync';
 import { fetchClientsAndLoansFromDB } from './services/clientSyncService';
+import { supabase, isLiveSupabaseConfigured } from './services/supabaseAuth';
 import { roundCOP, validatePaymentAmount } from './utils/financialCalculations';
 import { Par30AlertBanner, Par30AlertItem } from './components/Par30AlertBanner';
 
@@ -176,7 +178,16 @@ function MainAppContent() {
     }
     if (data) {
       setClients(data.clients);
-      setLoans(data.loans);
+      setLoans(prevLoans => {
+        const prevPaidMap = new Map(prevLoans.map(pl => [pl.id, pl.todayPaid]));
+        return data.loans.map(dl => {
+          const wasPaidLocally = prevPaidMap.get(dl.id);
+          return {
+            ...dl,
+            todayPaid: Boolean(dl.todayPaid) || Boolean(wasPaidLocally)
+          };
+        });
+      });
       // Recalcular métricas de cartera por ruta con base en los préstamos cargados
       setRoutes(prevRoutes =>
         prevRoutes.map(r => {
@@ -504,8 +515,39 @@ function MainAppContent() {
       return r;
     }));
 
-    // Enviar a la base de datos Cloud SQL en tiempo real vía backend con try/catch y fallback offline
+    // Enviar a la base de datos Cloud SQL / Supabase en tiempo real vía backend con try/catch y fallback offline
     if (isOnline) {
+      if (isLiveSupabaseConfigured) {
+        supabase.from('daily_ledger').insert([{
+          id: newEntry.id,
+          receipt_number: newEntry.receiptNumber,
+          loan_id: newEntry.loanId,
+          client_id: newEntry.clientId,
+          client_name: newEntry.clientName,
+          route_id: newEntry.routeId,
+          amount: safeAmount,
+          principal_portion: principalPortion,
+          interest_portion: interestPortion,
+          payment_method: method,
+          pre_balance: preBalance,
+          post_balance: postBalance,
+          timestamp: newEntry.timestamp,
+          gps_location: newEntry.gpsLocation,
+          hash: newEntry.hash,
+        }]).then(({ error }) => {
+          if (error) console.warn('⚠️ [Supabase daily_ledger insert]:', error);
+        });
+
+        supabase.from('loans').update({
+          remaining_balance: postBalance,
+          last_payment_date: newEntry.timestamp,
+          paid_days: loan.installmentsPaid + 1,
+          status: postBalance === 0 ? 'completed' : 'active',
+        }).eq('id', loanId).then(({ error }) => {
+          if (error) console.warn('⚠️ [Supabase loans update]:', error);
+        });
+      }
+
       fetch('/api/payments', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -982,67 +1024,70 @@ function MainAppContent() {
           requiredRole="admin_or_socio" 
           onRedirectToAuthorized={(roleRedirect) => setActiveRole(roleRedirect as ActiveRole)}
         >
-          <AdminInvestorDashboard
-            routes={tenantRoutes}
-            clients={tenantClients}
-            loans={tenantLoans}
-            expenses={tenantExpenses}
-            ledger={tenantLedger}
-            collectorBases={tenantCollectorBases}
-            onAssignCollectorBase={isSuperAdminRole ? undefined : handleAssignCollectorBase}
-            onUpdateCollectorBaseStatus={isSuperAdminRole ? undefined : handleUpdateCollectorBaseStatus}
-            onCollectorCreated={(collector) => {
-              if (isSuperAdminRole) return;
-              setRoutes(prev => {
-                const exists = prev.some(r => r.id === collector.assignedRouteId);
-                if (exists) {
-                  return prev.map(r =>
-                    r.id === collector.assignedRouteId
-                      ? {
-                          ...r,
-                          organizationId: currentTenantId,
-                          collectorName: collector.name,
-                          zone: collector.routeZone || r.zone,
-                          name: collector.routeZone || r.name,
-                        }
-                      : r
-                  );
-                }
-                const newRouteNumber = String(prev.length + 1).padStart(2, '0');
-                return [
-                  ...prev,
-                  {
-                    id: collector.assignedRouteId,
-                    code: `RUTA-MED-${newRouteNumber}`,
-                    name: collector.routeZone || `Ruta ${newRouteNumber}`,
-                    zone: collector.routeZone || 'Centro / El Hueco',
-                    organizationId: currentTenantId,
-                    collectorName: collector.name,
-                    collectorPhone: collector.phone || '+57 314 000 0000',
-                    baseFloatingCapital: 0,
-                    fixedDailyOpex: 45000,
-                    collectorCommissionRate: 3.5,
-                    targetRecoveryRate: 95.0,
-                    activeLoansCount: 0,
-                    totalPortfolio: 0,
-                    dailyGrossExpected: 0,
-                    dailyGrossCollected: 0,
-                    dailyExpenses: 0,
-                    par1Rate: 0,
-                    par7Rate: 0,
-                    par30Rate: 0,
-                    status: 'activa',
-                  },
-                ];
-              });
-            }}
-            onRestructureLoan={handleRestructureLoan}
-            onToggleClientBlock={handleToggleClientBlock}
-            onReassignClientRoute={handleReassignClientRoute}
-            onConfirmReconciliation={handleConfirmReconciliation}
-            onNavigateToTab={(tab) => setActiveRole(tab as ActiveRole)}
-            onOpenNewClientModal={isSuperAdminRole ? undefined : () => setShowNewClientModal(true)}
-          />
+          {isSuperAdminRole ? (
+            <SuperAdminDashboardView />
+          ) : (
+            <AdminInvestorDashboard
+              routes={tenantRoutes}
+              clients={tenantClients}
+              loans={tenantLoans}
+              expenses={tenantExpenses}
+              ledger={tenantLedger}
+              collectorBases={tenantCollectorBases}
+              onAssignCollectorBase={handleAssignCollectorBase}
+              onUpdateCollectorBaseStatus={handleUpdateCollectorBaseStatus}
+              onCollectorCreated={(collector) => {
+                setRoutes(prev => {
+                  const exists = prev.some(r => r.id === collector.assignedRouteId);
+                  if (exists) {
+                    return prev.map(r =>
+                      r.id === collector.assignedRouteId
+                        ? {
+                            ...r,
+                            organizationId: currentTenantId,
+                            collectorName: collector.name,
+                            zone: collector.routeZone || r.zone,
+                            name: collector.routeZone || r.name,
+                          }
+                        : r
+                    );
+                  }
+                  const newRouteNumber = String(prev.length + 1).padStart(2, '0');
+                  return [
+                    ...prev,
+                    {
+                      id: collector.assignedRouteId,
+                      code: `RUTA-MED-${newRouteNumber}`,
+                      name: collector.routeZone || `Ruta ${newRouteNumber}`,
+                      zone: collector.routeZone || 'Centro / El Hueco',
+                      organizationId: currentTenantId,
+                      collectorName: collector.name,
+                      collectorPhone: collector.phone || '+57 314 000 0000',
+                      baseFloatingCapital: 0,
+                      fixedDailyOpex: 45000,
+                      collectorCommissionRate: 3.5,
+                      targetRecoveryRate: 95.0,
+                      activeLoansCount: 0,
+                      totalPortfolio: 0,
+                      dailyGrossExpected: 0,
+                      dailyGrossCollected: 0,
+                      dailyExpenses: 0,
+                      par1Rate: 0,
+                      par7Rate: 0,
+                      par30Rate: 0,
+                      status: 'activa',
+                    },
+                  ];
+                });
+              }}
+              onRestructureLoan={handleRestructureLoan}
+              onToggleClientBlock={handleToggleClientBlock}
+              onReassignClientRoute={handleReassignClientRoute}
+              onConfirmReconciliation={handleConfirmReconciliation}
+              onNavigateToTab={(tab) => setActiveRole(tab as ActiveRole)}
+              onOpenNewClientModal={() => setShowNewClientModal(true)}
+            />
+          )}
         </AdminRouteGuard>
       )}
 

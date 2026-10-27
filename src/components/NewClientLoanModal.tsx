@@ -17,6 +17,7 @@ import { formatCOP } from '../utils/financialCalculations';
 import {
   insertClientAndLoanToDB,
   createCustomLoanInDB,
+  computeDefaultPaymentDays,
   LoanModality,
 } from '../services/clientSyncService';
 import {
@@ -71,6 +72,7 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
   const [interestRateInput, setInterestRateInput] = useState<string>('20'); // Porcentaje de interés libre (%)
   const [termInstallmentsInput, setTermInstallmentsInput] = useState<string>('24'); // Número de cuotas según frecuencia
   const [modality, setModality] = useState<LoanModality>('diaria'); // Frecuencia: diaria, semanal, quincenal, mensual
+  const [paymentDays, setPaymentDays] = useState<number[]>([1, 2, 3, 4, 5, 6]); // 0=Dom, 1=Lun, 2=Mar, 3=Mié, 4=Jue, 5=Vie, 6=Sáb
 
   // Estados de envío y errores de Supabase / RLS
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -106,6 +108,16 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
     );
     setModality(nextModality);
     setTermInstallmentsInput(String(convertedInstallments));
+    setPaymentDays(computeDefaultPaymentDays(nextModality));
+  };
+
+  const togglePaymentDay = (dayId: number) => {
+    if (paymentDays.includes(dayId)) {
+      if (paymentDays.length === 1) return; // Mantener al menos un día seleccionado
+      setPaymentDays(paymentDays.filter((d) => d !== dayId).sort((a, b) => a - b));
+    } else {
+      setPaymentDays([...paymentDays, dayId].sort((a, b) => a - b));
+    }
   };
 
   const quickTermSuggestions: Record<LoanModality, number[]> = {
@@ -151,6 +163,7 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
         interestRate: numericInterestRate,
         termInstallments: numericTermInstallments,
         modality,
+        paymentDays,
       });
 
       setIsSubmitting(false);
@@ -209,6 +222,7 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
       interestRate: numericInterestRate,
       termDays: numericTermInstallments,
       modality,
+      paymentDays,
     });
 
     setIsSubmitting(false);
@@ -590,6 +604,51 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
                     ))}
                   </div>
                 </div>
+              </div>
+            </div>
+
+            {/* SELECTOR VISUAL DE DÍAS DE COBRO (payment_days) */}
+            <div className="mt-3.5 p-3.5 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <label className="text-slate-200 font-semibold text-xs flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-emerald-400" />
+                  Días de Cobro Programados (<code className="font-mono text-emerald-400">payment_days</code>)
+                </label>
+                <span className="text-[11px] font-mono text-slate-400">
+                  {modality === 'diaria'
+                    ? 'Asignación automática: Laborables (L-S)'
+                    : `${paymentDays.length} día(s) seleccionado(s)`}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1.5 pt-1">
+                {[
+                  { id: 1, label: 'L', name: 'Lunes' },
+                  { id: 2, label: 'M', name: 'Martes' },
+                  { id: 3, label: 'M', name: 'Miércoles' },
+                  { id: 4, label: 'J', name: 'Jueves' },
+                  { id: 5, label: 'V', name: 'Viernes' },
+                  { id: 6, label: 'S', name: 'Sábado' },
+                  { id: 0, label: 'D', name: 'Domingo' },
+                ].map((d) => {
+                  const isSelected = paymentDays.includes(d.id);
+                  return (
+                    <button
+                      key={d.id}
+                      type="button"
+                      onClick={() => togglePaymentDay(d.id)}
+                      title={`${d.name} (${isSelected ? 'Seleccionado' : 'No seleccionado'})`}
+                      className={`flex-1 min-h-[38px] rounded-lg border font-mono font-bold text-xs sm:text-sm flex flex-col items-center justify-center transition-all cursor-pointer ${
+                        isSelected
+                          ? 'bg-emerald-500 text-slate-950 border-emerald-400 shadow-md scale-105'
+                          : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-200 hover:border-slate-700'
+                      }`}
+                    >
+                      <span>{d.label}</span>
+                      <span className="text-[9px] uppercase tracking-tighter opacity-80">{d.name.slice(0, 3)}</span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 

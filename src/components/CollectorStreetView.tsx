@@ -25,6 +25,7 @@ import {
   X,
   ArrowRight,
   Clock,
+  Calendar,
 } from 'lucide-react';
 import {
   RouteData,
@@ -51,6 +52,7 @@ import { DigitalReceiptModal } from './DigitalReceiptModal';
 import { DailyCashReconciliationModal } from './DailyCashReconciliationModal';
 import { PartialPaymentModal } from './PartialPaymentModal';
 import { QuickClientRouteRegistrationModal } from './QuickClientRouteRegistrationModal';
+import { isDateTodayLocal } from '../services/clientSyncService';
 
 interface NonPaymentIncident {
   loanId: string;
@@ -115,6 +117,8 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'collected' | 'incidents'>(
     'all'
   );
+  // Filtro por días programados (payment_days) para la ruta del cobrador
+  const [onlyScheduledToday, setOnlyScheduledToday] = useState(true);
 
   // Modales operativos
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
@@ -214,7 +218,36 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
 
   const routeLoans = [...rawRouteLoans, ...orphanClientLoans];
 
-  // 2. BUSCADOR INSTANTÁNEO POR NOMBRE, TELÉFONO, NEGOCIO O CÉDULA
+  // 2. FILTRADO INTELIGENTE SEGÚN MODALIDAD (diaria/semanal -> getDay(), quincenal/mensual -> getDate())
+  const now = new Date();
+  const currentWeekDay = now.getDay(); // 0 = Dom, 1 = Lun, ..., 6 = Sáb
+  const currentMonthDate = now.getDate(); // 1 - 31
+  const DAYS_SPANISH = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
+  const currentDayName = DAYS_SPANISH[currentWeekDay];
+
+  const isLoanScheduledToday = (l: LoanDetail) => {
+    if (!l.paymentDays || !Array.isArray(l.paymentDays) || l.paymentDays.length === 0) {
+      return true; // Si no está especificado, incluir para compatibilidad
+    }
+
+    const modality = l.modality || 'diaria';
+
+    if (modality === 'diaria' || modality === 'semanal') {
+      // Filtrar comparando con getDay() (día de la semana actual 0-6)
+      return l.paymentDays.includes(currentWeekDay);
+    } else {
+      // Filtrar comparando con getDate() (fecha del mes actual 1-31, ej: [15, 30] o [12])
+      if (l.paymentDays.includes(30) && currentMonthDate >= 28) {
+        const isLastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() === currentMonthDate;
+        if (isLastDayOfMonth) return true;
+      }
+      return l.paymentDays.includes(currentMonthDate);
+    }
+  };
+
+  const todayScheduledLoansCount = routeLoans.filter(isLoanScheduledToday).length;
+
+  // 3. BUSCADOR INSTANTÁNEO POR NOMBRE, TELÉFONO, NEGOCIO O CÉDULA
   const normalizedQuery = searchTerm.trim().toLowerCase();
   const digitsOnlyQuery = searchTerm.replace(/\D/g, '');
 
@@ -241,7 +274,18 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
       (statusFilter === 'pending' && !l.todayPaid && !hasIncident) ||
       (statusFilter === 'incidents' && hasIncident);
 
-    return matchesSearch && matchesStatus;
+    const matchesDaySchedule = !onlyScheduledToday || isLoanScheduledToday(l);
+
+    return matchesSearch && matchesStatus && matchesDaySchedule;
+  })
+  .sort((a, b) => {
+    // Ordenamiento cronológico por fecha de desembolso / creación en el sistema
+    const dateA = a.disbursedDate || '';
+    const dateB = b.disbursedDate || '';
+    if (dateA !== dateB) {
+      return dateA.localeCompare(dateB);
+    }
+    return a.id.localeCompare(b.id);
   });
 
   // 3. MÉTRICAS FINANCIERAS DEL TURNO EN ENTEROS EXACTOS COP
@@ -250,7 +294,7 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
     routeExpensesToday.reduce((acc, e) => acc + roundCOP(e.amount), 0)
   );
 
-  const routeLedgerToday = ledger.filter((entry) => entry.routeId === currentRoute.id);
+  const routeLedgerToday = ledger.filter((entry) => entry.routeId === currentRoute.id && isDateTodayLocal(entry.timestamp));
   const digitalCollectedToday = roundCOP(
     routeLedgerToday
       .filter((entry) => entry.paymentMethod !== 'efectivo')
@@ -873,6 +917,51 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
 
           {/* COLUMNA DERECHA: BUSCADOR INSTANTÁNEO Y TARJETAS DE CLIENTES */}
           <div className="lg:col-span-8 space-y-4">
+            {/* ENCABEZADO DE COBROS PROGRAMADOS PARA HOY */}
+            <div className="bg-gradient-to-r from-slate-900 to-indigo-950/80 border border-indigo-500/30 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-sm">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 flex items-center justify-center shrink-0">
+                  <Calendar className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-xs sm:text-sm font-bold text-white flex items-center gap-2 flex-wrap">
+                    <span>Cobros programados para hoy ({currentDayName}):</span>
+                    <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-mono text-xs font-bold border border-emerald-500/30">
+                      {todayScheduledLoansCount} clientes
+                    </span>
+                  </h4>
+                  <p className="text-[11px] text-slate-400">
+                    Filtro automático por días de cobro (<code className="text-emerald-400 font-mono">payment_days</code>)
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0 self-start sm:self-center">
+                <button
+                  type="button"
+                  onClick={() => setOnlyScheduledToday(true)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    onlyScheduledToday
+                      ? 'bg-indigo-600 text-white shadow-sm font-bold'
+                      : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  Solo Hoy ({todayScheduledLoansCount})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOnlyScheduledToday(false)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    !onlyScheduledToday
+                      ? 'bg-indigo-600 text-white shadow-sm font-bold'
+                      : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  Ver Todos ({routeLoans.length})
+                </button>
+              </div>
+            </div>
+
             {/* BARRA DE BÚSQUEDA INSTANTÁNEA POR NOMBRE O TELÉFONO */}
             <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5 shadow-sm space-y-3">
               <div className="relative">
@@ -1007,6 +1096,17 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
                             <span className="flex items-center gap-1 font-mono text-slate-300">
                               <PhoneCall className="w-3 h-3 text-indigo-400 shrink-0" />
                               <span>{client.phone}</span>
+                            </span>
+                          )}
+                          {loan.paymentDays && Array.isArray(loan.paymentDays) && loan.paymentDays.length > 0 && (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-slate-950 text-[10px] font-mono text-indigo-300 border border-slate-800">
+                              <Calendar className="w-3 h-3 text-indigo-400" />
+                              <span>
+                                {[1, 2, 3, 4, 5, 6, 0]
+                                  .filter((d) => loan.paymentDays?.includes(d))
+                                  .map((d) => ['D', 'L', 'M', 'M', 'J', 'V', 'S'][d])
+                                  .join(' ')}
+                              </span>
                             </span>
                           )}
                         </div>

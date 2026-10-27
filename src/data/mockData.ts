@@ -63,6 +63,7 @@ export interface LoanDetail {
   daysOverdue: number;
   status: 'activo' | 'liquidado' | 'mora_severa' | 'refinanciado';
   todayPaid: boolean;
+  paymentDays?: number[]; // Días de cobro programados (0 = Dom, 1 = Lun, 2 = Mar, 3 = Mié, 4 = Jue, 5 = Vie, 6 = Sáb)
 }
 
 export interface LedgerEntry {
@@ -217,7 +218,8 @@ export const INITIAL_LOANS: LoanDetail[] = [
     dueDate: '2026-09-20',
     daysOverdue: 36,
     status: 'mora_severa',
-    todayPaid: false
+    todayPaid: false,
+    paymentDays: [1, 2, 3, 4, 5, 6]
   },
   {
     id: 'loan-par30-02',
@@ -240,7 +242,8 @@ export const INITIAL_LOANS: LoanDetail[] = [
     dueDate: '2026-09-24',
     daysOverdue: 32,
     status: 'mora_severa',
-    todayPaid: false
+    todayPaid: false,
+    paymentDays: [1, 2, 3, 4, 5, 6]
   }
 ];
 

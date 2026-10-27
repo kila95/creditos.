@@ -43,14 +43,35 @@ export interface RouteAnomaly {
  * Evalúa el comportamiento de pago de un cliente para asignarle Score y Nivel de Riesgo
  */
 export function calculateClientCreditScore(
-  client: ClientProfile,
-  loan?: LoanDetail,
+  client?: ClientProfile | null,
+  loan?: LoanDetail | null,
   allClientLedgerEntries: LedgerEntry[] = []
 ): ClientScoreResult {
+  // Manejo de datos nulos para administradores o clientes recién creados sin historial
+  if (!client) {
+    return {
+      clientId: 'sin_id',
+      clientName: 'Sin Cliente Seleccionado',
+      tradeName: 'Aún sin micronegocio vinculado',
+      score: 50,
+      riskLevel: 'AMARILLO',
+      maxApprovedCreditLimit: 0,
+      factors: {
+        punctualityRate: 0,
+        preferredPaymentWindow: 'matutino_temprano',
+        extensionRequestsCount: 0,
+        historicRepaidCreditsCount: 0,
+        daysOverdueCurrent: 0,
+      },
+      recommendation:
+        'Aún no hay datos de riesgo calculados para este administrador o cliente. Registre créditos para activar el motor algorítmico.',
+    };
+  }
+
   let score = 75; // Base neutral
 
-  // 1. Días de mora actuales
-  const daysOverdue = loan?.daysOverdue || client.daysOverdue || 0;
+  // 1. Días de mora actuales con encadenamiento opcional y fallback seguro
+  const daysOverdue = loan?.daysOverdue ?? client?.daysOverdue ?? 0;
   if (daysOverdue === 0) {
     score += 15;
   } else if (daysOverdue === 1) {
@@ -62,21 +83,26 @@ export function calculateClientCreditScore(
   }
 
   // 2. Historial de cuotas pagadas
-  const installmentsPaid = loan?.installmentsPaid || 0;
-  const termDays = loan?.termDays || 24;
-  const progressRatio = termDays > 0 ? (installmentsPaid / termDays) : 0;
+  const installmentsPaid = loan?.installmentsPaid ?? 0;
+  const termDays = loan?.termDays ?? 24;
+  const progressRatio = termDays > 0 ? installmentsPaid / termDays : 0;
   if (progressRatio > 0.6 && daysOverdue === 0) {
     score += 10;
   }
 
   // 3. Ventana horaria de pago en el ledger
   let preferredWindow: 'matutino_temprano' | 'mediodia' | 'tarde_noche' = 'matutino_temprano';
-  if (allClientLedgerEntries.length > 0) {
-    const morningCount = allClientLedgerEntries.filter(e => {
-      const hour = new Date(e.timestamp).getHours();
-      return hour < 12;
+  const safeLedger = Array.isArray(allClientLedgerEntries) ? allClientLedgerEntries : [];
+  if (safeLedger.length > 0) {
+    const morningCount = safeLedger.filter((e) => {
+      try {
+        const hour = new Date(e?.timestamp || Date.now()).getHours();
+        return hour < 12;
+      } catch {
+        return false;
+      }
     }).length;
-    if (morningCount / allClientLedgerEntries.length >= 0.7) {
+    if (morningCount / safeLedger.length >= 0.7) {
       preferredWindow = 'matutino_temprano';
       score += 5; // Negocio ordenado que abre temprano y tiene caja
     } else {
@@ -85,7 +111,7 @@ export function calculateClientCreditScore(
   }
 
   // 4. Bloqueo preventivo
-  if (client.hasPreventiveBlock) {
+  if (client?.hasPreventiveBlock) {
     score = Math.min(score, 35);
   }
 
@@ -100,21 +126,24 @@ export function calculateClientCreditScore(
   if (score >= 80) {
     riskLevel = 'VERDE';
     maxLimit = 2500000;
-    recommendation = 'Cliente AAA con alta liquidez matutina. Apto para ampliación de cupo con tasa preferencial.';
+    recommendation =
+      'Cliente AAA con alta liquidez matutina. Apto para ampliación de cupo con tasa preferencial.';
   } else if (score >= 50) {
     riskLevel = 'AMARILLO';
     maxLimit = 800000;
-    recommendation = 'Riesgo moderado. Requiere confirmación diaria del fiador y cupo restringido a máximo 20 días.';
+    recommendation =
+      'Riesgo moderado. Requiere confirmación diaria del fiador y cupo restringido a máximo 20 días.';
   } else {
     riskLevel = 'ROJO';
     maxLimit = 0;
-    recommendation = 'Riesgo Crítico. No aprobar nuevos créditos hasta liquidar saldos insolutos pendientes.';
+    recommendation =
+      'Riesgo Crítico. No aprobar nuevos créditos hasta liquidar saldos insolutos pendientes.';
   }
 
   return {
-    clientId: client.id,
-    clientName: client.name,
-    tradeName: client.tradeName,
+    clientId: client?.id || 'sin_id',
+    clientName: client?.name || 'Cliente sin nombre',
+    tradeName: client?.tradeName || 'Micronegocio local',
     score,
     riskLevel,
     maxApprovedCreditLimit: maxLimit,
@@ -122,10 +151,10 @@ export function calculateClientCreditScore(
       punctualityRate: daysOverdue === 0 ? 96 : daysOverdue === 1 ? 80 : 45,
       preferredPaymentWindow: preferredWindow,
       extensionRequestsCount: daysOverdue >= 2 ? 2 : 0,
-      historicRepaidCreditsCount: client.riskTier === 'A_excelente' ? 4 : 1,
-      daysOverdueCurrent: daysOverdue
+      historicRepaidCreditsCount: client?.riskTier === 'A_excelente' ? 4 : 1,
+      daysOverdueCurrent: daysOverdue,
     },
-    recommendation
+    recommendation,
   };
 }
 
@@ -133,69 +162,76 @@ export function calculateClientCreditScore(
  * Detecta anomalías estadísticas en las rutas de recaudo para alertar al Administrador/CFO
  */
 export function detectRouteAnomalies(
-  routes: RouteData[],
-  loans: LoanDetail[],
-  expenses: RouteExpenseItem[]
+  routes: RouteData[] = [],
+  loans: LoanDetail[] = [],
+  expenses: RouteExpenseItem[] = []
 ): RouteAnomaly[] {
   const anomalies: RouteAnomaly[] = [];
+  const safeRoutes = Array.isArray(routes) ? routes : [];
 
-  routes.forEach(route => {
+  safeRoutes.forEach((route) => {
+    if (!route) return;
+
+    const dailyExpected = route?.dailyGrossExpected ?? 0;
+    const dailyCollected = route?.dailyGrossCollected ?? 0;
+    const targetRate = route?.targetRecoveryRate ?? 95.0;
+    const par1Rate = route?.par1Rate ?? 0;
+    const dailyExpenses = route?.dailyExpenses ?? 0;
+
     // 1. Caída drástica en el recaudo diario respecto a la meta esperada
-    const recoveryRatio = route.dailyGrossExpected > 0 
-      ? (route.dailyGrossCollected / route.dailyGrossExpected) * 100 
-      : 100;
+    const recoveryRatio = dailyExpected > 0 ? (dailyCollected / dailyExpected) * 100 : 100;
 
-    if (recoveryRatio < 85) {
+    if (recoveryRatio < 85 && dailyExpected > 0) {
       anomalies.push({
-        id: `anom-drop-${route.id}`,
-        routeId: route.id,
-        routeCode: route.code,
-        routeName: route.name,
-        collectorName: route.collectorName,
+        id: `anom-drop-${route.id || Math.random()}`,
+        routeId: route.id || 'route-1',
+        routeCode: route.code || 'RUTA',
+        routeName: route.name || 'Ruta Local',
+        collectorName: route.collectorName || 'Cobrador de Zona',
         type: 'caida_drastica_recaudo',
         severity: recoveryRatio < 75 ? 'critica' : 'moderada',
         metricObserved: `${recoveryRatio.toFixed(1)}% recaudado`,
-        metricBenchmark: `Meta histórica: ${route.targetRecoveryRate}%`,
-        differencePercent: Number((route.targetRecoveryRate - recoveryRatio).toFixed(1)),
-        message: `Caída drástica en recaudo de ${route.name}. Cobrado $${route.dailyGrossCollected.toLocaleString()} vs esperado $${route.dailyGrossExpected.toLocaleString()}. Posible iliquidez en sector o retención de efectivo.`,
-        timestamp: new Date().toISOString()
+        metricBenchmark: `Meta histórica: ${targetRate}%`,
+        differencePercent: Number((targetRate - recoveryRatio).toFixed(1)),
+        message: `Caída en recaudo de ${route.name || 'Ruta'}. Cobrado $${dailyCollected.toLocaleString()} COP vs esperado $${dailyExpected.toLocaleString()} COP. Posible iliquidez en sector.`,
+        timestamp: new Date().toISOString(),
       });
     }
 
     // 2. Tasa de morosidad PAR-1 elevada en la zona
-    if (route.par1Rate > 6.0) {
+    if (par1Rate > 6.0) {
       anomalies.push({
-        id: `anom-par-${route.id}`,
-        routeId: route.id,
-        routeCode: route.code,
-        routeName: route.name,
-        collectorName: route.collectorName,
+        id: `anom-par-${route.id || Math.random()}`,
+        routeId: route.id || 'route-1',
+        routeCode: route.code || 'RUTA',
+        routeName: route.name || 'Ruta Local',
+        collectorName: route.collectorName || 'Cobrador de Zona',
         type: 'mora_inusual_sector',
-        severity: route.par1Rate > 8.0 ? 'critica' : 'moderada',
-        metricObserved: `PAR-1: ${route.par1Rate}%`,
+        severity: par1Rate > 8.0 ? 'critica' : 'moderada',
+        metricObserved: `PAR-1: ${par1Rate}%`,
         metricBenchmark: 'Umbral seguro: ≤ 4.5%',
-        differencePercent: Number((route.par1Rate - 4.5).toFixed(1)),
-        message: `Mora de alerta temprana PAR-1 disparada en ${route.zone}. Se requiere supervisión de campo antes del cierre de turno.`,
-        timestamp: new Date().toISOString()
+        differencePercent: Number((par1Rate - 4.5).toFixed(1)),
+        message: `Mora de alerta temprana PAR-1 disparada en ${route.zone || 'zona'}. Se requiere supervisión de campo antes del cierre de turno.`,
+        timestamp: new Date().toISOString(),
       });
     }
 
     // 3. Gasto operativo desproporcionado respecto al recaudo
-    const opexRatio = route.dailyGrossCollected > 0 ? (route.dailyExpenses / route.dailyGrossCollected) * 100 : 0;
+    const opexRatio = dailyCollected > 0 ? (dailyExpenses / dailyCollected) * 100 : 0;
     if (opexRatio > 4.5) {
       anomalies.push({
-        id: `anom-opex-${route.id}`,
-        routeId: route.id,
-        routeCode: route.code,
-        routeName: route.name,
-        collectorName: route.collectorName,
+        id: `anom-opex-${route.id || Math.random()}`,
+        routeId: route.id || 'route-1',
+        routeCode: route.code || 'RUTA',
+        routeName: route.name || 'Ruta Local',
+        collectorName: route.collectorName || 'Cobrador de Zona',
         type: 'opex_excesivo',
         severity: 'moderada',
         metricObserved: `OpEx: ${opexRatio.toFixed(1)}% del recaudo`,
         metricBenchmark: 'Umbral máximo: 3.5%',
         differencePercent: Number((opexRatio - 3.5).toFixed(1)),
-        message: `Gastos de ruta elevados ($${route.dailyExpenses.toLocaleString()}) en relación a los cobros reportados. Verificar tickets de combustible y viáticos.`,
-        timestamp: new Date().toISOString()
+        message: `Gastos de ruta elevados ($${dailyExpenses.toLocaleString()} COP) en relación a los cobros reportados. Verificar tickets de combustible y viáticos.`,
+        timestamp: new Date().toISOString(),
       });
     }
   });

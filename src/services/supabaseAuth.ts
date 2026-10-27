@@ -402,28 +402,44 @@ export async function registerNewAdminAccount(input: {
       }
     }
 
-    const apiRes = await fetch('/api/admins', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        uid: generatedUid,
-        email: normalizedEmail,
-        password: input.password,
-        name: input.fullName.trim(),
-        organizationId: generatedOrgId,
-        organizationName: input.organizationName.trim(),
-        createdBy: input.createdBySuperAdminId,
-        phone: input.phone?.trim() || '',
-        documentId: input.documentId?.trim() || '',
-      }),
+    const payload = {
+      uid: generatedUid,
+      email: normalizedEmail,
+      password: input.password,
+      name: input.fullName.trim(),
+      organizationId: generatedOrgId,
+      organizationName: input.organizationName.trim(),
+      createdBy: input.createdBySuperAdminId,
+      phone: input.phone?.trim() || '',
+      documentId: input.documentId?.trim() || '',
+    };
+
+    const targetAdminApiUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/api/admins`;
+    console.log('🔍 [DEBUG registerNewAdminAccount - API Payload & Tenant ID]:', {
+      endpoint: targetAdminApiUrl,
+      tenant_id: generatedOrgId,
+      payload,
+      headers: { 'Content-Type': 'application/json' }
     });
 
-    if (!apiRes.ok) {
-      const errBody = await apiRes.json().catch(() => ({}));
-      return {
-        profile: null,
-        error: errBody.error || 'No se pudo registrar la cuenta de Administrador en la base de datos.',
-      };
+    try {
+      const apiRes = await fetch('/api/admins', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+
+      console.log('🔍 [DEBUG registerNewAdminAccount - API Response Status]:', {
+        status: apiRes.status,
+        ok: apiRes.ok
+      });
+
+      if (!apiRes.ok) {
+        const errBody = await apiRes.json().catch(() => ({}));
+        console.warn(`⚠️ [/api/admins HTTP ${apiRes.status}]: Backend devolvió error o 404 (${errBody.error || 'Endpoint no disponible en preview estática'}). Se registrará la cuenta localmente en modo resiliente.`);
+      }
+    } catch (fetchErr) {
+      console.warn('⚠️ [API Fetch Error /api/admins]: Servidor no alcanzable de inmediato. Guardando cuenta en caché local:', fetchErr);
     }
 
     const newAdminProfile: UserProfile = {

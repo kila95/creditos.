@@ -82,6 +82,7 @@ export const loans = pgTable('loans', {
   expectedEndDate: text('expected_end_date').notNull(),
   extendedDueDate: text('extended_due_date'),
   lastPaymentDate: text('last_payment_date'),
+  paymentDays: jsonb('payment_days').default([1, 2, 3, 4, 5, 6]), // Días de cobro: 0 = Dom, 1 = Lun, 2 = Mar, 3 = Mié, 4 = Jue, 5 = Vie, 6 = Sáb
   createdAt: timestamp('created_at').defaultNow(),
 });
 

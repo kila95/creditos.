@@ -23,6 +23,7 @@ export interface CreateClientRecordInput {
   interestRate: number;
   termDays: number;
   modality?: LoanModality;
+  paymentDays?: number[];
 }
 
 export interface CreateCustomLoanInput {
@@ -34,6 +35,7 @@ export interface CreateCustomLoanInput {
   interestRate: number;
   termInstallments: number;
   modality: LoanModality;
+  paymentDays?: number[];
 }
 
 export interface DatabaseOperationResult<T> {
@@ -85,6 +87,31 @@ function saveLocalCachedLoan(loan: LoanDetail) {
 }
 
 /**
+ * Calcula automáticamente los días de cobro (payment_days) diferenciando estrictamente por modalidad:
+ * 1. Diaria: [1, 2, 3, 4, 5, 6] (Lunes a Sábado)
+ * 2. Semanal: [getDay()] (Día de la semana actual 0-6)
+ * 3. Quincenal: [15, 30] (Fechas fijas del mes 15 y 30)
+ * 4. Mensual: [getDate()] (Día del mes actual 1-31)
+ */
+export function computeDefaultPaymentDays(modality: LoanModality, date: Date = new Date()): number[] {
+  const currentWeekDay = date.getDay(); // 0 = Dom, 1 = Lun, ..., 6 = Sáb
+  const currentMonthDate = date.getDate(); // 1 - 31
+
+  switch (modality) {
+    case 'diaria':
+      return [1, 2, 3, 4, 5, 6];
+    case 'semanal':
+      return [currentWeekDay];
+    case 'quincenal':
+      return [15, 30];
+    case 'mensual':
+      return [currentMonthDate];
+    default:
+      return [1, 2, 3, 4, 5, 6];
+  }
+}
+
+/**
  * Calcula la fecha estimada de vencimiento según el número de cuotas y la modalidad elegida.
  */
 function calculateExpectedEndDate(installments: number, modality: LoanModality): string {
@@ -102,6 +129,21 @@ function calculateExpectedEndDate(installments: number, modality: LoanModality):
 }
 
 /**
+ * Verifica si una fecha o ISO timestamp dado corresponde a HOY en la zona horaria local del celular.
+ */
+export function isDateTodayLocal(dateInput?: string | Date | null): boolean {
+  if (!dateInput) return false;
+  const d = new Date(dateInput);
+  if (isNaN(d.getTime())) return false;
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}
+
+/**
  * 1. CONSULTA DE CLIENTES (SELECT '*') DESDE SUPABASE / CLOUD SQL CON SOPORTE OFFLINE
  */
 export async function fetchClientsAndLoansFromDB(
@@ -115,10 +157,21 @@ export async function fetchClientsAndLoansFromDB(
     // A) Si el proyecto tiene variables VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY activas y hay red:
     if (isLiveSupabaseConfigured && isBrowserOnline) {
       try {
+        const supabaseEndpointUrl = `${import.meta.env.VITE_SUPABASE_URL}/rest/v1/clients?select=*${routeIdFilter ? `&route_id=eq.${routeIdFilter}` : ''}`;
+        console.log('🔍 [DEBUG fetchClientsAndLoansFromDB - Supabase Endpoint]:', {
+          targetUrl: supabaseEndpointUrl,
+          table: 'clients',
+          tenant_id_param: routeIdFilter ? { route_id: routeIdFilter } : 'SIN_FILTRO_RUTA_TODAS',
+          headers: {
+            apikey: import.meta.env.VITE_SUPABASE_ANON_KEY ? 'Present (Anon Key)' : 'Missing',
+            Authorization: 'Bearer [Supabase Auth JWT Token]'
+          }
+        });
+
         let query = supabase
           .from('clients')
           .select('*')
-          .order('created_at', { ascending: false });
+          .order('created_at', { ascending: true });
 
         if (routeIdFilter) {
           query = query.eq('route_id', routeIdFilter);
@@ -127,20 +180,22 @@ export async function fetchClientsAndLoansFromDB(
         const { data: sbClients, error: sbError } = await query;
 
         if (sbError) {
-          console.error('[Supabase SELECT Error - tabla clients]:', {
+          console.error('❌ [Supabase SELECT Error - tabla clients]:', {
+            targetUrl: supabaseEndpointUrl,
             message: sbError.message,
             code: sbError.code,
             details: sbError.details,
             hint: sbError.hint,
           });
         } else if (Array.isArray(sbClients)) {
+          console.log(`✅ [Supabase SELECT Success - clients]: Obtenidos ${sbClients.length} registros.`);
           rawClients = sbClients;
         }
 
         let loansQuery = supabase
           .from('loans')
           .select('*')
-          .order('created_at', { ascending: false });
+          .order('created_at', { ascending: true });
 
         if (routeIdFilter) {
           loansQuery = loansQuery.eq('route_id', routeIdFilter);
@@ -148,8 +203,9 @@ export async function fetchClientsAndLoansFromDB(
 
         const { data: sbLoans, error: sbLoansErr } = await loansQuery;
         if (sbLoansErr) {
-          console.error('[Supabase SELECT Error - tabla loans]:', sbLoansErr);
+          console.error('❌ [Supabase SELECT Error - tabla loans]:', sbLoansErr);
         } else if (Array.isArray(sbLoans)) {
+          console.log(`✅ [Supabase SELECT Success - loans]: Obtenidos ${sbLoans.length} registros.`);
           rawLoans = sbLoans;
         }
       } catch (sbNetworkErr) {
@@ -157,13 +213,33 @@ export async function fetchClientsAndLoansFromDB(
       }
     }
 
-    // B) Consulta simultánea al backend Cloud SQL (/api/clients y /api/loans) con try/catch
+    // B) Consulta simultánea al backend Cloud SQL (/api/clients y /api/loans) con logs de depuración detallados
     if (isBrowserOnline) {
       try {
+        const clientApiUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/api/clients${routeIdFilter ? `?routeId=${routeIdFilter}` : ''}`;
+        const loanApiUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/api/loans${routeIdFilter ? `?routeId=${routeIdFilter}` : ''}`;
+
+        console.log('🔍 [DEBUG fetchClientsAndLoansFromDB - Cloud SQL API Request]:', {
+          clientsEndpoint: clientApiUrl,
+          loansEndpoint: loanApiUrl,
+          tenant_id_context: routeIdFilter ? { routeId: routeIdFilter } : 'MULTI_TENANT_ORGANIZATION',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer [Session Auth Token]'
+          }
+        });
+
         const [cRes, lRes] = await Promise.all([
           fetch('/api/clients'),
           fetch('/api/loans'),
         ]);
+
+        console.log('🔍 [DEBUG fetchClientsAndLoansFromDB - API Response Status]:', {
+          clientsStatus: cRes.status,
+          clientsOk: cRes.ok,
+          loansStatus: lRes.status,
+          loansOk: lRes.ok
+        });
 
         if (cRes.ok) {
           const apiClients = await cRes.json();
@@ -175,6 +251,8 @@ export async function fetchClientsAndLoansFromDB(
               }
             }
           }
+        } else {
+          console.warn(`⚠️ [/api/clients HTTP ${cRes.status}]: El backend devolvió estado ${cRes.status}. Usando datos locales en fallback.`);
         }
 
         if (lRes.ok) {
@@ -187,6 +265,8 @@ export async function fetchClientsAndLoansFromDB(
               }
             }
           }
+        } else {
+          console.warn(`⚠️ [/api/loans HTTP ${lRes.status}]: El backend devolvió estado ${lRes.status}. Usando datos locales en fallback.`);
         }
       } catch (apiNetworkErr) {
         console.warn('[API Offline Fallback] Operando en modo offline con datos locales:', apiNetworkErr);
@@ -262,6 +342,9 @@ export async function fetchClientsAndLoansFromDB(
         ? 'mora_severa'
         : 'activo';
 
+      const lastPayment = l.lastPaymentDate || l.last_payment_date || l.last_payment_timestamp;
+      const isPaidToday = isDateTodayLocal(lastPayment) || Boolean(l.todayPaid);
+
       return {
         id: String(l.id),
         code: l.code || `PREST-${String(l.id).slice(-6).toUpperCase()}`,
@@ -282,7 +365,8 @@ export async function fetchClientsAndLoansFromDB(
         dueDate: dueDateStr,
         daysOverdue: isCompleted ? 0 : calculatedOverdue,
         status: resolvedStatus,
-        todayPaid: false,
+        todayPaid: isPaidToday,
+        paymentDays: Array.isArray(l.payment_days) ? l.payment_days : Array.isArray(l.paymentDays) ? l.paymentDays : [1, 2, 3, 4, 5, 6],
       };
     });
 
@@ -324,6 +408,7 @@ export async function fetchClientsAndLoansFromDB(
           daysOverdue: 0,
           status: 'activo',
           todayPaid: false,
+          paymentDays: [1, 2, 3, 4, 5, 6],
         });
       }
     }
@@ -372,6 +457,9 @@ export async function createCustomLoanInDB(
   const safeRate = Math.max(0, Number(input.interestRate) || 0);
   const safeInstallments = Math.max(1, roundCOP(input.termInstallments));
   const modality: LoanModality = input.modality || 'diaria';
+  const paymentDays = input.paymentDays && input.paymentDays.length > 0
+    ? input.paymentDays
+    : computeDefaultPaymentDays(modality);
 
   // Cálculo Financiero Exacto en enteros COP: Total = Monto + Round(Monto * Tasa / 100) y Cuota = Round(Total / Plazo)
   const totalInterest = roundCOP(safePrincipal * (safeRate / 100));
@@ -400,6 +488,7 @@ export async function createCustomLoanInDB(
     daysOverdue: 0,
     status: 'activo',
     todayPaid: false,
+    paymentDays,
   };
 
   // Guardar siempre copia en caché local para resiliencia ante pérdidas de señal
@@ -435,6 +524,7 @@ export async function createCustomLoanInDB(
             status: 'active',
             start_date: todayStr,
             expected_end_date: dueDateStr,
+            payment_days: paymentDays,
           },
         ]);
 
@@ -489,6 +579,7 @@ export async function createCustomLoanInDB(
         status: 'active',
         startDate: todayStr,
         expectedEndDate: dueDateStr,
+        paymentDays,
       }),
     });
 
@@ -658,6 +749,10 @@ export async function insertClientAndLoanToDB(
     ? input.document.trim()
     : `CC-PENDIENTE-${Date.now().toString().slice(-6)}-${Math.floor(1000 + Math.random() * 9000)}`;
 
+  const paymentDays = input.paymentDays && input.paymentDays.length > 0
+    ? input.paymentDays
+    : computeDefaultPaymentDays(modality);
+
   const createdClient: ClientProfile = {
     id: clientId,
     name: input.name.trim(),
@@ -698,6 +793,7 @@ export async function insertClientAndLoanToDB(
     daysOverdue: 0,
     status: 'activo',
     todayPaid: false,
+    paymentDays,
   };
 
   // ESTRUCTURA EXACTA DE DATOS A INSERTAR EN LA TABLA 'clients'
@@ -790,6 +886,7 @@ export async function insertClientAndLoanToDB(
           status: 'active',
           start_date: todayStr,
           expected_end_date: dueDateStr,
+          payment_days: paymentDays,
         };
         const { error: sbLoanErr } = await supabase
           .from('loans')
@@ -868,6 +965,7 @@ export async function insertClientAndLoanToDB(
         status: 'active',
         startDate: todayStr,
         expectedEndDate: dueDateStr,
+        paymentDays,
       }),
     });
 

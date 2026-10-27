@@ -47,6 +47,63 @@ export async function getDailyLedger() {
   }
 }
 
+export async function ensureLoanExistsForPayment(entry: {
+  loanId: string;
+  clientId: string;
+  clientName: string;
+  routeId: string;
+  preBalance: number;
+}) {
+  try {
+    const safeRouteId = entry.routeId?.trim() || 'route-1';
+    await ensureRouteExists(safeRouteId);
+
+    const safeClientId = entry.clientId?.trim() || `cli-${entry.loanId.slice(-6)}`;
+    const existingClient = await db.select().from(clients).where(eq(clients.id, safeClientId)).limit(1);
+    if (existingClient.length === 0) {
+      await db.insert(clients).values({
+        id: safeClientId,
+        documentId: `CC-AUTO-${safeClientId.slice(-6)}`,
+        name: entry.clientName || 'Cliente de Ruta',
+        alias: entry.clientName || 'Cliente Local',
+        phone: '3000000000',
+        businessType: 'Comercio Local',
+        address: 'Medellín',
+        zone: 'Medellín',
+        routeId: safeRouteId,
+        organizationId: 'org-medellin-01',
+        createdBy: 'usr-admin-001',
+        creditLimit: '1000000',
+      }).onConflictDoNothing();
+    }
+
+    const safeLoanId = entry.loanId?.trim();
+    const existingLoan = await db.select().from(loans).where(eq(loans.id, safeLoanId)).limit(1);
+    if (existingLoan.length === 0) {
+      const defaultPrincipal = Math.max(1000, entry.preBalance || 500000);
+      await db.insert(loans).values({
+        id: safeLoanId,
+        clientId: safeClientId,
+        routeId: safeRouteId,
+        principalAmount: defaultPrincipal.toString(),
+        interestRate: '20',
+        totalAmount: (defaultPrincipal * 1.2).toString(),
+        dailyQuota: '25000',
+        remainingBalance: entry.preBalance.toString(),
+        totalDays: 24,
+        paidDays: 0,
+        modality: 'diaria',
+        status: 'active',
+        startDate: new Date().toISOString().split('T')[0],
+        expectedEndDate: new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0],
+        paymentDays: [1, 2, 3, 4, 5, 6],
+      }).onConflictDoNothing();
+    }
+  } catch (err) {
+    console.warn('[ensureLoanExistsForPayment] Advertencia asegurando registros para pago:', err);
+  }
+}
+
 export async function recordPayment(entry: {
   id: string;
   receiptNumber: string;
@@ -65,6 +122,15 @@ export async function recordPayment(entry: {
   hash: string;
 }) {
   try {
+    // 0. Garantizar que la ruta, cliente y préstamo existan en Cloud SQL antes de insertar el pago
+    await ensureLoanExistsForPayment({
+      loanId: entry.loanId,
+      clientId: entry.clientId,
+      clientName: entry.clientName,
+      routeId: entry.routeId,
+      preBalance: entry.preBalance,
+    });
+
     // 1. Insertar en libro diario inmutable
     const inserted = await db.insert(dailyLedger).values({
       id: entry.id,
@@ -267,6 +333,7 @@ export async function createLoan(data: {
   status?: string;
   startDate: string;
   expectedEndDate: string;
+  paymentDays?: number[];
 }) {
   try {
     const safeRouteId = data.routeId?.trim() || 'route-1';
@@ -287,6 +354,7 @@ export async function createLoan(data: {
       status: data.status ?? 'active',
       startDate: data.startDate,
       expectedEndDate: data.expectedEndDate,
+      paymentDays: data.paymentDays ?? [1, 2, 3, 4, 5, 6],
     }).returning();
     return inserted[0];
   } catch (error: any) {
