@@ -22,16 +22,19 @@ import {
   Download,
   Calendar,
   KeyRound,
-  Database
+  Database,
+  MessageSquare
 } from 'lucide-react';
 import { SuperAdminTenantsManager } from './SuperAdminTenantsManager';
+import { SuperAdminSubscriptionsManager } from './SuperAdminSubscriptionsManager';
+import { SuperAdminWhatsAppCollectionCenter } from './SuperAdminWhatsAppCollectionCenter';
 import { AuditLogView } from './AuditLogView';
 import { SuperAdminPaymentApprovalView } from './SuperAdminPaymentApprovalView';
 import { INITIAL_AUDIT_LOGS, AuditLogItem } from '../data/auditLogData';
 import { formatCOP } from '../utils/financialCalculations';
 import { useAuth } from '../context/AuthContext';
 
-export type SuperAdminTab = 'dashboard' | 'admins' | 'audit' | 'subscriptions';
+export type SuperAdminTab = 'dashboard' | 'admins' | 'audit' | 'subscriptions' | 'whatsapp';
 
 interface NavOption {
   id: SuperAdminTab;
@@ -54,16 +57,22 @@ const SUPER_ADMIN_NAV_OPTIONS: NavOption[] = [
     icon: Users,
   },
   {
+    id: 'subscriptions',
+    label: 'Suscripciones y Cobros',
+    description: 'Inventario de cuentas, pagos y fechas de corte',
+    icon: CreditCard,
+  },
+  {
+    id: 'whatsapp',
+    label: 'Cobranza WhatsApp',
+    description: 'Alertas de mora, bloqueo y vencimiento',
+    icon: MessageSquare,
+  },
+  {
     id: 'audit',
     label: 'Auditoría del Sistema',
     description: 'Trazabilidad SHA-256 e historial inmutable',
     icon: ShieldCheck,
-  },
-  {
-    id: 'subscriptions',
-    label: 'Configuración de Suscripciones',
-    description: 'Planes por ruta, tarifas COP y estado de cobro',
-    icon: CreditCard,
   },
 ];
 
@@ -318,137 +327,10 @@ export const SuperAdminDashboardView: React.FC = () => {
         );
 
       case 'subscriptions':
-        return (
-          <div className="space-y-6">
-            <SuperAdminPaymentApprovalView />
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-lg">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-slate-800">
-                <div>
-                  <span className="px-2.5 py-0.5 rounded-md text-[11px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 uppercase">
-                    Modelo Comercial SaaS
-                  </span>
-                  <h2 className="text-xl font-bold text-white mt-1.5 flex items-center gap-2">
-                    <CreditCard className="w-5 h-5 text-indigo-400" />
-                    Configuración de Suscripciones y Tarifas por Ruta
-                  </h2>
-                  <p className="text-xs text-slate-400 mt-1">
-                    Definición de cobro mensual en Pesos Colombianos (COP) por cada ruta de cobro activa en la plataforma
-                  </p>
-                </div>
+        return <SuperAdminSubscriptionsManager onOpenWhatsAppCenter={() => setActiveTab('whatsapp')} />;
 
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-400">Tarifa actual por ruta:</span>
-                  <div className="text-lg font-bold font-mono text-emerald-400 bg-slate-950 px-3 py-1 rounded-lg border border-slate-800">
-                    {formatCOP(feePerRoute)} / mes
-                  </div>
-                </div>
-              </div>
-
-              {/* Ajuste de Parámetros de Suscripción */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-5">
-                <div className="bg-slate-950/70 p-4 rounded-xl border border-slate-800 space-y-2">
-                  <label className="text-xs font-bold text-slate-300 block">
-                    Tarifa Base por Ruta Activa (COP):
-                  </label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-2.5 text-xs text-slate-500">$</span>
-                    <input
-                      type="number"
-                      value={feePerRoute}
-                      onChange={(e) => setFeePerRoute(Number(e.target.value) || 0)}
-                      className="w-full bg-slate-900 border border-slate-700 rounded-lg py-2 pl-7 pr-3 text-xs text-white font-mono focus:border-indigo-500 focus:outline-none"
-                    />
-                  </div>
-                  <p className="text-[11px] text-slate-500">
-                    Se cobra automáticamente al final de cada ciclo de facturación
-                  </p>
-                </div>
-
-                <div className="bg-slate-950/70 p-4 rounded-xl border border-slate-800 space-y-2">
-                  <label className="text-xs font-bold text-slate-300 block">
-                    Ciclo de Cobro Predeterminado:
-                  </label>
-                  <select
-                    value={billingCycle}
-                    onChange={(e) => setBillingCycle(e.target.value as any)}
-                    className="w-full bg-slate-900 border border-slate-700 rounded-lg py-2 px-3 text-xs text-white focus:border-indigo-500 focus:outline-none"
-                  >
-                    <option value="mensual">Mensual (30 días)</option>
-                    <option value="anual">Anual (Descuento del 10%)</option>
-                  </select>
-                  <p className="text-[11px] text-slate-500">
-                    Sincronización automática de facturas en PDF
-                  </p>
-                </div>
-
-                <div className="bg-slate-950/70 p-4 rounded-xl border border-slate-800 space-y-2 flex flex-col justify-between">
-                  <div>
-                    <span className="text-xs font-bold text-slate-300 block">
-                      Ingreso Recurrente Proyectado (MRR):
-                    </span>
-                    <div className="text-2xl font-bold font-mono text-amber-300 mt-1">
-                      {formatCOP(totalActiveRoutes * feePerRoute)}
-                    </div>
-                  </div>
-                  <div className="text-[11px] text-slate-400">
-                    Basado en {totalActiveRoutes} rutas activas contratadas
-                  </div>
-                </div>
-              </div>
-
-              {/* Tabla de Inquilinos y Suscripciones */}
-              <div className="mt-6 border border-slate-800 rounded-xl overflow-hidden">
-                <div className="p-4 bg-slate-950 border-b border-slate-800 font-bold text-xs text-white">
-                  Estado de Facturación de Inquilinos
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs text-left border-collapse">
-                    <thead>
-                      <tr className="bg-slate-900 border-b border-slate-800 text-slate-400 font-mono text-[11px]">
-                        <th className="py-3 px-4">Organización</th>
-                        <th className="py-3 px-4">Plan Actual</th>
-                        <th className="py-3 px-4">Rutas Contratadas</th>
-                        <th className="py-3 px-4">Total Mensual</th>
-                        <th className="py-3 px-4">Estado Pago</th>
-                        <th className="py-3 px-4">Próximo Cobro</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/70">
-                      {tenantSubscriptionData.map((t) => (
-                        <tr key={t.tenantId} className="hover:bg-slate-800/40">
-                          <td className="py-3 px-4 font-semibold text-white">
-                            {t.organizationName}
-                          </td>
-                          <td className="py-3 px-4 text-slate-300">{t.planName}</td>
-                          <td className="py-3 px-4 font-mono font-bold text-indigo-400">
-                            {t.activeRoutes}
-                          </td>
-                          <td className="py-3 px-4 font-mono font-bold text-white">
-                            {formatCOP(t.activeRoutes * feePerRoute)}
-                          </td>
-                          <td className="py-3 px-4">
-                            {t.paymentStatus === 'al_dia' ? (
-                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                                AL DÍA
-                              </span>
-                            ) : (
-                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/30">
-                                PENDIENTE
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-3 px-4 font-mono text-slate-400">
-                            {t.nextBillingDate}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
+      case 'whatsapp':
+        return <SuperAdminWhatsAppCollectionCenter onNavigateToSubscriptions={() => setActiveTab('subscriptions')} />;
 
       default:
         return null;

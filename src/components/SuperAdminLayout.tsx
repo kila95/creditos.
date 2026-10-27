@@ -11,15 +11,18 @@ import {
   Crown, 
   Server, 
   Activity, 
-  DollarSign 
+  DollarSign,
+  MessageSquare
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { SuperAdminTenantsManager } from './SuperAdminTenantsManager';
+import { SuperAdminSubscriptionsManager } from './SuperAdminSubscriptionsManager';
+import { SuperAdminWhatsAppCollectionCenter } from './SuperAdminWhatsAppCollectionCenter';
 import { AuditLogView } from './AuditLogView';
 import { INITIAL_AUDIT_LOGS } from '../data/auditLogData';
 import { formatCOP } from '../utils/financialCalculations';
 
-export type SuperAdminTab = 'dashboard' | 'admins' | 'audit' | 'subscriptions';
+export type SuperAdminTab = 'dashboard' | 'admins' | 'audit' | 'subscriptions' | 'whatsapp';
 
 export const SuperAdminLayout: React.FC = () => {
   const { profile, logout } = useAuth();
@@ -36,8 +39,9 @@ export const SuperAdminLayout: React.FC = () => {
   const navItems = [
     { id: 'dashboard' as SuperAdminTab, label: 'Métricas Globales', icon: LayoutDashboard, desc: 'KPIs del SaaS e ingresos MRR' },
     { id: 'admins' as SuperAdminTab, label: 'Gestión de Administradores', icon: Users, desc: 'Aprovisionamiento de Fondos y cuentas Admin' },
-    { id: 'audit' as SuperAdminTab, label: 'Auditoría de Seguridad', icon: ShieldCheck, desc: 'Trazabilidad SHA-256' },
     { id: 'subscriptions' as SuperAdminTab, label: 'Suscripciones y Cobros', icon: CreditCard, desc: 'Planes y estados de cobro' },
+    { id: 'whatsapp' as SuperAdminTab, label: 'Cobranza WhatsApp', icon: MessageSquare, desc: 'Avisos de mora, bloqueo y vencimiento' },
+    { id: 'audit' as SuperAdminTab, label: 'Auditoría de Seguridad', icon: ShieldCheck, desc: 'Trazabilidad SHA-256' },
   ];
 
   return (
@@ -294,7 +298,16 @@ export const SuperAdminLayout: React.FC = () => {
 
         {activeTab === 'admins' && <SuperAdminTenantsManager />}
         {activeTab === 'audit' && <AuditLogView logs={INITIAL_AUDIT_LOGS} />}
-        {activeTab === 'subscriptions' && <SuperAdminTenantsManager />}
+        {activeTab === 'subscriptions' && (
+          <SuperAdminSubscriptionsManager
+            onOpenWhatsAppCenter={() => setActiveTab('whatsapp')}
+          />
+        )}
+        {activeTab === 'whatsapp' && (
+          <SuperAdminWhatsAppCollectionCenter
+            onNavigateToSubscriptions={() => setActiveTab('subscriptions')}
+          />
+        )}
       </main>
     </div>
   );
