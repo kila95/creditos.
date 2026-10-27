@@ -240,7 +240,7 @@ app.post('/api/auth/login', async (req, res) => {
       routeZone: userRecord.routeZone,
       phone: userRecord.phone,
       documentId: userRecord.documentId,
-      authorizedDeviceId: userRecord.authorizedDeviceId,
+      authorizedDeviceId: null,
       isActive: userRecord.isActive,
       createdAt: userRecord.createdAt
     });

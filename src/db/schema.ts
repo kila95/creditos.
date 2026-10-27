@@ -25,8 +25,6 @@ export const users = pgTable('users', {
   routeZone: text('route_zone'), // Zona o Comuna de Medellín asignada (ej: 'Laureles / Estadio', 'Centro / El Hueco', etc.)
   phone: text('phone'),
   documentId: text('document_id'),
-  authorizedDeviceId: text('authorized_device_id'), // Fingerprint del dispositivo/navegador registrado
-  deviceApproved: boolean('device_approved').notNull().default(true),
   isActive: boolean('is_active').notNull().default(true),
   partnerEquityPct: numeric('partner_equity_pct', { precision: 5, scale: 2 }),
   createdAt: timestamp('created_at').defaultNow(),

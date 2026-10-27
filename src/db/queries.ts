@@ -489,18 +489,8 @@ export async function getAllAdmins() {
       .where(eq(users.role, 'admin'))
       .orderBy(desc(users.createdAt));
   } catch (error: any) {
-    try {
-      await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authorized_device_id text;`);
-      await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS device_approved boolean DEFAULT true;`);
-      return await db
-        .select()
-        .from(users)
-        .where(eq(users.role, 'admin'))
-        .orderBy(desc(users.createdAt));
-    } catch (e) {
-      console.error('Error al consultar administradores en Cloud SQL:', error);
-      throw new Error('No se pudieron obtener los administradores de fondos.', { cause: error });
-    }
+    console.error('Error al consultar administradores en Cloud SQL:', error);
+    throw new Error('No se pudieron obtener los administradores de fondos.', { cause: error });
   }
 }
 
@@ -577,18 +567,8 @@ export async function getAllCollectors() {
       .where(or(eq(users.role, 'collector'), eq(users.role, 'cobrador')))
       .orderBy(desc(users.createdAt));
   } catch (error: any) {
-    try {
-      await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authorized_device_id text;`);
-      await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS device_approved boolean DEFAULT true;`);
-      return await db
-        .select()
-        .from(users)
-        .where(or(eq(users.role, 'collector'), eq(users.role, 'cobrador')))
-        .orderBy(desc(users.createdAt));
-    } catch (e) {
-      console.error('Error al consultar cobradores en Cloud SQL:', error);
-      throw new Error('No se pudieron obtener los usuarios cobradores.', { cause: error });
-    }
+    console.error('Error al consultar cobradores en Cloud SQL:', error);
+    throw new Error('No se pudieron obtener los usuarios cobradores.', { cause: error });
   }
 }
 
@@ -700,28 +680,11 @@ export async function createCollectorUser(data: {
 export async function authenticateUserFromDB(email: string, password: string, deviceFingerprint?: string) {
   try {
     const normalizedEmail = email.trim().toLowerCase();
-    let found: any[] = [];
-    try {
-      found = await db
-        .select()
-        .from(users)
-        .where(eq(users.email, normalizedEmail))
-        .limit(1);
-    } catch (queryErr) {
-      console.warn('Advertencia consultando tabla users en Cloud SQL, intentando auto-reparar esquema:', queryErr);
-      try {
-        await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authorized_device_id text;`);
-        await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS device_approved boolean DEFAULT true;`);
-        found = await db
-          .select()
-          .from(users)
-          .where(eq(users.email, normalizedEmail))
-          .limit(1);
-      } catch (innerErr) {
-        console.warn('Fallo en auto-reparación o consulta de users:', innerErr);
-        return null;
-      }
-    }
+    const found = await db
+      .select()
+      .from(users)
+      .where(eq(users.email, normalizedEmail))
+      .limit(1);
 
     if (!found || !found.length) {
       return null;
@@ -734,26 +697,6 @@ export async function authenticateUserFromDB(email: string, password: string, de
 
     if (!userRecord.isActive) {
       throw new Error('La cuenta de usuario se encuentra suspendida.');
-    }
-
-    // Restricción de Dispositivos (Device Fingerprinting) para el rol de cobrador
-    if ((userRecord.role === 'collector' || userRecord.role === 'cobrador') && deviceFingerprint) {
-      if (!userRecord.authorizedDeviceId) {
-        // Al primer inicio de sesión del cobrador, vincular automáticamente el identificador único del dispositivo
-        try {
-          await db
-            .update(users)
-            .set({ authorizedDeviceId: deviceFingerprint, deviceApproved: true })
-            .where(eq(users.uid, userRecord.uid));
-          userRecord.authorizedDeviceId = deviceFingerprint;
-        } catch (updErr) {
-          console.warn('[authenticateUserFromDB] No se pudo guardar authorizedDeviceId:', updErr);
-        }
-      } else if (userRecord.authorizedDeviceId !== deviceFingerprint) {
-        throw new Error(
-          'EQUIPO_NO_AUTORIZADO: Este dispositivo no está registrado ni autorizado para ingresar a esta cuenta de cobrador. Solicite la aprobación del Administrador.'
-        );
-      }
     }
 
     return userRecord;
