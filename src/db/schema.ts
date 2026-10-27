@@ -25,6 +25,8 @@ export const users = pgTable('users', {
   routeZone: text('route_zone'), // Zona o Comuna de Medellín asignada (ej: 'Laureles / Estadio', 'Centro / El Hueco', etc.)
   phone: text('phone'),
   documentId: text('document_id'),
+  authorizedDeviceId: text('authorized_device_id'), // Fingerprint del dispositivo/navegador registrado
+  deviceApproved: boolean('device_approved').notNull().default(true),
   isActive: boolean('is_active').notNull().default(true),
   partnerEquityPct: numeric('partner_equity_pct', { precision: 5, scale: 2 }),
   createdAt: timestamp('created_at').defaultNow(),
@@ -115,8 +117,11 @@ export const cashDrawerSessions = pgTable('cash_drawer_sessions', {
   collectorId: text('collector_id').notNull(),
   collectorName: text('collector_name').notNull(),
   expectedCash: numeric('expected_cash', { precision: 12, scale: 2 }).notNull(),
-  actualCashHanded: numeric('actual_cash_handed', { precision: 12, scale: 2 }).notNull(),
-  discrepancy: numeric('discrepancy', { precision: 12, scale: 2 }).notNull(),
+  actualCash: numeric('actual_cash', { precision: 12, scale: 2 }),
+  actualCashHanded: numeric('actual_cash_handed', { precision: 12, scale: 2 }),
+  discrepancyAmount: numeric('discrepancy_amount', { precision: 12, scale: 2 }),
+  discrepancy: numeric('discrepancy', { precision: 12, scale: 2 }),
+  digitalCash: numeric('digital_cash', { precision: 12, scale: 2 }),
   status: text('status').notNull(), // 'balanced' | 'surplus' | 'shortage'
   notes: text('notes'),
   verifiedByAdmin: boolean('verified_by_admin').notNull().default(false),

@@ -101,3 +101,41 @@ _${entry.hash.substring(0, 16)}..._
     whatsappUrl
   };
 }
+
+/**
+ * Petición automática de WhatsApp en segundo plano tras pago exitoso
+ */
+export async function sendAutomaticWhatsAppReceipt(params: {
+  phone: string;
+  amount: number;
+  remainingBalance: number;
+  clientName?: string;
+  receiptNumber?: string;
+  messageText?: string;
+}): Promise<{ success: boolean; deliveredAt?: string; message?: string; error?: string }> {
+  try {
+    const formattedAmount = `$${params.amount.toLocaleString()} COP`;
+    const formattedBalance = `$${params.remainingBalance.toLocaleString()} COP`;
+    const text =
+      params.messageText ||
+      `Pago recibido por ${formattedAmount}. Saldo actual: ${formattedBalance}. Gracias por su pago.`;
+
+    const response = await fetch('/api/send-whatsapp-receipt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phone: params.phone,
+        amount: params.amount,
+        remainingBalance: params.remainingBalance,
+        clientName: params.clientName,
+        receiptNumber: params.receiptNumber,
+        messageText: text,
+      }),
+    });
+    return await response.json();
+  } catch (error: any) {
+    console.error('Error al enviar recibo automático por WhatsApp:', error);
+    return { success: false, error: String(error) };
+  }
+}
+

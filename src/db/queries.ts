@@ -195,13 +195,18 @@ export async function recordCashReconciliation(session: {
   collectorId: string;
   collectorName: string;
   expectedCash: number;
-  actualCashHanded: number;
-  discrepancy: number;
+  actualCashHanded?: number;
+  actualCash?: number;
+  discrepancy?: number;
+  discrepancyAmount?: number;
   status: string;
   notes?: string;
   verifiedByAdmin?: boolean;
 }) {
   try {
+    const actual = session.actualCash ?? session.actualCashHanded ?? 0;
+    const diff = session.discrepancyAmount ?? session.discrepancy ?? 0;
+
     const inserted = await db.insert(cashDrawerSessions).values({
       id: session.id,
       routeId: session.routeId,
@@ -209,8 +214,10 @@ export async function recordCashReconciliation(session: {
       collectorId: session.collectorId,
       collectorName: session.collectorName,
       expectedCash: session.expectedCash.toString(),
-      actualCashHanded: session.actualCashHanded.toString(),
-      discrepancy: session.discrepancy.toString(),
+      actualCash: actual.toString(),
+      actualCashHanded: actual.toString(),
+      discrepancyAmount: diff.toString(),
+      discrepancy: diff.toString(),
       status: session.status,
       notes: session.notes || null,
       verifiedByAdmin: session.verifiedByAdmin ?? false,
@@ -670,16 +677,22 @@ export async function createCollectorUser(data: {
   }
 }
 
-export async function authenticateUserFromDB(email: string, password: string) {
+export async function authenticateUserFromDB(email: string, password: string, deviceFingerprint?: string) {
   try {
     const normalizedEmail = email.trim().toLowerCase();
-    const found = await db
-      .select()
-      .from(users)
-      .where(eq(users.email, normalizedEmail))
-      .limit(1);
+    let found: any[] = [];
+    try {
+      found = await db
+        .select()
+        .from(users)
+        .where(eq(users.email, normalizedEmail))
+        .limit(1);
+    } catch (queryErr) {
+      console.warn('Advertencia consultando tabla users en Cloud SQL:', queryErr);
+      return null;
+    }
 
-    if (!found.length) {
+    if (!found || !found.length) {
       return null;
     }
 
@@ -690,6 +703,26 @@ export async function authenticateUserFromDB(email: string, password: string) {
 
     if (!userRecord.isActive) {
       throw new Error('La cuenta de usuario se encuentra suspendida.');
+    }
+
+    // Restricción de Dispositivos (Device Fingerprinting) para el rol de cobrador
+    if ((userRecord.role === 'collector' || userRecord.role === 'cobrador') && deviceFingerprint) {
+      if (!userRecord.authorizedDeviceId) {
+        // Al primer inicio de sesión del cobrador, vincular automáticamente el identificador único del dispositivo
+        try {
+          await db
+            .update(users)
+            .set({ authorizedDeviceId: deviceFingerprint, deviceApproved: true })
+            .where(eq(users.uid, userRecord.uid));
+          userRecord.authorizedDeviceId = deviceFingerprint;
+        } catch (updErr) {
+          console.warn('[authenticateUserFromDB] No se pudo guardar authorizedDeviceId:', updErr);
+        }
+      } else if (userRecord.authorizedDeviceId !== deviceFingerprint) {
+        throw new Error(
+          'EQUIPO_NO_AUTORIZADO: Este dispositivo no está registrado ni autorizado para ingresar a esta cuenta de cobrador. Solicite la aprobación del Administrador.'
+        );
+      }
     }
 
     return userRecord;

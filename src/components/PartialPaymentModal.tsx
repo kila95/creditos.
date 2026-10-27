@@ -26,7 +26,8 @@ interface PartialPaymentModalProps {
     amount: number,
     distribution: PartialPaymentDistribution,
     notes: string,
-    extensionDays?: number
+    extensionDays?: number,
+    paymentMethod?: 'efectivo' | 'nequi' | 'bancolombia' | 'daviplata' | 'transferencia'
   ) => void;
   onClose: () => void;
 }
@@ -41,8 +42,9 @@ export const PartialPaymentModal: React.FC<PartialPaymentModalProps> = ({
   const defaultSuggested = Math.min(roundCOP(loan.installmentAmount / 2), maxAllowedBalance);
 
   const [partialAmountInput, setPartialAmountInput] = useState<string>(String(defaultSuggested));
+  const [paymentMethod, setPaymentMethod] = useState<'efectivo' | 'nequi' | 'bancolombia' | 'daviplata' | 'transferencia'>('efectivo');
   const [collectorNotes, setCollectorNotes] = useState<string>(
-    'Abonó cuota parcial en efectivo, compromiso de pago por saldo restante.'
+    'Abonó cuota parcial, compromiso de pago por saldo restante.'
   );
   const [hasExtension, setHasExtension] = useState<boolean>(false);
   const [extensionDays, setExtensionDays] = useState<number>(1);
@@ -85,7 +87,8 @@ export const PartialPaymentModal: React.FC<PartialPaymentModalProps> = ({
       paymentCheck.sanitizedAmount,
       distribution,
       collectorNotes,
-      hasExtension ? extensionDays : undefined
+      hasExtension ? extensionDays : undefined,
+      paymentMethod
     );
   };
 

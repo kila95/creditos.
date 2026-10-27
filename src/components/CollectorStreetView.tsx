@@ -40,7 +40,7 @@ import {
   roundCOP,
   validatePaymentAmount,
 } from '../utils/financialCalculations';
-import { buildMorningPaymentReminder } from '../utils/whatsappMessaging';
+import { buildMorningPaymentReminder, sendAutomaticWhatsAppReceipt } from '../utils/whatsappMessaging';
 import {
   useOnlineStatus,
   enqueueOfflinePayment,
@@ -396,6 +396,15 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
         hash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2),
       };
       setActiveReceipt({ entry, client, loan });
+      if (client.phone) {
+        sendAutomaticWhatsAppReceipt({
+          phone: client.phone,
+          amount: cleanAmount,
+          remainingBalance: Math.max(0, currentBalance - cleanAmount),
+          clientName: client.name,
+          receiptNumber: entry.receiptNumber
+        }).catch((err) => console.warn('Automatic WhatsApp receipt error:', err));
+      }
     }
   };
 
@@ -1407,10 +1416,11 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
           loan={selectedLoan}
           client={clients.find((c) => c.id === selectedLoan.clientId)}
           onClose={() => setPaymentModalOpen(false)}
-          onConfirmPayment={(loanId, amount, distribution, notes) => {
+          onConfirmPayment={(loanId, amount, distribution, notes, extensionDays, pMethod) => {
             const cleanAmount = roundCOP(amount);
             const client = clients.find((c) => c.id === selectedLoan.clientId);
-            onRegisterPayment(loanId, cleanAmount, 'efectivo', notes);
+            const methodKey = pMethod === 'nequi' || pMethod === 'daviplata' ? pMethod : pMethod === 'bancolombia' || pMethod === 'transferencia' ? 'nequi' : 'efectivo';
+            onRegisterPayment(loanId, cleanAmount, methodKey, notes);
 
             if (incidents[loanId]) {
               const nextIncidents = { ...incidents };
@@ -1429,7 +1439,7 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
                 amount: cleanAmount,
                 principalPortion: roundCOP(distribution.principalPortionCovered),
                 interestPortion: roundCOP(distribution.interestPortionCovered),
-                paymentMethod: 'efectivo',
+                paymentMethod: methodKey,
                 preBalance: roundCOP(distribution.preBalance),
                 postBalance: roundCOP(distribution.postBalance),
                 timestamp: new Date().toISOString(),
@@ -1439,6 +1449,15 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
                   Math.random().toString(36).substring(2),
               };
               setActiveReceipt({ entry, client, loan: selectedLoan });
+              if (client.phone) {
+                sendAutomaticWhatsAppReceipt({
+                  phone: client.phone,
+                  amount: cleanAmount,
+                  remainingBalance: roundCOP(distribution.postBalance),
+                  clientName: client.name,
+                  receiptNumber: entry.receiptNumber,
+                }).catch((err) => console.warn('Automatic WhatsApp receipt error:', err));
+              }
             }
 
             setPaymentModalOpen(false);
@@ -1540,6 +1559,7 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
         <DailyCashReconciliationModal
           route={currentRoute}
           expenses={expenses}
+          ledger={ledger}
           onConfirmReconciliation={onConfirmReconciliation}
           onClose={() => setReconciliationModalOpen(false)}
         />

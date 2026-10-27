@@ -71,6 +71,7 @@ export const UnifiedLoginView: React.FC<UnifiedLoginViewProps> = ({
       if (result.success) {
         const matchedDemo = DEMO_USERS[email.trim().toLowerCase()];
         const userRole =
+          result.role ||
           matchedDemo?.profile?.role ||
           (activeTab === 'collector' ? 'collector' : activeTab === 'super_admin' ? 'super_admin' : 'admin');
         onLoginSuccess(userRole);

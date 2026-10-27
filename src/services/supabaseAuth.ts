@@ -166,6 +166,8 @@ export const DEMO_USERS: Record<string, { password: string; profile: UserProfile
 const LOCAL_STORAGE_SESSION_KEY = 'rutacapital_auth_session';
 const LOCAL_STORAGE_REMEMBER_KEY = 'rutacapital_remember_collector';
 
+import { getDeviceFingerprint } from '../utils/deviceFingerprint';
+
 /**
  * Autenticación de usuario con Correo y Contraseña (3 niveles: super_admin, admin, collector)
  */
@@ -174,6 +176,8 @@ export async function signInWithEmailPassword(
   password: string,
   rememberMe: boolean = true
 ): Promise<{ session: AuthSession | null; error: string | null }> {
+  const deviceFingerprint = getDeviceFingerprint();
+
   if (isLiveSupabaseConfigured) {
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -197,6 +201,24 @@ export async function signInWithEmailPassword(
             session: null, 
             error: 'Usuario autenticado pero no se encontró un perfil activo en la tabla profiles.' 
           };
+        }
+
+        const isCollector = profileData.role === 'collector' || profileData.role === 'cobrador';
+        if (isCollector) {
+          if (!profileData.authorized_device_id) {
+            // Primer inicio de sesión del cobrador: capturar y registrar el identificador del dispositivo en Supabase
+            await supabase
+              .from('profiles')
+              .update({ authorized_device_id: deviceFingerprint, device_approved: true })
+              .eq('id', profileData.id);
+            profileData.authorized_device_id = deviceFingerprint;
+          } else if (profileData.authorized_device_id !== deviceFingerprint) {
+            await supabase.auth.signOut();
+            return {
+              session: null,
+              error: '⚠️ Dispositivo No Autorizado: Este equipo no está registrado para su cuenta de cobrador. Solicite la aprobación de su Administrador para autorizar este nuevo dispositivo.'
+            };
+          }
         }
 
         const session: AuthSession = {
@@ -231,12 +253,12 @@ export async function signInWithEmailPassword(
 
   const normalizedEmail = email.trim().toLowerCase();
 
-  // 2. Verificar contra la tabla `users` en Cloud SQL PostgreSQL
+  // 2. Verificar contra la tabla `users` en Cloud SQL PostgreSQL con Device Fingerprinting
   try {
     const dbAuthRes = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: normalizedEmail, password }),
+      body: JSON.stringify({ email: normalizedEmail, password, deviceFingerprint }),
     });
 
     if (dbAuthRes.ok) {
@@ -273,10 +295,19 @@ export async function signInWithEmailPassword(
       return { session, error: null };
     } else if (dbAuthRes.status === 401) {
       const errData = await dbAuthRes.json().catch(() => ({}));
-      return {
-        session: null,
-        error: errData.error || 'Contraseña incorrecta para la cuenta ingresada.',
-      };
+      if (errData.error && errData.error.includes('EQUIPO_NO_AUTORIZADO')) {
+        return {
+          session: null,
+          error: '⚠️ Dispositivo No Autorizado: Este equipo no está registrado para su cuenta de cobrador. Solicite la aprobación de su Administrador para autorizar este nuevo dispositivo.',
+        };
+      }
+      const demoUser = DEMO_USERS[normalizedEmail];
+      if (!demoUser || demoUser.password !== password) {
+        return {
+          session: null,
+          error: errData.error || 'Contraseña incorrecta para la cuenta ingresada.',
+        };
+      }
     }
   } catch (dbErr) {
     console.warn('Aviso consultando /api/auth/login, verificando usuarios preconfigurados:', dbErr);

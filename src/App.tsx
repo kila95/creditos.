@@ -59,6 +59,8 @@ import { useOnlineStatus, syncOfflineQueueWithServer, enqueueOfflinePayment } fr
 import { fetchClientsAndLoansFromDB } from './services/clientSyncService';
 import { supabase, isLiveSupabaseConfigured } from './services/supabaseAuth';
 import { roundCOP, validatePaymentAmount } from './utils/financialCalculations';
+import { sendAutomaticWhatsAppReceipt } from './utils/whatsappMessaging';
+import { ProtectedRoute } from './components/ProtectedRoute';
 import { Par30AlertBanner, Par30AlertItem } from './components/Par30AlertBanner';
 
 export type { ActiveRole };
@@ -596,6 +598,18 @@ function MainAppContent() {
         gpsLocation: newEntry.gpsLocation
       });
     }
+
+    // Trigger recibo automático por WhatsApp en segundo plano
+    const matchedClient = clients.find((c) => c.id === loan.clientId);
+    if (matchedClient?.phone) {
+      sendAutomaticWhatsAppReceipt({
+        phone: matchedClient.phone,
+        amount: safeAmount,
+        remainingBalance: postBalance,
+        clientName: matchedClient.name,
+        receiptNumber: newEntry.receiptNumber,
+      }).catch((err) => console.warn('Automatic WhatsApp receipt dispatch warning:', err));
+    }
   };
 
   // Registro de gasto operativo
@@ -844,46 +858,71 @@ function MainAppContent() {
     routeId: string, 
     actualCash: number, 
     discrepancy: number, 
-    notes: string
+    notes: string,
+    sessionRecord?: any
   ) => {
     const route = routes.find(r => r.id === routeId);
     if (!route) return;
 
-    const action = discrepancy < 0 
-      ? 'AJUSTE_ARQUEO_FALTANTE' 
-      : 'CIERRE_TURNO_AUDITADO';
+    const expectedCashCalculated = sessionRecord?.expected_cash ?? sessionRecord?.expectedClosingCash ?? (route.baseFloatingCapital + route.dailyGrossCollected - route.dailyExpenses);
+    const statusStr = discrepancy === 0 ? 'cuadre_exacto' : discrepancy < 0 ? 'faltante' : 'sobrante';
+    const sessionId = sessionRecord?.id || `recon-${Date.now()}`;
 
     const auditEvent: AuditLogItem = {
       id: `aud-${Date.now()}`,
       timestamp: new Date().toISOString(),
       actor: profile?.email || 'boveda_auditor@rutacapital.co',
       role: 'Auditor Bóveda',
-      action,
+      action: discrepancy < 0 ? 'AJUSTE_ARQUEO_FALTANTE' : 'CIERRE_TURNO_AUDITADO',
       targetEntity: `cash_drawer_sessions (${route.name})`,
       targetId: route.id,
-      oldValue: `status: abierta, expected: $${(route.baseFloatingCapital + route.dailyGrossCollected - route.dailyExpenses).toLocaleString()} COP`,
-      newValue: `status: ${discrepancy === 0 ? 'cuadre_exacto' : discrepancy < 0 ? 'faltante' : 'sobrante'}, actualCash: $${actualCash.toLocaleString()} COP, discrepancy: $${discrepancy.toLocaleString()} COP`,
-      justification: notes || (discrepancy === 0 ? 'Cuadre perfecto de caja en sobre sellado.' : `Diferencia de $${discrepancy.toLocaleString()} COP registrada en sobre de entrega.`),
+      oldValue: `status: abierta, expected_cash: $${expectedCashCalculated.toLocaleString()} COP`,
+      newValue: `status: ${statusStr}, actual_cash: $${actualCash.toLocaleString()} COP, discrepancy_amount: $${discrepancy.toLocaleString()} COP`,
+      justification: notes || (discrepancy === 0 ? 'Caja Cuadrada Perfectamente' : `Diferencia de $${discrepancy.toLocaleString()} COP registrada en arqueo.`),
       ipAddress: '190.157.24.81 (Sede Central)',
       immutableHash: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2),
       severity: discrepancy === 0 ? 'normal' : 'alerta_critica'
     };
     setAuditLogs(prev => [auditEvent, ...prev]);
 
-    // Persistir arqueo de cierre en Cloud SQL
+    // 1. Persistir arqueo de cierre en Supabase si está configurado
+    if (isLiveSupabaseConfigured) {
+      supabase.from('cash_drawer_sessions').insert([{
+        id: sessionId,
+        route_id: route.id,
+        date: new Date().toISOString().split('T')[0],
+        collector_id: profile?.id || 'col-01',
+        collector_name: route.collectorName,
+        expected_cash: expectedCashCalculated,
+        actual_cash: actualCash,
+        actual_cash_handed: actualCash,
+        discrepancy_amount: discrepancy,
+        discrepancy: discrepancy,
+        status: statusStr,
+        notes: notes || (discrepancy === 0 ? 'Caja Cuadrada Perfectamente' : statusStr === 'faltante' ? `Faltante: $${discrepancy}` : `Sobrante: $${discrepancy}`),
+        verified_by_admin: false
+      }]).then(({ error }) => {
+        if (error) console.warn('⚠️ [Supabase cash_drawer_sessions insert warning]:', error);
+        else console.log('✅ Arqueo guardado en Supabase cash_drawer_sessions');
+      });
+    }
+
+    // 2. Persistir arqueo de cierre en Cloud SQL PostgreSQL
     fetch('/api/reconciliation', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        id: `recon-${Date.now()}`,
+        id: sessionId,
         routeId: route.id,
         date: new Date().toISOString().split('T')[0],
         collectorId: 'col-01',
         collectorName: route.collectorName,
-        expectedCash: (route.baseFloatingCapital + route.dailyGrossCollected - route.dailyExpenses),
+        expectedCash: expectedCashCalculated,
+        actualCash: actualCash,
         actualCashHanded: actualCash,
-        discrepancy,
-        status: discrepancy === 0 ? 'balanced' : discrepancy < 0 ? 'shortage' : 'surplus',
+        discrepancy: discrepancy,
+        discrepancyAmount: discrepancy,
+        status: statusStr,
         notes: notes || '',
         verifiedByAdmin: false
       })
@@ -1020,9 +1059,10 @@ function MainAppContent() {
 
       {/* VISTA 1: PANEL SUPER ADMIN & ADMINISTRADOR DE FONDOS (CON AISLAMIENTO MULTI-TENANT) */}
       {activeRole === 'admin_cfo' && (
-        <AdminRouteGuard 
-          requiredRole="admin_or_socio" 
-          onRedirectToAuthorized={(roleRedirect) => setActiveRole(roleRedirect as ActiveRole)}
+        <ProtectedRoute
+          allowedRoles={['super_admin', 'admin', 'socio']}
+          requiredTenantId={isSuperAdminRole ? undefined : currentTenantId}
+          onUnauthorizedRedirect={(targetRole) => setActiveRole(targetRole as ActiveRole)}
         >
           {isSuperAdminRole ? (
             <SuperAdminDashboardView />
@@ -1088,51 +1128,57 @@ function MainAppContent() {
               onOpenNewClientModal={() => setShowNewClientModal(true)}
             />
           )}
-        </AdminRouteGuard>
+        </ProtectedRoute>
       )}
 
       {/* VISTA 2: FONDO DE INVERSIONISTAS & DIVIDENDOS (PROTEGIDO POR RBAC) */}
       {activeRole === 'investor_fund' && (
-        <AdminRouteGuard 
-          requiredRole="admin_or_socio" 
-          onRedirectToAuthorized={(roleRedirect) => setActiveRole(roleRedirect as ActiveRole)}
+        <ProtectedRoute
+          allowedRoles={['super_admin', 'admin', 'socio']}
+          requiredTenantId={currentTenantId}
+          onUnauthorizedRedirect={(targetRole) => setActiveRole(targetRole as ActiveRole)}
         >
           <InvestorFundView />
-        </AdminRouteGuard>
+        </ProtectedRoute>
       )}
 
       {/* VISTA 3: TERMINAL DEL COBRADOR EN CALLE (PROTEGIDA POR ROL COBRADOR Y RLS DE RUTA) */}
       {activeRole === 'collector_street' && (
-        <CollectorRouteGuard routes={routes}>
-          {({ activeRouteId }) => {
-            const assignedRoute = routes.find(r => r.id === activeRouteId) || routes[0];
-            // Aislamiento de datos RLS: Solo clientes, préstamos, gastos y base semanal de la ruta del rutero
-            const routeClients = clients.filter(c => c.routeId === activeRouteId);
-            const routeLoans = loans.filter(l => l.routeId === activeRouteId);
-            const routeExpenses = expenses.filter(e => e.routeId === activeRouteId);
-            const routeLedger = ledger.filter(led => led.routeId === activeRouteId);
-            const activeCollectorBase = collectorBases.find(
-              b => b.routeId === activeRouteId && b.status === 'ACTIVA'
-            ) || null;
+        <ProtectedRoute
+          allowedRoles={['collector', 'cobrador', 'admin', 'super_admin']}
+          onUnauthorizedRedirect={(targetRole) => setActiveRole(targetRole as ActiveRole)}
+        >
+          <CollectorRouteGuard routes={routes}>
+            {({ activeRouteId }) => {
+              const assignedRoute = routes.find(r => r.id === activeRouteId) || routes[0];
+              // Aislamiento de datos RLS: Solo clientes, préstamos, gastos y base semanal de la ruta del rutero
+              const routeClients = clients.filter(c => c.routeId === activeRouteId);
+              const routeLoans = loans.filter(l => l.routeId === activeRouteId);
+              const routeExpenses = expenses.filter(e => e.routeId === activeRouteId);
+              const routeLedger = ledger.filter(led => led.routeId === activeRouteId);
+              const activeCollectorBase = collectorBases.find(
+                b => b.routeId === activeRouteId && b.status === 'ACTIVA'
+              ) || null;
 
-            return (
-              <CollectorStreetView
-                currentRoute={assignedRoute}
-                clients={routeClients}
-                loans={routeLoans}
-                expenses={routeExpenses}
-                ledger={routeLedger}
-                activeCollectorBase={activeCollectorBase}
-                onRegisterPayment={handleRegisterPayment}
-                onRegisterExpense={handleRegisterExpense}
-                onConfirmReconciliation={handleConfirmReconciliation}
-                onRegisterNewClient={handleClientCreated}
-                onCreateLoanForExistingClient={handleLoanCreatedForExistingClient}
-                onSyncDatabase={syncDatabaseClients}
-              />
-            );
-          }}
-        </CollectorRouteGuard>
+              return (
+                <CollectorStreetView
+                  currentRoute={assignedRoute}
+                  clients={routeClients}
+                  loans={routeLoans}
+                  expenses={routeExpenses}
+                  ledger={routeLedger}
+                  activeCollectorBase={activeCollectorBase}
+                  onRegisterPayment={handleRegisterPayment}
+                  onRegisterExpense={handleRegisterExpense}
+                  onConfirmReconciliation={handleConfirmReconciliation}
+                  onRegisterNewClient={handleClientCreated}
+                  onCreateLoanForExistingClient={handleLoanCreatedForExistingClient}
+                  onSyncDatabase={syncDatabaseClients}
+                />
+              );
+            }}
+          </CollectorRouteGuard>
+        </ProtectedRoute>
       )}
 
       {/* VISTA 4: PORTAL DEL DEUDOR (CLIENTE) */}
@@ -1147,9 +1193,10 @@ function MainAppContent() {
 
       {/* VISTA 5: GEOCERCAS & CIBERSEGURIDAD (PROTEGIDO POR RBAC) */}
       {activeRole === 'security_geofence' && (
-        <AdminRouteGuard 
-          requiredRole="admin_or_socio" 
-          onRedirectToAuthorized={(roleRedirect) => setActiveRole(roleRedirect as ActiveRole)}
+        <ProtectedRoute
+          allowedRoles={['super_admin', 'admin', 'socio']}
+          requiredTenantId={currentTenantId}
+          onUnauthorizedRedirect={(targetRole) => setActiveRole(targetRole as ActiveRole)}
         >
           <CollusionGeofenceMonitor
             routes={routes}
@@ -1157,22 +1204,28 @@ function MainAppContent() {
             loans={loans}
             ledger={ledger}
           />
-        </AdminRouteGuard>
+        </ProtectedRoute>
       )}
 
       {/* VISTA 6: AUDITORÍA INMUTABLE SHA-256 (PROTEGIDO POR RBAC) */}
       {activeRole === 'audit_logs' && (
-        <AdminRouteGuard 
-          requiredRole="admin_or_socio" 
-          onRedirectToAuthorized={(roleRedirect) => setActiveRole(roleRedirect as ActiveRole)}
+        <ProtectedRoute
+          allowedRoles={['super_admin', 'admin', 'socio']}
+          requiredTenantId={currentTenantId}
+          onUnauthorizedRedirect={(targetRole) => setActiveRole(targetRole as ActiveRole)}
         >
           <AuditLogView logs={auditLogs} />
-        </AdminRouteGuard>
+        </ProtectedRoute>
       )}
 
       {/* VISTA 7: ESQUEMA Y POLÍTICAS RLS SUPABASE */}
       {activeRole === 'supabase_sql' && (
-        <SupabaseSqlViewer />
+        <ProtectedRoute
+          allowedRoles={['super_admin']}
+          onUnauthorizedRedirect={(targetRole) => setActiveRole(targetRole as ActiveRole)}
+        >
+          <SupabaseSqlViewer />
+        </ProtectedRoute>
       )}
 
       {/* VISTA 8: PORTAL DE LOGIN RBAC & CAMBIO DE ROL */}

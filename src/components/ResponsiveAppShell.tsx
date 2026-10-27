@@ -20,6 +20,7 @@ import {
   Smartphone,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { signOutUser } from '../services/supabaseAuth';
 import { PWAInstallButton } from './PWAInstallButton';
 
 export type ActiveRole =
@@ -127,6 +128,16 @@ export const ResponsiveAppShell: React.FC<ResponsiveAppShellProps> = ({
   const handleNavClick = (id: ActiveRole) => {
     onSelectRole(id);
     setMobileDrawerOpen(false);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOutUser();
+      await logout();
+      setMobileDrawerOpen(false);
+    } catch (err) {
+      console.error('Error cerrando sesión:', err);
+    }
   };
 
   const getViewportContainerClass = () => {
@@ -361,10 +372,10 @@ export const ResponsiveAppShell: React.FC<ResponsiveAppShellProps> = ({
 
           <button
             type="button"
-            onClick={logout}
-            className="w-full py-2 px-3 rounded-lg bg-slate-900 hover:bg-rose-950/50 text-slate-300 hover:text-rose-300 border border-slate-800 hover:border-rose-800/50 text-xs font-medium flex items-center justify-center gap-2 transition-colors cursor-pointer"
+            onClick={handleLogout}
+            className="w-full py-2.5 px-3 rounded-xl bg-slate-900 hover:bg-rose-950/60 text-slate-300 hover:text-rose-300 border border-slate-800 hover:border-rose-800/60 text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-xs"
           >
-            <LogOut className="w-3.5 h-3.5" />
+            <LogOut className="w-4 h-4 text-rose-400" />
             <span>Cerrar Sesión</span>
           </button>
         </div>
@@ -494,13 +505,10 @@ export const ResponsiveAppShell: React.FC<ResponsiveAppShellProps> = ({
 
               <button
                 type="button"
-                onClick={() => {
-                  setMobileDrawerOpen(false);
-                  logout();
-                }}
-                className="w-full py-2.5 px-3 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-xs font-semibold flex items-center justify-center gap-2"
+                onClick={handleLogout}
+                className="w-full py-3 px-3 rounded-xl bg-rose-950/60 hover:bg-rose-900/60 text-rose-200 border border-rose-500/40 text-xs font-bold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
               >
-                <LogOut className="w-4 h-4" />
+                <LogOut className="w-4 h-4 text-rose-400" />
                 <span>Cerrar Sesión</span>
               </button>
             </div>
@@ -541,7 +549,7 @@ export const ResponsiveAppShell: React.FC<ResponsiveAppShellProps> = ({
             </div>
           </div>
 
-          {/* Derecha: Simulador de Viewport + Acción Primaria */}
+          {/* Derecha: Simulador de Viewport + Acción Primaria + Botón Cerrar Sesión */}
           <div className="flex items-center gap-2.5 shrink-0">
             {/* Selector de previsualización responsive */}
             <div className="hidden xl:flex items-center bg-slate-950 p-1 rounded-lg border border-slate-800 text-[11px]">
@@ -604,6 +612,16 @@ export const ResponsiveAppShell: React.FC<ResponsiveAppShellProps> = ({
                 <span>Nuevo Cliente</span>
               </button>
             )}
+
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="px-3 py-2 bg-slate-800 hover:bg-rose-950/60 text-slate-300 hover:text-rose-300 border border-slate-700 hover:border-rose-800/60 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
+              title="Cerrar Sesión y Salir"
+            >
+              <LogOut className="w-3.5 h-3.5 text-rose-400" />
+              <span className="hidden md:inline">Cerrar Sesión</span>
+            </button>
 
             <PWAInstallButton />
           </div>

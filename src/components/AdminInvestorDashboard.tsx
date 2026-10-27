@@ -60,7 +60,7 @@ interface AdminDashboardProps {
   onRestructureLoan: (loanId: string) => void;
   onToggleClientBlock: (clientId: string) => void;
   onReassignClientRoute: (clientId: string, newRouteId: string) => void;
-  onConfirmReconciliation: (routeId: string, actualCash: number, discrepancy: number, notes: string) => void;
+  onConfirmReconciliation: (routeId: string, actualCash: number, discrepancy: number, notes: string, sessionRecord?: any) => void;
   onNavigateToTab?: (tab: string) => void;
   onOpenNewClientModal?: () => void;
 }
@@ -1117,8 +1117,8 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
         <DailyCashReconciliationModal
           route={reconcilingRoute}
           expenses={expenses}
-          onConfirmReconciliation={(routeId, actualCash, discrepancy, notes) => {
-            onConfirmReconciliation(routeId, actualCash, discrepancy, notes);
+          onConfirmReconciliation={(routeId, actualCash, discrepancy, notes, sessionRecord) => {
+            onConfirmReconciliation(routeId, actualCash, discrepancy, notes, sessionRecord);
             setReconcilingRoute(null);
           }}
           onClose={() => setReconcilingRoute(null)}

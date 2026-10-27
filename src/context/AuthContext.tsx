@@ -22,7 +22,7 @@ interface AuthContextType {
   assignedRouteId: string | undefined;
   isAdminOrSocio: boolean;
   loading: boolean;
-  login: (email: string, password: string, rememberMe?: boolean) => Promise<{ success: boolean; error?: string }>;
+  login: (email: string, password: string, rememberMe?: boolean) => Promise<{ success: boolean; role?: UserRole; error?: string }>;
   logout: () => Promise<void>;
   switchDemoUser: (email: string) => void;
 }
@@ -46,7 +46,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setLoading(false);
   }, []);
 
-  const login = async (email: string, password: string, rememberMe: boolean = true): Promise<{ success: boolean; error?: string }> => {
+  const login = async (email: string, password: string, rememberMe: boolean = true): Promise<{ success: boolean; role?: UserRole; error?: string }> => {
     setLoading(true);
     const { session: newSession, error } = await signInWithEmailPassword(email, password, rememberMe);
     setLoading(false);
@@ -56,7 +56,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     setSession(newSession);
-    return { success: true };
+    return { success: true, role: newSession.profile.role };
   };
 
   const logout = async () => {
