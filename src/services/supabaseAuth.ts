@@ -633,21 +633,38 @@ export async function provisionUserInAuthAndProfiles(params: {
   routeZone?: string;
   phone?: string;
   documentId?: string;
-}): Promise<{ userId: string | null; effectivePassword: string; error: string | null }> {
+}): Promise<{
+  userId: string | null;
+  effectivePassword: string;
+  error: string | null;
+  savedInSupabase?: boolean;
+  attemptedEndpoint?: string;
+  attemptedUrl?: string;
+}> {
   const normalizedEmail = params.email.trim().toLowerCase();
   const effectivePassword = resolveDefaultTemporaryPassword(params.password, params.documentId);
+  const originUrl = typeof window !== 'undefined' ? window.location.origin : '';
 
   if (!isLiveSupabaseConfigured) {
     const fallbackUid =
       params.role === 'admin'
         ? `usr-adm-${Date.now().toString().slice(-6)}`
         : `usr-col-${Date.now().toString().slice(-6)}`;
-    return { userId: fallbackUid, effectivePassword, error: null };
+    return {
+      userId: fallbackUid,
+      effectivePassword,
+      error: null,
+      savedInSupabase: false,
+      attemptedEndpoint: 'local-fallback',
+      attemptedUrl: supabaseUrl,
+    };
   }
 
   // VIA 1: Backend Admin API (/api/admin/provision-user) con supabase.auth.admin.createUser + email_confirm: true
+  const backendEndpoint = '/api/admin/provision-user';
+  const backendFullUrl = `${originUrl}${backendEndpoint}`;
   try {
-    const backendRes = await fetch('/api/admin/provision-user', {
+    const backendRes = await fetch(backendEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -664,6 +681,9 @@ export async function provisionUserInAuthAndProfiles(params: {
           userId: backendData.user.id,
           effectivePassword: backendData.effectivePassword || effectivePassword,
           error: null,
+          savedInSupabase: true,
+          attemptedEndpoint: backendEndpoint,
+          attemptedUrl: backendFullUrl,
         };
       }
     } else if (backendRes.status !== 501 && backendRes.status !== 404) {
@@ -673,6 +693,9 @@ export async function provisionUserInAuthAndProfiles(params: {
           userId: null,
           effectivePassword,
           error: `Error en auth.users: ${errJson.error}`,
+          savedInSupabase: false,
+          attemptedEndpoint: backendEndpoint,
+          attemptedUrl: backendFullUrl,
         };
       }
     }
@@ -680,10 +703,12 @@ export async function provisionUserInAuthAndProfiles(params: {
     console.warn('Aviso consultando /api/admin/provision-user:', backendErr);
   }
 
-  // VIA 2: Supabase Edge Function (`admin-provision-user`) si está habilitada
-  if (import.meta.env.VITE_USE_EDGE_FUNCTION === 'true') {
+  // VIA 2: Supabase Edge Function (`admin-provision-user`)
+  const edgeFunctionName = 'admin-provision-user';
+  const edgeFunctionUrl = `${supabaseUrl}/functions/v1/${edgeFunctionName}`;
+  try {
     const { data: fnData, error: fnError } = await supabase.functions.invoke(
-      'admin-provision-user',
+      edgeFunctionName,
       {
         body: {
           ...params,
@@ -698,8 +723,15 @@ export async function provisionUserInAuthAndProfiles(params: {
         userId: fnData.user.id,
         effectivePassword: fnData.effectivePassword || effectivePassword,
         error: null,
+        savedInSupabase: true,
+        attemptedEndpoint: `/functions/v1/${edgeFunctionName}`,
+        attemptedUrl: edgeFunctionUrl,
       };
+    } else if (fnError) {
+      console.warn(`ℹ️ [Edge Function ${edgeFunctionUrl}]:`, fnError.message || fnError);
     }
+  } catch (edgeErr) {
+    console.warn(`ℹ️ [Edge Function ${edgeFunctionUrl} no disponible, usando provisión directa]:`, edgeErr);
   }
 
   // VIA 3: Cliente Admin aislado (si VITE_SUPABASE_SERVICE_ROLE_KEY está presente) o SignUp aislado sin cerrar sesión
@@ -709,6 +741,8 @@ export async function provisionUserInAuthAndProfiles(params: {
   let createdAuthUserId: string | null = null;
 
   if (envServiceRoleKey && !envServiceRoleKey.includes('TU_SUPABASE_SERVICE_ROLE_KEY')) {
+    const adminCreateEndpoint = '/auth/v1/admin/users';
+    const adminCreateUrl = `${supabaseUrl}${adminCreateEndpoint}`;
     // Regla 1 y 2 directa con supabase.auth.admin.createUser y email_confirm: true
     const { data: adminAuthData, error: adminAuthErr } =
       await isolatedClient.auth.admin.createUser({
@@ -735,10 +769,15 @@ export async function provisionUserInAuthAndProfiles(params: {
         userId: null,
         effectivePassword,
         error: `Error al crear en auth.users: ${adminAuthErr?.message || 'No se obtuvo user.id'}`,
+        savedInSupabase: false,
+        attemptedEndpoint: adminCreateEndpoint,
+        attemptedUrl: adminCreateUrl,
       };
     }
     createdAuthUserId = adminAuthData.user.id;
   } else {
+    const signUpEndpoint = '/auth/v1/signup';
+    const signUpUrl = `${supabaseUrl}${signUpEndpoint}`;
     // Cliente aislado en memoria (no altera la sesión del SuperAdmin/Admin)
     const { data: signUpData, error: signUpError } = await isolatedClient.auth.signUp({
       email: normalizedEmail,
@@ -772,6 +811,9 @@ export async function provisionUserInAuthAndProfiles(params: {
           userId: null,
           effectivePassword,
           error: `Error al registrar en auth.users (Supabase Auth [${(signUpError as any)?.status || 'ERR'}]): ${signUpError.message}`,
+          savedInSupabase: false,
+          attemptedEndpoint: signUpEndpoint,
+          attemptedUrl: signUpUrl,
         };
       }
     }
@@ -792,6 +834,9 @@ export async function provisionUserInAuthAndProfiles(params: {
     }
   }
 
+  const profilesEndpoint = '/rest/v1/profiles';
+  const profilesUrl = `${supabaseUrl}${profilesEndpoint}`;
+
   // REGLA 3: Si el Paso 1 no devolvió un UUID válido de auth.users, el Paso 3 (INSERT en public.profiles) NO SE EJECUTA
   if (!createdAuthUserId) {
     return {
@@ -799,6 +844,9 @@ export async function provisionUserInAuthAndProfiles(params: {
       effectivePassword,
       error:
         'Error en sincronización de UUID: No se obtuvo un user.id válido desde auth.users. El INSERT en public.profiles fue cancelado.',
+      savedInSupabase: false,
+      attemptedEndpoint: '/auth/v1/signup',
+      attemptedUrl: `${supabaseUrl}/auth/v1/signup`,
     };
   }
 
@@ -861,11 +909,21 @@ export async function provisionUserInAuthAndProfiles(params: {
         userId: null,
         effectivePassword,
         error: `Error al insertar en public.profiles: ${profileError.message}`,
+        savedInSupabase: false,
+        attemptedEndpoint: profilesEndpoint,
+        attemptedUrl: profilesUrl,
       };
     }
   }
 
-  return { userId: createdAuthUserId, effectivePassword, error: null };
+  return {
+    userId: createdAuthUserId,
+    effectivePassword,
+    error: null,
+    savedInSupabase: true,
+    attemptedEndpoint: profilesEndpoint,
+    attemptedUrl: profilesUrl,
+  };
 }
 
 /**
@@ -892,6 +950,9 @@ export async function registerNewAdminAccount(input: {
     .replace(/[^a-z0-9]+/g, '-')
     .slice(0, 16)}-${Date.now().toString().slice(-4)}`;
 
+  let currentEndpointName = '/functions/v1/admin-provision-user';
+  let currentTargetUrl = `${supabaseUrl}/functions/v1/admin-provision-user`;
+
   try {
     logSupabaseConnectionAudit('registerNewAdminAccount (Crear Admin)', 'profiles', {
       email: normalizedEmail,
@@ -917,14 +978,21 @@ export async function registerNewAdminAccount(input: {
       documentId: input.documentId?.trim() || '',
     });
 
+    if (provisionResult.attemptedEndpoint) {
+      currentEndpointName = provisionResult.attemptedEndpoint;
+    }
+    if (provisionResult.attemptedUrl) {
+      currentTargetUrl = provisionResult.attemptedUrl;
+    }
+
     if (provisionResult.error || !provisionResult.userId) {
-      return {
-        profile: null,
-        error: provisionResult.error || 'Error al crear el Administrador en auth.users.',
-      };
+      throw new Error(
+        provisionResult.error || 'Error al crear el Administrador en auth.users / public.profiles.'
+      );
     }
 
     const synchronizedUid = provisionResult.userId;
+    const savedInSupabase = Boolean(provisionResult.savedInSupabase);
 
     // Sincronizar con motor PostgreSQL (/api/admins) usando el mismo UUID y contraseña temporal
     const payload = {
@@ -939,26 +1007,50 @@ export async function registerNewAdminAccount(input: {
       documentId: input.documentId?.trim() || '',
     };
 
-    const apiRes = await fetch('/api/admins', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    const originUrl = typeof window !== 'undefined' ? window.location.origin : '';
+    currentEndpointName = '/api/admins';
+    currentTargetUrl = `${originUrl}/api/admins`;
 
-    if (!apiRes.ok) {
-      const errBody = await apiRes.json().catch(() => ({}));
-      console.warn(`⚠️ [Aviso al guardar en /api/admins HTTP ${apiRes.status}]:`, errBody);
-      const isDuplicate =
-        apiRes.status === 409 ||
-        errBody?.code === '23505' ||
-        errBody?.error?.includes('Ya existe');
+    try {
+      const apiRes = await fetch('/api/admins', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
 
-      return {
-        profile: null,
-        error: isDuplicate
-          ? 'Error al guardar en base de datos: Ya existe un usuario registrado con este documento o correo.'
-          : `Error al guardar en base de datos: ${errBody.error || `HTTP ${apiRes.status}`}`,
-      };
+      if (!apiRes.ok) {
+        const errBody = await apiRes.json().catch(() => ({}));
+        console.warn(`⚠️ [Aviso al guardar en /api/admins HTTP ${apiRes.status}]:`, errBody);
+        const isDuplicate =
+          apiRes.status === 409 ||
+          errBody?.code === '23505' ||
+          errBody?.error?.includes('Ya existe');
+
+        if (isDuplicate) {
+          throw new Error(
+            'Error al guardar en base de datos: Ya existe un usuario registrado con este documento o correo.'
+          );
+        }
+
+        // Si el backend local /api/admins devuelve 404 (ej. despliegue estático en producción móvil),
+        // pero el usuario YA se guardó en Supabase (auth.users + public.profiles), no bloquear el registro.
+        if (!savedInSupabase) {
+          throw new Error(
+            `Error al guardar en base de datos: ${errBody.error || `HTTP ${apiRes.status}`}`
+          );
+        } else {
+          console.info(
+            `ℹ️ [/api/admins devolvió HTTP ${apiRes.status} en entorno web, pero el Administrador quedó persistido en Supabase (${supabaseUrl}/rest/v1/profiles) con UUID ${synchronizedUid}].`
+          );
+        }
+      }
+    } catch (apiFetchErr: any) {
+      if (apiFetchErr?.message?.includes('Ya existe') || !savedInSupabase) {
+        throw apiFetchErr;
+      }
+      console.info(
+        'ℹ️ [/api/admins no disponible en este host, cuenta persistida en Supabase auth.users + public.profiles].'
+      );
     }
 
     const newAdminProfile: UserProfile = {
@@ -979,10 +1071,22 @@ export async function registerNewAdminAccount(input: {
 
     return { profile: newAdminProfile, error: null };
   } catch (err: any) {
-    console.warn('⚠️ [Excepción creando administrador]:', err);
+    const errorMessage =
+      err?.message || 'Fallo inesperado al crear el Administrador.';
+    const rawViteSupabaseUrl =
+      import.meta.env.VITE_SUPABASE_URL || 'UNDEFINED (usando fallback)';
+
+    console.warn('⚠️ [Excepción creando administrador]:', {
+      VITE_SUPABASE_URL: rawViteSupabaseUrl,
+      sanitizedSupabaseUrl: supabaseUrl,
+      endpoint: currentEndpointName,
+      targetUrl: currentTargetUrl,
+      error: errorMessage,
+    });
+
     return {
       profile: null,
-      error: `Error al guardar en base de datos: ${err?.message || 'Fallo inesperado al crear el Administrador.'}`,
+      error: `${errorMessage} | Endpoint: ${currentEndpointName} | URL: ${currentTargetUrl}`,
     };
   }
 }
@@ -1013,6 +1117,9 @@ export async function registerNewCollectorAccount(input: {
   const creatorId = input.createdByAdminId || 'usr-admin-001';
   const cleanRouteZone = input.routeZone.trim() || 'Centro / El Hueco';
 
+  let currentEndpointName = '/functions/v1/admin-provision-user';
+  let currentTargetUrl = `${supabaseUrl}/functions/v1/admin-provision-user`;
+
   try {
     logSupabaseConnectionAudit('registerNewCollectorAccount (Crear Cobrador)', 'profiles', {
       email: normalizedEmail,
@@ -1042,14 +1149,21 @@ export async function registerNewCollectorAccount(input: {
       documentId: input.documentId?.trim() || '',
     });
 
+    if (provisionResult.attemptedEndpoint) {
+      currentEndpointName = provisionResult.attemptedEndpoint;
+    }
+    if (provisionResult.attemptedUrl) {
+      currentTargetUrl = provisionResult.attemptedUrl;
+    }
+
     if (provisionResult.error || !provisionResult.userId) {
-      return {
-        profile: null,
-        error: provisionResult.error || 'Error al crear el Cobrador en auth.users.',
-      };
+      throw new Error(
+        provisionResult.error || 'Error al crear el Cobrador en auth.users / public.profiles.'
+      );
     }
 
     const synchronizedUid = provisionResult.userId;
+    const savedInSupabase = Boolean(provisionResult.savedInSupabase);
 
     // Si Supabase está activo, vincular el UUID sincronizado a la tabla public.routes
     if (isLiveSupabaseConfigured) {
@@ -1082,39 +1196,61 @@ export async function registerNewCollectorAccount(input: {
     }
 
     // Persistir también en el backend PostgreSQL (/api/collectors) con el mismo UUID y contraseña temporal
-    const apiRes = await fetch('/api/collectors', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        uid: synchronizedUid,
-        email: normalizedEmail,
-        password: effectivePassword,
-        name: input.fullName.trim(),
-        assignedRouteId: input.assignedRouteId,
-        routeZone: cleanRouteZone,
-        organizationId: orgId,
-        tenantId: orgId,
-        organizationName: orgName,
-        createdBy: creatorId,
-        phone: input.phone?.trim() || '',
-        documentId: input.documentId?.trim() || '',
-      }),
-    });
+    const originUrl = typeof window !== 'undefined' ? window.location.origin : '';
+    currentEndpointName = '/api/collectors';
+    currentTargetUrl = `${originUrl}/api/collectors`;
 
-    if (!apiRes.ok) {
-      const errBody = await apiRes.json().catch(() => ({}));
-      console.warn('⚠️ [Aviso creando cobrador en /api/collectors]:', errBody);
-      const isDuplicate =
-        apiRes.status === 409 ||
-        errBody?.code === '23505' ||
-        errBody?.error?.includes('Ya existe');
+    try {
+      const apiRes = await fetch('/api/collectors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid: synchronizedUid,
+          email: normalizedEmail,
+          password: effectivePassword,
+          name: input.fullName.trim(),
+          assignedRouteId: input.assignedRouteId,
+          routeZone: cleanRouteZone,
+          organizationId: orgId,
+          tenantId: orgId,
+          organizationName: orgName,
+          createdBy: creatorId,
+          phone: input.phone?.trim() || '',
+          documentId: input.documentId?.trim() || '',
+        }),
+      });
 
-      return {
-        profile: null,
-        error: isDuplicate
-          ? 'Error al guardar en base de datos: Ya existe un usuario o cliente registrado con este documento o correo.'
-          : `Error al guardar en base de datos: ${errBody.error || 'No se pudo registrar el cobrador.'}`,
-      };
+      if (!apiRes.ok) {
+        const errBody = await apiRes.json().catch(() => ({}));
+        console.warn('⚠️ [Aviso creando cobrador en /api/collectors]:', errBody);
+        const isDuplicate =
+          apiRes.status === 409 ||
+          errBody?.code === '23505' ||
+          errBody?.error?.includes('Ya existe');
+
+        if (isDuplicate) {
+          throw new Error(
+            'Error al guardar en base de datos: Ya existe un usuario o cliente registrado con este documento o correo.'
+          );
+        }
+
+        if (!savedInSupabase) {
+          throw new Error(
+            `Error al guardar en base de datos: ${errBody.error || `HTTP ${apiRes.status}`}`
+          );
+        } else {
+          console.info(
+            `ℹ️ [/api/collectors devolvió HTTP ${apiRes.status} en entorno web, pero el Cobrador quedó persistido en Supabase (${supabaseUrl}/rest/v1/profiles) con UUID ${synchronizedUid}].`
+          );
+        }
+      }
+    } catch (apiFetchErr: any) {
+      if (apiFetchErr?.message?.includes('Ya existe') || !savedInSupabase) {
+        throw apiFetchErr;
+      }
+      console.info(
+        'ℹ️ [/api/collectors no disponible en este host, cuenta persistida en Supabase auth.users + public.profiles].'
+      );
     }
 
     const newProfile: UserProfile = {
@@ -1137,10 +1273,22 @@ export async function registerNewCollectorAccount(input: {
 
     return { profile: newProfile, error: null };
   } catch (err: any) {
-    console.warn('⚠️ [Excepción creando cobrador]:', err);
+    const errorMessage =
+      err?.message || 'Error inesperado al crear la cuenta del cobrador.';
+    const rawViteSupabaseUrl =
+      import.meta.env.VITE_SUPABASE_URL || 'UNDEFINED (usando fallback)';
+
+    console.warn('⚠️ [Excepción creando cobrador]:', {
+      VITE_SUPABASE_URL: rawViteSupabaseUrl,
+      sanitizedSupabaseUrl: supabaseUrl,
+      endpoint: currentEndpointName,
+      targetUrl: currentTargetUrl,
+      error: errorMessage,
+    });
+
     return {
       profile: null,
-      error: `Error al guardar en base de datos: ${err?.message || 'Error inesperado al crear la cuenta del cobrador.'}`,
+      error: `${errorMessage} | Endpoint: ${currentEndpointName} | URL: ${currentTargetUrl}`,
     };
   }
 }

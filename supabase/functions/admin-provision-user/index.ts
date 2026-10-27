@@ -148,12 +148,14 @@ serve(async (req: Request) => {
     // =========================================================================
     const newUserId = authData.user.id;
     const finalTenantId = role === 'admin' ? (organizationId || newUserId) : effectiveTenantId;
+    const safeProfileRole =
+      role === 'collector' ? 'cobrador' : role === 'super_admin' ? 'admin' : role;
 
     const fullProfilePayload = {
       id: newUserId, // UUID exacto retornado por auth.users
       email: normalizedEmail,
       full_name: String(fullName).trim(),
-      role,
+      role: safeProfileRole,
       organization_id: finalTenantId,
       tenant_id: finalTenantId,
       organization_name: organizationName || 'Fondo EnRuta',
@@ -167,26 +169,24 @@ serve(async (req: Request) => {
 
     let { data: profileRow, error: profileError } = await supabaseAdmin
       .from('profiles')
-      .insert([fullProfilePayload])
+      .upsert([fullProfilePayload], { onConflict: 'id' })
       .select()
       .single();
 
-    // Si el registro ya existía por un trigger de base de datos, hacemos upsert sincronizando el UUID
-    if (profileError && profileError.code === '23505') {
-      const upsertRes = await supabaseAdmin
-        .from('profiles')
-        .upsert([fullProfilePayload], { onConflict: 'id' })
-        .select()
-        .single();
-      profileRow = upsertRes.data;
-      profileError = upsertRes.error;
-    }
-
-    // Fallback si la tabla profiles aún tiene esquema mínimo (PGRST204)
-    if (profileError && profileError.code === 'PGRST204') {
+    // Fallback si la tabla profiles aún tiene esquema mínimo (id, full_name, role, created_at)
+    if (profileError) {
       const minimalRes = await supabaseAdmin
         .from('profiles')
-        .upsert([{ id: newUserId, role }], { onConflict: 'id' })
+        .upsert(
+          [
+            {
+              id: newUserId,
+              full_name: String(fullName).trim(),
+              role: safeProfileRole,
+            },
+          ],
+          { onConflict: 'id' }
+        )
         .select()
         .single();
       profileRow = minimalRes.data;

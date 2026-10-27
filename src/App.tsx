@@ -274,12 +274,12 @@ function MainAppContent() {
     let isMounted = true;
     const checkHealthAndSync = async () => {
       try {
-        const res = await fetch('/api/health');
-        if (res.ok && isMounted) {
-          await syncDatabaseClients();
-        }
+        await fetch('/api/health').catch(() => null);
       } catch (err) {
         console.warn('Sync health check warning:', err);
+      }
+      if (isMounted) {
+        await syncDatabaseClients();
       }
     };
     checkHealthAndSync();

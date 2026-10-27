@@ -17,7 +17,13 @@ import {
   Compass,
 } from 'lucide-react';
 import { RouteData } from '../data/mockData';
-import { registerNewCollectorAccount, DEMO_USERS } from '../services/supabaseAuth';
+import {
+  registerNewCollectorAccount,
+  DEMO_USERS,
+  supabase,
+  supabaseUrl,
+  isLiveSupabaseConfigured,
+} from '../services/supabaseAuth';
 import { useAuth } from '../context/AuthContext';
 
 export interface MedellinZoneOption {
@@ -163,61 +169,130 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
     try {
       const mergedMap = new Map<string, CollectorUserRecord>();
 
-      // Consultar el backend PostgreSQL (/api/collectors) sincronizado con Supabase Admin API
-      const res = await fetch('/api/collectors');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          data.forEach((u: any) => {
-            const normEmail = (u.email || '').trim().toLowerCase();
-            if (!normEmail) return;
-            const assignedId = u.assignedRouteId || u.assigned_route_id || 'route-1';
-            const fallbackRoute = routes.find((r) => r.id === assignedId);
-            const record: CollectorUserRecord = {
-              uid: u.uid || String(u.id),
-              email: u.email,
-              name: u.name,
-              role: u.role || 'collector',
-              assignedRouteId: assignedId,
-              routeZone:
-                u.routeZone ||
-                u.route_zone ||
-                fallbackRoute?.zone ||
-                'Centro / El Hueco',
-              organizationId: u.organizationId || u.organization_id || 'org-medellin-01',
-              organizationName:
-                u.organizationName ||
-                u.organization_name ||
-                'Fondo RutaCapital Medellín Central',
-              createdBy: u.createdBy || u.created_by || 'usr-admin-001',
-              phone: u.phone || '',
-              documentId: u.documentId || u.document_id || '',
-              isActive: u.isActive ?? u.is_active ?? true,
-              createdAt: u.createdAt || u.created_at,
-            };
-            mergedMap.set(normEmail, record);
+      // 1. Consultar el backend PostgreSQL (/api/collectors)
+      try {
+        const res = await fetch('/api/collectors');
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data)) {
+            data.forEach((u: any) => {
+              const normEmail = (u.email || '').trim().toLowerCase();
+              if (!normEmail) return;
+              const assignedId = u.assignedRouteId || u.assigned_route_id || 'route-1';
+              const fallbackRoute = routes.find((r) => r.id === assignedId);
+              const record: CollectorUserRecord = {
+                uid: u.uid || String(u.id),
+                email: u.email,
+                name: u.name,
+                role: u.role || 'collector',
+                assignedRouteId: assignedId,
+                routeZone:
+                  u.routeZone ||
+                  u.route_zone ||
+                  fallbackRoute?.zone ||
+                  'Centro / El Hueco',
+                organizationId: u.organizationId || u.organization_id || 'org-medellin-01',
+                organizationName:
+                  u.organizationName ||
+                  u.organization_name ||
+                  'Fondo RutaCapital Medellín Central',
+                createdBy: u.createdBy || u.created_by || 'usr-admin-001',
+                phone: u.phone || '',
+                documentId: u.documentId || u.document_id || '',
+                isActive: u.isActive ?? u.is_active ?? true,
+                createdAt: u.createdAt || u.created_at,
+              };
+              mergedMap.set(normEmail, record);
 
-            DEMO_USERS[normEmail] = {
-              password: u.password || DEMO_USERS[normEmail]?.password || 'cobrador123@Medellin',
-              profile: {
-                id: record.uid,
-                email: record.email,
-                fullName: record.name,
-                role: 'collector',
-                assignedRouteId: record.assignedRouteId,
-                routeZone: record.routeZone,
-                organizationId: record.organizationId,
-                organizationName: record.organizationName,
-                createdBy: record.createdBy,
-                phone: record.phone,
-                documentId: record.documentId,
-                isActive: record.isActive,
-                createdAt: record.createdAt || new Date().toISOString(),
-              },
-            };
-          });
+              DEMO_USERS[normEmail] = {
+                password: u.password || DEMO_USERS[normEmail]?.password || 'cobrador123@Medellin',
+                profile: {
+                  id: record.uid,
+                  email: record.email,
+                  fullName: record.name,
+                  role: 'collector',
+                  assignedRouteId: record.assignedRouteId,
+                  routeZone: record.routeZone,
+                  organizationId: record.organizationId,
+                  organizationName: record.organizationName,
+                  createdBy: record.createdBy,
+                  phone: record.phone,
+                  documentId: record.documentId,
+                  isActive: record.isActive,
+                  createdAt: record.createdAt || new Date().toISOString(),
+                },
+              };
+            });
+          }
+        }
+      } catch {
+        // Si /api/collectors no está montado en host estático, cargar desde Supabase public.profiles
+      }
+
+      // 2. Consultar también Supabase public.profiles para entornos de producción / móvil
+      if (isLiveSupabaseConfigured) {
+        try {
+          const { data: sbProfiles } = await supabase
+            .from('profiles')
+            .select('*')
+            .in('role', ['collector', 'cobrador']);
+
+          if (Array.isArray(sbProfiles)) {
+            sbProfiles.forEach((p: any) => {
+              const key = (p.email || `cobrador-${String(p.id).slice(0, 8)}@rutacapital.co`)
+                .trim()
+                .toLowerCase();
+              if (!mergedMap.has(key)) {
+                const assignedId = p.assigned_route_id || 'route-1';
+                const fallbackRoute = routes.find((r) => r.id === assignedId);
+                mergedMap.set(key, {
+                  uid: p.id,
+                  email: p.email || key,
+                  name: p.full_name || p.name || 'Cobrador',
+                  role: 'collector',
+                  assignedRouteId: assignedId,
+                  routeZone: p.route_zone || fallbackRoute?.zone || 'Centro / El Hueco',
+                  organizationId:
+                    p.organization_id || p.tenant_id || profile?.organizationId || 'org-medellin-01',
+                  organizationName:
+                    p.organization_name ||
+                    profile?.organizationName ||
+                    'Fondo RutaCapital Medellín Central',
+                  createdBy: p.created_by || profile?.id || 'usr-admin-001',
+                  phone: p.phone || '',
+                  documentId: p.document_id || '',
+                  isActive: p.is_active ?? true,
+                  createdAt: p.created_at || new Date().toISOString(),
+                });
+              }
+            });
+          }
+        } catch {
+          // Ignorar errores de lectura de profiles
         }
       }
+
+      // 3. Incluir cobradores aprovisionados en DEMO_USERS / localStorage
+      Object.entries(DEMO_USERS).forEach(([emailKey, entry]) => {
+        if (entry?.profile?.role === 'collector' && !mergedMap.has(emailKey)) {
+          mergedMap.set(emailKey, {
+            uid: entry.profile.id,
+            email: entry.profile.email,
+            name: entry.profile.fullName,
+            role: 'collector',
+            assignedRouteId: entry.profile.assignedRouteId || 'route-1',
+            routeZone: entry.profile.routeZone || 'Centro / El Hueco',
+            organizationId: entry.profile.organizationId || 'org-medellin-01',
+            organizationName:
+              entry.profile.organizationName || 'Fondo RutaCapital Medellín Central',
+            createdBy: entry.profile.createdBy || 'usr-admin-001',
+            phone: entry.profile.phone || '',
+            documentId: entry.profile.documentId || '',
+            isActive: entry.profile.isActive ?? true,
+            createdAt: entry.profile.createdAt || new Date().toISOString(),
+          });
+        }
+      });
 
       const finalCollectors = Array.from(mergedMap.values());
 
@@ -251,7 +326,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
     } finally {
       setIsLoadingList(false);
     }
-  }, [routes]);
+  }, [routes, profile?.id, profile?.organizationId, profile?.organizationName]);
 
   useEffect(() => {
     loadCollectors();
@@ -312,66 +387,85 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
     }
 
     setIsSubmitting(true);
+    try {
+      const { profile: createdProfile, error } = await registerNewCollectorAccount({
+        email: email.trim(),
+        password: effectiveCollectorPassword,
+        fullName: fullName.trim(),
+        assignedRouteId,
+        routeZone: resolvedRouteZone,
+        organizationId: profile?.organizationId || 'org-medellin-01',
+        organizationName: profile?.organizationName || 'Fondo RutaCapital Medellín Central',
+        createdByAdminId: profile?.id || 'usr-admin-001',
+        phone: phone.trim(),
+        documentId: documentId.trim(),
+      });
 
-    const { profile: createdProfile, error } = await registerNewCollectorAccount({
-      email: email.trim(),
-      password: effectiveCollectorPassword,
-      fullName: fullName.trim(),
-      assignedRouteId,
-      routeZone: resolvedRouteZone,
-      organizationId: profile?.organizationId || 'org-medellin-01',
-      organizationName: profile?.organizationName || 'Fondo RutaCapital Medellín Central',
-      createdByAdminId: profile?.id || 'usr-admin-001',
-      phone: phone.trim(),
-      documentId: documentId.trim(),
-    });
+      if (error || !createdProfile) {
+        throw new Error(
+          error || 'Error al guardar en base de datos: No se pudo crear el usuario cobrador.'
+        );
+      }
 
-    setIsSubmitting(false);
+      const newCollectorRecord: CollectorUserRecord = {
+        uid: createdProfile.id,
+        email: createdProfile.email,
+        name: createdProfile.fullName,
+        role: 'collector',
+        assignedRouteId: createdProfile.assignedRouteId || assignedRouteId,
+        routeZone: createdProfile.routeZone || resolvedRouteZone,
+        organizationId: createdProfile.organizationId || profile?.organizationId || 'org-medellin-01',
+        organizationName:
+          createdProfile.organizationName ||
+          profile?.organizationName ||
+          'Fondo RutaCapital Medellín',
+        createdBy: createdProfile.createdBy || profile?.id || 'usr-admin-001',
+        phone: createdProfile.phone,
+        documentId: createdProfile.documentId,
+        isActive: true,
+        createdAt: createdProfile.createdAt,
+      };
 
-    if (error || !createdProfile) {
-      console.warn('⚠️ [Aviso de validación al crear Cobrador]:', error);
-      setErrorMsg(error || 'Error al guardar en base de datos: No se pudo crear el usuario cobrador.');
-      return;
-    }
+      setCollectors((prev) => [
+        newCollectorRecord,
+        ...prev.filter((c) => c.email !== newCollectorRecord.email),
+      ]);
 
-    const newCollectorRecord: CollectorUserRecord = {
-      uid: createdProfile.id,
-      email: createdProfile.email,
-      name: createdProfile.fullName,
-      role: 'collector',
-      assignedRouteId: createdProfile.assignedRouteId || assignedRouteId,
-      routeZone: createdProfile.routeZone || resolvedRouteZone,
-      organizationId: createdProfile.organizationId || profile?.organizationId || 'org-medellin-01',
-      organizationName:
-        createdProfile.organizationName ||
-        profile?.organizationName ||
-        'Fondo RutaCapital Medellín',
-      createdBy: createdProfile.createdBy || profile?.id || 'usr-admin-001',
-      phone: createdProfile.phone,
-      documentId: createdProfile.documentId,
-      isActive: true,
-      createdAt: createdProfile.createdAt,
-    };
+      if (onCollectorCreated) {
+        onCollectorCreated(newCollectorRecord);
+      }
 
-    setCollectors((prev) => [
-      newCollectorRecord,
-      ...prev.filter((c) => c.email !== newCollectorRecord.email),
-    ]);
+      setSuccessMsg(
+        `¡Cobrador ${createdProfile.fullName} registrado! Zona asignada en perfil (route_zone): "${resolvedRouteZone}" vinculada a la ruta ${assignedRouteId}.`
+      );
 
-    if (onCollectorCreated) {
-      onCollectorCreated(newCollectorRecord);
-    }
+      setFullName('');
+      setEmail('');
+      setPhone('');
+      setDocumentId('');
+      if (selectedZoneOption === CUSTOM_ZONE_VALUE) {
+        setCustomZoneText('');
+      }
+    } catch (err: any) {
+      const rawSupabaseEnvUrl =
+        import.meta.env.VITE_SUPABASE_URL || `${supabaseUrl} (fallback)`;
+      const endpointName = '/functions/v1/admin-provision-user | /rest/v1/profiles | /api/collectors';
+      const errDetail = err?.message || 'Error inesperado al crear el cobrador.';
 
-    setSuccessMsg(
-      `¡Cobrador ${createdProfile.fullName} registrado! Zona asignada en perfil (route_zone): "${resolvedRouteZone}" vinculada a la ruta ${assignedRouteId}.`
-    );
+      // RASTREADOR VISUAL DE URL EN EL BLOQUE CATCH (Diagnóstico en pantalla de celular)
+      window.alert(
+        `🔍 RASTREADOR DE CONEXIÓN (DEBUG MÓVIL)\n\n` +
+          `• VITE_SUPABASE_URL: ${rawSupabaseEnvUrl}\n` +
+          `• URL Base Efectiva: ${supabaseUrl}\n` +
+          `• Endpoint: ${endpointName}\n` +
+          `• Detalle: ${errDetail}`
+      );
 
-    setFullName('');
-    setEmail('');
-    setPhone('');
-    setDocumentId('');
-    if (selectedZoneOption === CUSTOM_ZONE_VALUE) {
-      setCustomZoneText('');
+      setErrorMsg(
+        `${errDetail} (VITE_SUPABASE_URL: ${rawSupabaseEnvUrl} | Endpoint: ${endpointName})`
+      );
+    } finally {
+      setIsSubmitting(false);
     }
   };
 

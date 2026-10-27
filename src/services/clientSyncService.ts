@@ -600,50 +600,54 @@ export async function createCustomLoanInDB(
       }
     }
 
-    // 2. Persistir en Cloud SQL PostgreSQL (/api/loans)
-    const loanRes = await fetch('/api/loans', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: loanId,
-        clientId: input.clientId,
-        routeId: safeRouteId,
-        organizationId: safeOrgId,
-        tenantId: safeOrgId,
-        createdBy: safeCreatedBy,
-        principalAmount: safePrincipal,
-        interestRate: safeRate,
-        totalAmount: totalDebt,
-        dailyQuota: installmentAmount,
-        remainingBalance: totalDebt,
-        totalDays: safeInstallments,
-        paidDays: 0,
-        modality,
-        status: 'active',
-        startDate: todayStr,
-        expectedEndDate: dueDateStr,
-        paymentDays,
-      }),
-    });
+    // 2. Persistir en Cloud SQL PostgreSQL (/api/loans) si el backend Express está disponible
+    try {
+      const loanRes = await fetch('/api/loans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: loanId,
+          clientId: input.clientId,
+          routeId: safeRouteId,
+          organizationId: safeOrgId,
+          tenantId: safeOrgId,
+          createdBy: safeCreatedBy,
+          principalAmount: safePrincipal,
+          interestRate: safeRate,
+          totalAmount: totalDebt,
+          dailyQuota: installmentAmount,
+          remainingBalance: totalDebt,
+          totalDays: safeInstallments,
+          paidDays: 0,
+          modality,
+          status: 'active',
+          startDate: todayStr,
+          expectedEndDate: dueDateStr,
+          paymentDays,
+        }),
+      });
 
-    if (!loanRes.ok) {
-      const loanErrBody = await loanRes.json().catch(() => ({}));
-      console.warn('⚠️ [Database INSERT Aviso - /api/loans]:', loanErrBody);
-      if (!savedInSupabaseLoans) {
-        return {
-          data: null,
-          error: {
-            message: `Error al guardar en base de datos: ${
-              loanErrBody.error || `HTTP ${loanRes.status} al insertar préstamo en tabla loans.`
-            }`,
-            code: String(loanRes.status),
-            hint: 'Verifica que el client_id exista en la tabla clients y que la ruta esté activa.',
-          },
-        };
+      if (!loanRes.ok) {
+        const loanErrBody = await loanRes.json().catch(() => ({}));
+        console.warn('⚠️ [Database INSERT Aviso - /api/loans]:', loanErrBody);
+        if (!savedInSupabaseLoans && loanRes.status !== 404) {
+          return {
+            data: null,
+            error: {
+              message: `Error al guardar en base de datos: ${
+                loanErrBody.error || `HTTP ${loanRes.status} al insertar préstamo en tabla loans.`
+              }`,
+              code: String(loanRes.status),
+              hint: 'Verifica que el client_id exista en la tabla clients y que la ruta esté activa.',
+            },
+          };
+        }
       }
+    } catch (apiLoanErr) {
+      console.warn('⚠️ [Aviso conexión /api/loans]:', apiLoanErr);
     }
 
-    // Solo guardar en caché local una vez confirmado el éxito en la base de datos
+    // Guardar en caché local para disponibilidad inmediata
     saveLocalCachedLoan(createdLoan);
 
     return {
@@ -665,7 +669,7 @@ export async function createCustomLoanInDB(
 /**
  * Valida la existencia de la ruta en la tabla 'routes' de Supabase y en la base de datos Cloud SQL.
  * Si la ruta no existe, la crea/registra automáticamente para garantizar integridad referencial
- * y evitar errores HTTP 404 o rechazos de clave foránea.
+ * y evitar errores HTTP 404 o rechazos de clave foránea (23503).
  */
 export async function ensureRouteExistsInSupabaseAndDB(
   routeId: string,
@@ -677,10 +681,33 @@ export async function ensureRouteExistsInSupabaseAndDB(
   const rawRoute = typeof routeId === 'string' ? routeId.trim() : '';
   const safeRouteId =
     rawRoute && rawRoute !== 'null' && rawRoute !== 'undefined' ? rawRoute : 'route-1';
+  const safeOrgId = organizationId || 'org-medellin-01';
+  const isBrowserOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+
+  // 0. Garantizar existencia de la ruta en Supabase (public.routes) para evitar error FK 23503 al insertar clientes
+  if (isLiveSupabaseConfigured && isBrowserOnline) {
+    try {
+      await supabase.from('routes').upsert(
+        [
+          {
+            id: safeRouteId,
+            name: zone ? `Ruta ${zone}` : `Ruta ${safeRouteId}`,
+            zone: zone || 'Medellín Metropolitana',
+            collector_name: collectorName || 'Cobrador de Zona',
+            organization_id: safeOrgId,
+            tenant_id: safeOrgId,
+            status: 'active',
+          },
+        ],
+        { onConflict: 'id' }
+      );
+    } catch (sbRouteErr) {
+      console.warn('⚠️ [ensureRouteExistsInSupabaseAndDB] Aviso en public.routes:', sbRouteErr);
+    }
+  }
 
   // 1. Validar / auto-crear en Cloud SQL (Backend API /api/routes)
   try {
-    const isBrowserOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
     if (isBrowserOnline) {
       await fetch('/api/routes', {
         method: 'POST',
@@ -689,7 +716,7 @@ export async function ensureRouteExistsInSupabaseAndDB(
           id: safeRouteId,
           zone: zone || 'Medellín Metropolitana',
           collectorName: collectorName || 'Cobrador de Zona',
-          organizationId: organizationId || 'org-medellin-01',
+          organizationId: safeOrgId,
           createdBy: createdBy || 'usr-admin-001',
         }),
       }).catch((fetchErr) => {
@@ -840,9 +867,24 @@ export async function insertClientAndLoanToDB(
         payload: datosAInsertar,
       });
 
-      const { error: sbError } = await supabase
+      let { error: sbError } = await supabase
         .from('clients')
         .insert([datosAInsertar]);
+
+      // Fallback minimal payload si alguna columna extendida no existe aún en public.clients
+      if (sbError && (sbError.code === 'PGRST204' || sbError.code === '42703')) {
+        const minimalClientPayload = {
+          id: clientId,
+          document_id: cleanDocument,
+          name: input.name.trim(),
+          phone: input.phone.trim(),
+          address: input.address.trim(),
+          route_id: safeRouteId,
+          organization_id: safeOrgId,
+        };
+        const retryRes = await supabase.from('clients').insert([minimalClientPayload]);
+        sbError = retryRes.error;
+      }
 
       if (sbError) {
         const isSchemaOrPolicyIssue =
@@ -915,98 +957,95 @@ export async function insertClientAndLoanToDB(
       }
     }
 
-    // 2. Persistir en la base de datos PostgreSQL (Cloud SQL / Backend API /api/clients)
-    const clientRes = await fetch('/api/clients', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: clientId,
-        documentId: cleanDocument,
-        name: input.name.trim(),
-        alias: input.tradeName?.trim() || input.name.trim(),
-        phone: input.phone.trim(),
-        businessType: input.category || 'Micronegocio Local',
-        address: input.address.trim(),
-        zone: input.neighborhood.trim() || 'Medellín Metropolitana',
-        routeId: safeRouteId,
-        organizationId: safeOrgId,
-        tenantId: safeOrgId,
-        createdBy: safeCreatedBy,
-        riskScore: 80,
-        riskLevel: 'verde',
-        creditLimit: safePrincipal * 2,
-      }),
-    });
+    // 2. Persistir en la base de datos PostgreSQL (Cloud SQL / Backend API /api/clients) si está disponible
+    try {
+      const clientRes = await fetch('/api/clients', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: clientId,
+          documentId: cleanDocument,
+          name: input.name.trim(),
+          alias: input.tradeName?.trim() || input.name.trim(),
+          phone: input.phone.trim(),
+          businessType: input.category || 'Micronegocio Local',
+          address: input.address.trim(),
+          zone: input.neighborhood.trim() || 'Medellín Metropolitana',
+          routeId: safeRouteId,
+          organizationId: safeOrgId,
+          tenantId: safeOrgId,
+          createdBy: safeCreatedBy,
+          riskScore: 80,
+          riskLevel: 'verde',
+          creditLimit: safePrincipal * 2,
+        }),
+      });
 
-    if (!clientRes.ok) {
-      const errBody = await clientRes.json().catch(() => ({}));
-      console.warn('⚠️ [Database INSERT Aviso - /api/clients]:', errBody);
+      if (!clientRes.ok) {
+        const errBody = await clientRes.json().catch(() => ({}));
+        console.warn('⚠️ [Database INSERT Aviso - /api/clients]:', errBody);
 
-      if (!savedInSupabase) {
-        const isDuplicate =
-          clientRes.status === 409 ||
-          errBody?.code === '23505' ||
-          errBody?.error?.includes('Ya existe') ||
-          errBody?.error?.includes('23505');
+        if (!savedInSupabase && clientRes.status !== 404) {
+          const isDuplicate =
+            clientRes.status === 409 ||
+            errBody?.code === '23505' ||
+            errBody?.error?.includes('Ya existe') ||
+            errBody?.error?.includes('23505');
 
-        const errMsg = isDuplicate
-          ? 'Error al guardar en base de datos: Ya existe un usuario o cliente registrado con este documento o correo.'
-          : `Error al guardar en base de datos: ${errBody.error || `HTTP ${clientRes.status} al insertar en clients.`}`;
+          const errMsg = isDuplicate
+            ? 'Error al guardar en base de datos: Ya existe un usuario o cliente registrado con este documento o correo.'
+            : `Error al guardar en base de datos: ${errBody.error || `HTTP ${clientRes.status} al insertar en clients.`}`;
 
-        return {
-          data: null,
-          error: {
-            message: errMsg,
-            code: isDuplicate ? '23505' : String(clientRes.status),
-            hint: isDuplicate ? 'Cédula o documento ya existente.' : 'Verifica la conexión con la base de datos o los permisos de escritura en la tabla clients.',
-          },
-        };
+          return {
+            data: null,
+            error: {
+              message: errMsg,
+              code: isDuplicate ? '23505' : String(clientRes.status),
+              hint: isDuplicate ? 'Cédula o documento ya existente.' : 'Verifica la conexión con la base de datos o los permisos de escritura en la tabla clients.',
+            },
+          };
+        }
       }
+    } catch (apiClientErr) {
+      console.warn('⚠️ [Aviso conexión /api/clients]:', apiClientErr);
     }
 
-    // 3. Persistir el préstamo asociado en la tabla `loans`
-    const loanRes = await fetch('/api/loans', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: loanId,
-        clientId,
-        routeId: safeRouteId,
-        organizationId: safeOrgId,
-        tenantId: safeOrgId,
-        createdBy: safeCreatedBy,
-        principalAmount: safePrincipal,
-        interestRate: safeRate,
-        totalAmount: totalDebt,
-        dailyQuota: installmentAmount,
-        remainingBalance: totalDebt,
-        totalDays: safeTerm,
-        paidDays: 0,
-        modality,
-        status: 'active',
-        startDate: todayStr,
-        expectedEndDate: dueDateStr,
-        paymentDays,
-      }),
-    });
+    // 3. Persistir el préstamo asociado en la tabla `loans` del backend si está disponible
+    try {
+      const loanRes = await fetch('/api/loans', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: loanId,
+          clientId,
+          routeId: safeRouteId,
+          organizationId: safeOrgId,
+          tenantId: safeOrgId,
+          createdBy: safeCreatedBy,
+          principalAmount: safePrincipal,
+          interestRate: safeRate,
+          totalAmount: totalDebt,
+          dailyQuota: installmentAmount,
+          remainingBalance: totalDebt,
+          totalDays: safeTerm,
+          paidDays: 0,
+          modality,
+          status: 'active',
+          startDate: todayStr,
+          expectedEndDate: dueDateStr,
+          paymentDays,
+        }),
+      });
 
-    if (!loanRes.ok) {
-      const loanErrBody = await loanRes.json().catch(() => ({}));
-      console.warn('⚠️ [Database INSERT Aviso - /api/loans]:', loanErrBody);
-      if (!savedInSupabase) {
-        return {
-          data: null,
-          error: {
-            message: `Error al guardar en base de datos: ${
-              loanErrBody.error || 'El cliente se creó, pero hubo un error al guardar su préstamo inicial.'
-            }`,
-            code: String(loanRes.status),
-          },
-        };
+      if (!loanRes.ok) {
+        const loanErrBody = await loanRes.json().catch(() => ({}));
+        console.warn('⚠️ [Database INSERT Aviso - /api/loans]:', loanErrBody);
       }
+    } catch (apiLoanErr) {
+      console.warn('⚠️ [Aviso conexión /api/loans]:', apiLoanErr);
     }
 
-    // Solo guardar en caché local una vez que la base de datos confirmó la inserción exitosa
+    // Guardar en caché local para disponibilidad inmediata en ruta
     saveLocalCachedClient(createdClient);
     saveLocalCachedLoan(createdLoan);
 

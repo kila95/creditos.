@@ -17,7 +17,13 @@ import {
   FileText,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { registerNewAdminAccount, DEMO_USERS } from '../services/supabaseAuth';
+import {
+  registerNewAdminAccount,
+  DEMO_USERS,
+  supabase,
+  supabaseUrl,
+  isLiveSupabaseConfigured,
+} from '../services/supabaseAuth';
 
 export interface RegisteredAdminRecord {
   id: string;
@@ -56,31 +62,91 @@ export const SuperAdminTenantsManager: React.FC = () => {
     try {
       const mergedMap = new Map<string, RegisteredAdminRecord>();
 
-      // Consultar el backend PostgreSQL (/api/admins) sincronizado con Supabase Admin API
-      const res = await fetch('/api/admins');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data)) {
-          data.forEach((a: any) => {
-            const normEmail = (a.email || '').trim().toLowerCase();
-            if (!normEmail) return;
-            mergedMap.set(normEmail, {
-              id: a.uid || `usr-admin-${a.id}`,
-              email: a.email,
-              password: a.password || DEMO_USERS[normEmail]?.password || 'admin123@Medellin',
-              fullName: a.name || a.fullName || 'Administrador',
-              role: 'admin',
-              organizationId: a.organizationId || a.organization_id || `org-${a.id}`,
-              organizationName:
-                a.organizationName || a.organization_name || `Fondo ${a.name || a.fullName}`,
-              createdBy: a.createdBy || a.created_by || 'usr-super-000',
-              phone: a.phone || '300 000 0000',
-              cedula: a.documentId || a.document_id || 'N/A',
-              createdAt: a.createdAt || a.created_at || new Date().toISOString(),
+      // 1. Consultar el backend PostgreSQL (/api/admins)
+      try {
+        const res = await fetch('/api/admins');
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data)) {
+            data.forEach((a: any) => {
+              const normEmail = (a.email || '').trim().toLowerCase();
+              if (!normEmail) return;
+              mergedMap.set(normEmail, {
+                id: a.uid || `usr-admin-${a.id}`,
+                email: a.email,
+                password: a.password || DEMO_USERS[normEmail]?.password || 'admin123@Medellin',
+                fullName: a.name || a.fullName || 'Administrador',
+                role: 'admin',
+                organizationId: a.organizationId || a.organization_id || `org-${a.id}`,
+                organizationName:
+                  a.organizationName || a.organization_name || `Fondo ${a.name || a.fullName}`,
+                createdBy: a.createdBy || a.created_by || 'usr-super-000',
+                phone: a.phone || '300 000 0000',
+                cedula: a.documentId || a.document_id || 'N/A',
+                createdAt: a.createdAt || a.created_at || new Date().toISOString(),
+              });
             });
-          });
+          }
+        }
+      } catch {
+        // Si /api/admins no responde en un host estático, continuar con Supabase public.profiles
+      }
+
+      // 2. Consultar también Supabase public.profiles para entornos de producción / móvil
+      if (isLiveSupabaseConfigured) {
+        try {
+          const { data: sbProfiles } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('role', 'admin');
+
+          if (Array.isArray(sbProfiles)) {
+            sbProfiles.forEach((p: any) => {
+              const key = (p.email || `admin-${String(p.id).slice(0, 8)}@rutacapital.co`)
+                .trim()
+                .toLowerCase();
+              if (!mergedMap.has(key)) {
+                mergedMap.set(key, {
+                  id: p.id,
+                  email: p.email || key,
+                  password: DEMO_USERS[key]?.password || 'admin123@Medellin',
+                  fullName: p.full_name || p.name || 'Administrador',
+                  role: 'admin',
+                  organizationId: p.organization_id || p.tenant_id || `org-${String(p.id).slice(0, 6)}`,
+                  organizationName:
+                    p.organization_name || `Fondo ${p.full_name || 'RutaCapital'}`,
+                  createdBy: p.created_by || 'usr-super-000',
+                  phone: p.phone || '300 000 0000',
+                  cedula: p.document_id || 'N/A',
+                  createdAt: p.created_at || new Date().toISOString(),
+                });
+              }
+            });
+          }
+        } catch {
+          // Ignorar errores de lectura de profiles
         }
       }
+
+      // 3. Incluir administradores aprovisionados en DEMO_USERS / localStorage
+      Object.entries(DEMO_USERS).forEach(([emailKey, entry]) => {
+        if (entry?.profile?.role === 'admin' && !mergedMap.has(emailKey)) {
+          mergedMap.set(emailKey, {
+            id: entry.profile.id,
+            email: entry.profile.email,
+            password: entry.password,
+            fullName: entry.profile.fullName,
+            role: 'admin',
+            organizationId: entry.profile.organizationId || 'org-medellin-01',
+            organizationName:
+              entry.profile.organizationName || `Fondo ${entry.profile.fullName}`,
+            createdBy: entry.profile.createdBy || 'usr-super-000',
+            phone: entry.profile.phone || '300 000 0000',
+            cedula: entry.profile.documentId || 'N/A',
+            createdAt: entry.profile.createdAt || new Date().toISOString(),
+          });
+        }
+      });
 
       const finalAdmins = Array.from(mergedMap.values());
 
@@ -167,9 +233,9 @@ export const SuperAdminTenantsManager: React.FC = () => {
       });
 
       if (error || !createdAdmin) {
-        console.warn('⚠️ [Aviso de validación al crear Administrador]:', error);
-        setErrorMsg(error || 'Error al guardar en base de datos: No se pudo registrar la cuenta de Administrador.');
-        return;
+        throw new Error(
+          error || 'Error al guardar en base de datos: No se pudo registrar la cuenta de Administrador.'
+        );
       }
 
       const newRecord: RegisteredAdminRecord = {
@@ -197,7 +263,23 @@ export const SuperAdminTenantsManager: React.FC = () => {
       setPhone('');
       setCedula('');
     } catch (err: any) {
-      setErrorMsg(err?.message || 'Error inesperado creando el administrador.');
+      const rawSupabaseEnvUrl =
+        import.meta.env.VITE_SUPABASE_URL || `${supabaseUrl} (fallback)`;
+      const endpointName = '/functions/v1/admin-provision-user | /rest/v1/profiles | /api/admins';
+      const errDetail = err?.message || 'Error inesperado creando el administrador.';
+
+      // RASTREADOR VISUAL DE URL EN EL BLOQUE CATCH (Diagnóstico en pantalla de celular)
+      window.alert(
+        `🔍 RASTREADOR DE CONEXIÓN (DEBUG MÓVIL)\n\n` +
+          `• VITE_SUPABASE_URL: ${rawSupabaseEnvUrl}\n` +
+          `• URL Base Efectiva: ${supabaseUrl}\n` +
+          `• Endpoint: ${endpointName}\n` +
+          `• Detalle: ${errDetail}`
+      );
+
+      setErrorMsg(
+        `${errDetail} (VITE_SUPABASE_URL: ${rawSupabaseEnvUrl} | Endpoint: ${endpointName})`
+      );
     } finally {
       setIsSubmitting(false);
     }
