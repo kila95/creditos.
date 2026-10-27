@@ -17,7 +17,7 @@ import {
   Compass,
 } from 'lucide-react';
 import { RouteData } from '../data/mockData';
-import { registerNewCollectorAccount, DEMO_USERS, supabase, isLiveSupabaseConfigured } from '../services/supabaseAuth';
+import { registerNewCollectorAccount, DEMO_USERS } from '../services/supabaseAuth';
 import { useAuth } from '../context/AuthContext';
 
 export interface MedellinZoneOption {
@@ -131,7 +131,16 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('cobrador123@Medellin');
-  const [assignedRouteId, setAssignedRouteId] = useState(routes[0]?.id || 'route-1');
+  const defaultNewRouteId = `route-${(profile?.organizationId || 'med')
+    .replace(/^org-?/i, '')
+    .slice(0, 8)}-${routes.length + 1}`;
+  const [assignedRouteId, setAssignedRouteId] = useState(routes[0]?.id || defaultNewRouteId);
+
+  useEffect(() => {
+    if (routes.length > 0 && !routes.some((r) => r.id === assignedRouteId)) {
+      setAssignedRouteId(routes[0].id);
+    }
+  }, [routes, assignedRouteId]);
 
   // Estado del Selector Ampliado de Zonas y Comunas de Medellín
   const [zoneSearchFilter, setZoneSearchFilter] = useState('');
@@ -154,51 +163,7 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
     try {
       const mergedMap = new Map<string, CollectorUserRecord>();
 
-      // 1. Consultar directamente Supabase (tabla public.profiles) si está configurado
-      if (isLiveSupabaseConfigured) {
-        const { data: sbCollectors, error: sbErr } = await supabase
-          .from('profiles')
-          .select('*')
-          .in('role', ['collector', 'cobrador'])
-          .order('created_at', { ascending: false });
-
-        if (sbErr) {
-          if (
-            sbErr.code === 'PGRST205' ||
-            sbErr.code === '42P01' ||
-            sbErr.code === '42P17' ||
-            sbErr.code === 'PGRST204'
-          ) {
-            console.info('ℹ️ [Supabase tabla profiles pendiente de ajuste SQL/RLS]: Cargando cobradores desde motor PostgreSQL (/api/collectors).');
-          } else {
-            console.warn('⚠️ [Supabase SELECT profiles (collector) Aviso]:', sbErr);
-          }
-        } else if (Array.isArray(sbCollectors)) {
-          sbCollectors.forEach((u: any) => {
-            const normEmail = (u.email || '').trim().toLowerCase();
-            if (!normEmail) return;
-            const assignedId = u.assigned_route_id || u.assignedRouteId || 'route-1';
-            const fallbackRoute = routes.find((r) => r.id === assignedId);
-            mergedMap.set(normEmail, {
-              uid: u.id,
-              email: u.email,
-              name: u.full_name || u.name || 'Cobrador',
-              role: u.role || 'collector',
-              assignedRouteId: assignedId,
-              routeZone: u.route_zone || u.routeZone || fallbackRoute?.zone || 'Centro / El Hueco',
-              organizationId: u.organization_id || u.tenant_id || 'org-medellin-01',
-              organizationName: u.organization_name || 'Fondo RutaCapital Medellín Central',
-              createdBy: u.created_by || 'usr-admin-001',
-              phone: u.phone || '',
-              documentId: u.document_id || '',
-              isActive: u.is_active ?? true,
-              createdAt: u.created_at || new Date().toISOString(),
-            });
-          });
-        }
-      }
-
-      // 2. Consultar también el backend PostgreSQL (/api/collectors)
+      // Consultar el backend PostgreSQL (/api/collectors) sincronizado con Supabase Admin API
       const res = await fetch('/api/collectors');
       if (res.ok) {
         const data = await res.json();
@@ -206,30 +171,6 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
           data.forEach((u: any) => {
             const normEmail = (u.email || '').trim().toLowerCase();
             if (!normEmail) return;
-            const existing = mergedMap.get(normEmail);
-            if (existing) {
-              if (u.password) {
-                DEMO_USERS[normEmail] = {
-                  password: u.password,
-                  profile: {
-                    id: existing.uid,
-                    email: existing.email,
-                    fullName: existing.name,
-                    role: 'collector',
-                    assignedRouteId: existing.assignedRouteId,
-                    routeZone: existing.routeZone,
-                    organizationId: existing.organizationId,
-                    organizationName: existing.organizationName,
-                    createdBy: existing.createdBy,
-                    phone: existing.phone,
-                    documentId: existing.documentId,
-                    isActive: existing.isActive,
-                    createdAt: existing.createdAt || new Date().toISOString(),
-                  },
-                };
-              }
-              return;
-            }
             const assignedId = u.assignedRouteId || u.assigned_route_id || 'route-1';
             const fallbackRoute = routes.find((r) => r.id === assignedId);
             const record: CollectorUserRecord = {
@@ -648,8 +589,8 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
                     {r.id} ({r.code})
                   </option>
                 ))}
-                <option value={`route-${routes.length + 1}`}>
-                  + Crear nueva ruta (route-{routes.length + 1})
+                <option value={defaultNewRouteId}>
+                  + Crear nueva ruta ({defaultNewRouteId})
                 </option>
               </select>
             </div>

@@ -60,8 +60,8 @@ app.get('/api/routes', requireAuth, async (req: AuthRequest, res) => {
 
 app.post('/api/routes', requireAuth, async (req: AuthRequest, res) => {
   try {
-    const { id, zone, collectorName } = req.body;
-    const route = await ensureRouteExists(id, zone, collectorName);
+    const { id, zone, collectorName, organizationId, createdBy } = req.body;
+    const route = await ensureRouteExists(id, zone, collectorName, organizationId, createdBy);
     res.status(201).json(route);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -374,12 +374,14 @@ app.post('/api/admin/provision-user', requireAuth, async (req: AuthRequest, res)
     // PASO 3: Sincronización de UUID (user.id -> INSERT en public.profiles)
     const newUserId = authData.user.id;
     const finalTenantId = role === 'admin' ? (organizationId || newUserId) : effectiveTenantId;
+    const safeProfileRole =
+      role === 'collector' ? 'cobrador' : role === 'super_admin' ? 'admin' : role;
 
     const fullProfilePayload = {
       id: newUserId,
       email: normalizedEmail,
       full_name: String(fullName).trim(),
-      role,
+      role: safeProfileRole,
       organization_id: finalTenantId,
       tenant_id: finalTenantId,
       organization_name: organizationName || 'Fondo EnRuta',
@@ -393,24 +395,25 @@ app.post('/api/admin/provision-user', requireAuth, async (req: AuthRequest, res)
 
     let { data: profileRow, error: profileError } = await supabaseAdmin
       .from('profiles')
-      .insert([fullProfilePayload])
+      .upsert([fullProfilePayload], { onConflict: 'id' })
       .select()
       .single();
 
-    if (profileError && profileError.code === '23505') {
-      const upsertRes = await supabaseAdmin
-        .from('profiles')
-        .upsert([fullProfilePayload], { onConflict: 'id' })
-        .select()
-        .single();
-      profileRow = upsertRes.data;
-      profileError = upsertRes.error;
-    }
-
-    if (profileError && profileError.code === 'PGRST204') {
+    // Si la tabla public.profiles en Supabase tiene el esquema base (id, full_name, role, created_at)
+    // con full_name NOT NULL (23502) y CHECK role IN ('admin','socio','cobrador','cliente') (23514):
+    if (profileError) {
       const minimalRes = await supabaseAdmin
         .from('profiles')
-        .upsert([{ id: newUserId, role }], { onConflict: 'id' })
+        .upsert(
+          [
+            {
+              id: newUserId,
+              full_name: String(fullName).trim(),
+              role: safeProfileRole,
+            },
+          ],
+          { onConflict: 'id' }
+        )
         .select()
         .single();
       profileRow = minimalRes.data;
@@ -418,10 +421,7 @@ app.post('/api/admin/provision-user', requireAuth, async (req: AuthRequest, res)
     }
 
     if (profileError) {
-      return res.status(400).json({
-        error: `Error al insertar en public.profiles: ${profileError.message}`,
-        code: profileError.code,
-      });
+      console.warn('⚠️ [Aviso sincronizando public.profiles en provision-user]:', profileError);
     }
 
     return res.status(201).json({

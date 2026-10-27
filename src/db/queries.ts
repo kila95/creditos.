@@ -242,7 +242,13 @@ export async function getAuditLogs() {
   }
 }
 
-export async function ensureRouteExists(routeId: string, zone?: string, collectorName?: string) {
+export async function ensureRouteExists(
+  routeId: string,
+  zone?: string,
+  collectorName?: string,
+  organizationId?: string,
+  createdBy?: string
+) {
   try {
     const safeRouteId = routeId?.trim() || 'route-1';
     const existing = await db.select().from(routes).where(eq(routes.id, safeRouteId)).limit(1);
@@ -263,8 +269,8 @@ export async function ensureRouteExists(routeId: string, zone?: string, collecto
       targetDailyCollection: '1500000',
       operatingExpenseBudget: '80000',
       status: 'active',
-      organizationId: 'org-medellin-01',
-      createdBy: 'usr-admin-001',
+      organizationId: organizationId || 'org-medellin-01',
+      createdBy: createdBy || 'usr-admin-001',
     }).returning();
 
     return inserted[0];
@@ -293,9 +299,12 @@ export async function createClient(data: {
   creditLimit: number;
 }) {
   try {
+    const safeOrgId = data.organizationId || (data as any).tenantId || 'org-medellin-01';
+    const safeCreatedBy = data.createdBy || (data as any).adminId || 'usr-admin-001';
+
     // 1. Garantizar que la ruta exista en la tabla routes para evitar errores de clave foránea o 404
     const safeRouteId = data.routeId?.trim() || 'route-1';
-    await ensureRouteExists(safeRouteId, data.zone);
+    await ensureRouteExists(safeRouteId, data.zone, undefined, safeOrgId, safeCreatedBy);
 
     // 2. Si el campo de cédula no se proporciona en calle, generar un identificador único seguro
     // para no bloquear la inserción en la base de datos ni fallar por valor nulo o duplicado
@@ -303,9 +312,6 @@ export async function createClient(data: {
     const safeDocumentId = hasDoc
       ? data.documentId!.trim()
       : `CC-PENDIENTE-${Date.now().toString().slice(-6)}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-    const safeOrgId = data.organizationId || (data as any).tenantId || 'org-medellin-01';
-    const safeCreatedBy = data.createdBy || (data as any).adminId || 'usr-admin-001';
 
     const inserted = await db.insert(clients).values({
       id: data.id,
@@ -525,7 +531,20 @@ export async function createAdminUser(data: {
   try {
     return await db.transaction(async (tx) => {
       const normalizedEmail = data.email.trim().toLowerCase();
-      const cleanDoc = data.documentId && data.documentId.trim().length > 0 ? data.documentId.trim() : null;
+      const rawDoc = data.documentId ? data.documentId.trim() : '';
+      let cleanDoc =
+        rawDoc.length > 0 && rawDoc !== 'CC 1.000.000' && rawDoc !== 'N/A' ? rawDoc : null;
+
+      if (cleanDoc) {
+        const existingByDoc = await tx
+          .select()
+          .from(users)
+          .where(eq(users.documentId, cleanDoc))
+          .limit(1);
+        if (existingByDoc.length > 0 && existingByDoc[0].email !== normalizedEmail) {
+          cleanDoc = `${cleanDoc}-${Date.now().toString().slice(-4)}`;
+        }
+      }
 
       // Si el correo ya existía en la tabla local, sincronizar el UUID de auth.users y contraseña temporal
       const existingByEmail = await tx
@@ -571,6 +590,31 @@ export async function createAdminUser(data: {
           })
           .returning();
         savedRecord = inserted[0];
+      }
+
+      // Garantizar que la organización del nuevo Admin tenga al menos una ruta operativa base
+      const defaultOrgRouteId = `route-${data.organizationId.replace(/^org-?/i, '').slice(0, 12)}`;
+      const existingOrgRoutes = await tx
+        .select()
+        .from(routes)
+        .where(eq(routes.organizationId, data.organizationId))
+        .limit(1);
+
+      if (existingOrgRoutes.length === 0) {
+        await tx
+          .insert(routes)
+          .values({
+            id: defaultOrgRouteId,
+            name: `Ruta Principal · ${data.organizationName.trim()}`,
+            zone: 'Centro / El Hueco',
+            collectorName: 'Sin Cobrador Asignado',
+            organizationId: data.organizationId,
+            createdBy: data.uid,
+            status: 'active',
+            targetDailyCollection: '800000',
+            operatingExpenseBudget: '45000',
+          })
+          .onConflictDoNothing();
       }
 
       await tx.insert(auditLogs).values({
@@ -647,7 +691,20 @@ export async function createCollectorUser(data: {
     return await db.transaction(async (tx) => {
       const normalizedEmail = data.email.trim().toLowerCase();
       const cleanZone = (data.routeZone || 'Centro / El Hueco').trim();
-      const cleanDoc = data.documentId && data.documentId.trim().length > 0 ? data.documentId.trim() : null;
+      const rawDoc = data.documentId ? data.documentId.trim() : '';
+      let cleanDoc =
+        rawDoc.length > 0 && rawDoc !== 'CC 1.000.000' && rawDoc !== 'N/A' ? rawDoc : null;
+
+      if (cleanDoc) {
+        const existingByDoc = await tx
+          .select()
+          .from(users)
+          .where(eq(users.documentId, cleanDoc))
+          .limit(1);
+        if (existingByDoc.length > 0 && existingByDoc[0].email !== normalizedEmail) {
+          cleanDoc = `${cleanDoc}-${Date.now().toString().slice(-4)}`;
+        }
+      }
 
       // Si el correo ya existía en la tabla local, sincronizar el UUID de auth.users y contraseña temporal
       const existingByEmail = await tx

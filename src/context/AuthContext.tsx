@@ -67,9 +67,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               .maybeSingle();
 
             const meta = authUser.user_metadata || {};
-            const resolvedRole: UserRole = isMasterEmail
+            const rawRole = isMasterEmail
               ? 'super_admin'
-              : ((profileData?.role || meta.role || 'admin') as UserRole);
+              : profileData?.role || meta.role || 'admin';
+            const resolvedRole: UserRole =
+              rawRole === 'cobrador' ? 'collector' : (rawRole as UserRole);
 
             if (isMounted) {
               const activeSession: AuthSession = {
@@ -131,6 +133,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         sessionStorage.removeItem('rutacapital_auth_session');
         setSession(null);
       } else if (event === 'SIGNED_IN' && authSession?.user) {
+        const isMasterEmail =
+          authSession.user.email?.toLowerCase() === 'estebanochoamesa@gmail.com' ||
+          authSession.user.email?.toLowerCase() === 'superadmin@rutacapital.co';
         const { data: profileData } = await supabase
           .from('profiles')
           .select('*')
@@ -138,42 +143,51 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           .maybeSingle();
 
         const meta = authSession.user.user_metadata || {};
-        const resolvedData = profileData || {
-          id: authSession.user.id,
-          email: authSession.user.email || '',
-          full_name: meta.full_name || authSession.user.email?.split('@')[0] || 'Usuario',
-          role: meta.role || 'collector',
-          organization_id: meta.organization_id || meta.tenant_id || 'org-medellin-01',
-          organization_name: meta.organization_name || 'Fondo RutaCapital',
-          assigned_route_id: meta.assigned_route_id || 'route-1',
-          route_zone: meta.route_zone || '',
-          phone: meta.phone || '',
-          document_id: meta.document_id || '',
-          is_active: true,
-          created_at: authSession.user.created_at || new Date().toISOString(),
-        };
+        const rawRole = isMasterEmail
+          ? 'super_admin'
+          : profileData?.role || meta.role || 'collector';
+        const normalizedRole: UserRole =
+          rawRole === 'cobrador' ? 'collector' : (rawRole as UserRole);
 
         const newSess: AuthSession = {
-          user: { id: authSession.user.id, email: authSession.user.email || resolvedData.email },
+          user: {
+            id: authSession.user.id,
+            email: authSession.user.email || profileData?.email || '',
+          },
           profile: {
-            id: resolvedData.id,
-            email: resolvedData.email,
-            fullName: resolvedData.full_name,
-            role: resolvedData.role as UserRole,
-            organizationId: resolvedData.organization_id || 'org-medellin-01',
-            organizationName: resolvedData.organization_name || 'Fondo RutaCapital',
-            assignedRouteId: resolvedData.assigned_route_id || 'route-1',
-            routeZone: resolvedData.route_zone || '',
-            phone: resolvedData.phone,
-            partnerEquityPct: resolvedData.partner_equity_pct,
-            capitalInvestedCop: resolvedData.capital_invested_cop,
-            documentId: resolvedData.document_id,
-            isActive: resolvedData.is_active ?? true,
-            createdAt: resolvedData.created_at,
+            id: profileData?.id || authSession.user.id,
+            email: authSession.user.email || profileData?.email || '',
+            fullName:
+              profileData?.full_name ||
+              meta.full_name ||
+              (isMasterEmail
+                ? 'Esteban Ochoa (Dueño / Super Admin)'
+                : authSession.user.email?.split('@')[0] || 'Usuario'),
+            role: normalizedRole,
+            organizationId:
+              profileData?.organization_id ||
+              meta.organization_id ||
+              meta.tenant_id ||
+              (isMasterEmail ? 'org-global-hq' : 'org-medellin-01'),
+            organizationName:
+              profileData?.organization_name ||
+              meta.organization_name ||
+              (isMasterEmail ? 'RutaCapital Holding Matriz' : 'Fondo RutaCapital'),
+            assignedRouteId:
+              profileData?.assigned_route_id || meta.assigned_route_id || 'route-1',
+            routeZone: profileData?.route_zone || meta.route_zone || '',
+            phone: profileData?.phone || meta.phone || '',
+            partnerEquityPct: profileData?.partner_equity_pct,
+            capitalInvestedCop: profileData?.capital_invested_cop,
+            documentId: profileData?.document_id || meta.document_id || '',
+            isActive: profileData?.is_active ?? true,
+            createdAt:
+              profileData?.created_at || authSession.user.created_at || new Date().toISOString(),
           },
           token: authSession.access_token,
         };
         setSession(newSess);
+        localStorage.setItem('rutacapital_auth_session', JSON.stringify(newSess));
       }
     });
 
@@ -224,8 +238,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const profile = session?.profile || null;
   const role = profile?.role || null;
   const isAuthenticated = Boolean(session && profile);
-  const isSuperAdmin = role === 'super_admin';
-  const isAdmin = role === 'admin' || role === 'super_admin';
+  const isSuperAdmin =
+    role === 'super_admin' ||
+    user?.email?.toLowerCase() === 'estebanochoamesa@gmail.com' ||
+    user?.email?.toLowerCase() === 'superadmin@rutacapital.co';
+  const isAdmin = role === 'admin' || isSuperAdmin;
   const isSocio = role === 'socio';
   const isCollector = role === 'collector' || role === 'cobrador';
   const organizationId = profile?.organizationId;

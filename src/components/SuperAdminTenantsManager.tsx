@@ -14,9 +14,10 @@ import {
   RefreshCw,
   KeyRound,
   Layers,
+  FileText,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { registerNewAdminAccount, DEMO_USERS, supabase, isLiveSupabaseConfigured } from '../services/supabaseAuth';
+import { registerNewAdminAccount, DEMO_USERS } from '../services/supabaseAuth';
 
 export interface RegisteredAdminRecord {
   id: string;
@@ -55,47 +56,7 @@ export const SuperAdminTenantsManager: React.FC = () => {
     try {
       const mergedMap = new Map<string, RegisteredAdminRecord>();
 
-      // 1. Consultar directamente Supabase (tabla public.profiles) si está configurado
-      if (isLiveSupabaseConfigured) {
-        const { data: sbAdmins, error: sbErr } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('role', 'admin')
-          .order('created_at', { ascending: false });
-
-        if (sbErr) {
-          if (
-            sbErr.code === 'PGRST205' ||
-            sbErr.code === '42P01' ||
-            sbErr.code === '42P17' ||
-            sbErr.code === 'PGRST204'
-          ) {
-            console.info('ℹ️ [Supabase tabla profiles pendiente de ajuste SQL/RLS]: Cargando administradores desde motor PostgreSQL (/api/admins).');
-          } else {
-            console.warn('⚠️ [Supabase SELECT profiles (role=admin) Aviso]:', sbErr);
-          }
-        } else if (Array.isArray(sbAdmins)) {
-          sbAdmins.forEach((a: any) => {
-            const normEmail = (a.email || '').trim().toLowerCase();
-            if (!normEmail) return;
-            mergedMap.set(normEmail, {
-              id: a.id,
-              email: a.email,
-              password: DEMO_USERS[normEmail]?.password || 'admin123@Medellin',
-              fullName: a.full_name || a.name || 'Administrador',
-              role: 'admin',
-              organizationId: a.organization_id || a.tenant_id || `org-${a.id}`,
-              organizationName: a.organization_name || `Fondo ${a.full_name || 'EnRuta'}`,
-              createdBy: a.created_by || 'usr-super-000',
-              phone: a.phone || '300 000 0000',
-              cedula: a.document_id || 'N/A',
-              createdAt: a.created_at || new Date().toISOString(),
-            });
-          });
-        }
-      }
-
-      // 2. Consultar también el backend PostgreSQL (/api/admins)
+      // Consultar el backend PostgreSQL (/api/admins) sincronizado con Supabase Admin API
       const res = await fetch('/api/admins');
       if (res.ok) {
         const data = await res.json();
@@ -103,13 +64,6 @@ export const SuperAdminTenantsManager: React.FC = () => {
           data.forEach((a: any) => {
             const normEmail = (a.email || '').trim().toLowerCase();
             if (!normEmail) return;
-            const existing = mergedMap.get(normEmail);
-            if (existing) {
-              if (a.password) {
-                existing.password = a.password;
-              }
-              return;
-            }
             mergedMap.set(normEmail, {
               id: a.uid || `usr-admin-${a.id}`,
               email: a.email,
@@ -117,7 +71,8 @@ export const SuperAdminTenantsManager: React.FC = () => {
               fullName: a.name || a.fullName || 'Administrador',
               role: 'admin',
               organizationId: a.organizationId || a.organization_id || `org-${a.id}`,
-              organizationName: a.organizationName || a.organization_name || `Fondo ${a.name || a.fullName}`,
+              organizationName:
+                a.organizationName || a.organization_name || `Fondo ${a.name || a.fullName}`,
               createdBy: a.createdBy || a.created_by || 'usr-super-000',
               phone: a.phone || '300 000 0000',
               cedula: a.documentId || a.document_id || 'N/A',
@@ -207,7 +162,7 @@ export const SuperAdminTenantsManager: React.FC = () => {
         fullName: fullName.trim(),
         organizationName: organizationName.trim(),
         phone: phone.trim() || '300 000 0000',
-        documentId: cedula.trim() || 'CC 1.000.000',
+        documentId: cedula.trim(),
         createdBySuperAdminId: profile?.id || 'usr-super-000',
       });
 
@@ -220,14 +175,14 @@ export const SuperAdminTenantsManager: React.FC = () => {
       const newRecord: RegisteredAdminRecord = {
         id: createdAdmin.id,
         email: createdAdmin.email,
-        password: temporaryPassword.trim(),
+        password: effectiveTempPassword,
         fullName: createdAdmin.fullName,
         role: 'admin',
         organizationId: createdAdmin.organizationId || 'org-nuevo',
         organizationName: createdAdmin.organizationName || organizationName.trim(),
         createdBy: createdAdmin.createdBy || profile?.id || 'usr-super-000',
         phone: createdAdmin.phone || '',
-        cedula: createdAdmin.documentId || '',
+        cedula: createdAdmin.documentId || cedula.trim() || 'N/A',
         createdAt: createdAdmin.createdAt,
       };
 
@@ -363,6 +318,22 @@ export const SuperAdminTenantsManager: React.FC = () => {
                     className="w-full pl-9 pr-3 py-2 bg-slate-900 border border-slate-700 focus:border-amber-500 rounded-xl text-xs text-white focus:outline-none"
                   />
                 </div>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-300 uppercase tracking-wider mb-1">
+                Documento / Cédula (Opcional - vincula clave temporal)
+              </label>
+              <div className="relative">
+                <FileText className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={cedula}
+                  onChange={(e) => setCedula(e.target.value)}
+                  placeholder="Ej: 1037615890"
+                  className="w-full pl-9 pr-3 py-2 bg-slate-900 border border-slate-700 focus:border-amber-500 rounded-xl text-xs text-white focus:outline-none"
+                />
               </div>
             </div>
 

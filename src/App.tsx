@@ -66,9 +66,35 @@ function MainAppContent() {
   const isSuperAdminRole = role === 'super_admin' || session?.user?.email === 'estebanochoamesa@gmail.com';
   const currentTenantId = profile?.organizationId || 'org-medellin-01';
 
-  const tenantRoutes = isSuperAdminRole
+  const rawTenantRoutes = isSuperAdminRole
     ? routes
     : routes.filter((r) => (r.organizationId || 'org-medellin-01') === currentTenantId);
+
+  const defaultOrgRoute: RouteData = {
+    id: `route-${currentTenantId.replace(/^org-?/i, '').slice(0, 12)}`,
+    code: `RUTA-${currentTenantId.replace(/^org-?/i, '').toUpperCase().slice(0, 6)}`,
+    name: `Ruta Principal · ${profile?.organizationName || 'Fondo'}`,
+    zone: 'Centro / El Hueco',
+    organizationId: currentTenantId,
+    collectorName: 'Cobrador de Zona',
+    collectorPhone: profile?.phone || '3000000000',
+    baseFloatingCapital: 0,
+    fixedDailyOpex: 45000,
+    collectorCommissionRate: 10,
+    targetRecoveryRate: 92,
+    activeLoansCount: 0,
+    totalPortfolio: 0,
+    dailyGrossExpected: 0,
+    dailyGrossCollected: 0,
+    dailyExpenses: 0,
+    par1Rate: 0,
+    par7Rate: 0,
+    par30Rate: 0,
+    status: 'activa',
+  };
+
+  const tenantRoutes =
+    !isSuperAdminRole && rawTenantRoutes.length === 0 ? [defaultOrgRoute] : rawTenantRoutes;
   const tenantRouteIds = new Set(tenantRoutes.map((r) => r.id));
 
   const tenantClients = isSuperAdminRole
@@ -142,6 +168,19 @@ function MainAppContent() {
   }, [loans, clients, legalDispatches, isSuperAdminRole, currentTenantId]);
 
   const syncDatabaseClients = async () => {
+    let dbRoutesList: any[] = [];
+    try {
+      const rRes = await fetch('/api/routes');
+      if (rRes.ok) {
+        const rJson = await rRes.json();
+        if (Array.isArray(rJson)) {
+          dbRoutesList = rJson;
+        }
+      }
+    } catch (rErr) {
+      console.warn('Aviso consultando /api/routes:', rErr);
+    }
+
     const { data, error } = await fetchClientsAndLoansFromDB();
     if (error) {
       console.error('❌ [Error al sincronizar listado de clientes]:', error);
@@ -160,34 +199,64 @@ function MainAppContent() {
         });
       });
       setRoutes(prevRoutes => {
-        const existingIds = new Set(prevRoutes.map(r => r.id));
-        const dynamicRouteIds = new Set<string>();
-        data.clients.forEach(c => { if (c.routeId && !existingIds.has(c.routeId)) dynamicRouteIds.add(c.routeId); });
-        data.loans.forEach(l => { if (l.routeId && !existingIds.has(l.routeId)) dynamicRouteIds.add(l.routeId); });
+        const routeMap = new Map<string, RouteData>();
+        prevRoutes.forEach(r => routeMap.set(r.id, r));
 
-        const extraRoutes: RouteData[] = Array.from(dynamicRouteIds).map(rid => ({
-          id: rid,
-          code: rid.toUpperCase().slice(0, 12),
-          name: `Ruta ${rid}`,
-          zone: 'Zona Operativa',
-          collectorName: 'Cobrador Asignado',
-          collectorPhone: '3000000000',
-          baseFloatingCapital: 0,
-          fixedDailyOpex: 35000,
-          collectorCommissionRate: 10,
-          targetRecoveryRate: 92,
-          activeLoansCount: 0,
-          totalPortfolio: 0,
-          dailyGrossExpected: 0,
-          dailyGrossCollected: 0,
-          dailyExpenses: 0,
-          par1Rate: 0,
-          par7Rate: 0,
-          par30Rate: 0,
-          status: 'activa',
-        }));
+        dbRoutesList.forEach((dbr: any) => {
+          const rid = String(dbr.id);
+          const existing = routeMap.get(rid);
+          routeMap.set(rid, {
+            id: rid,
+            code: existing?.code || rid.toUpperCase().slice(0, 12),
+            name: dbr.name || existing?.name || `Ruta ${rid}`,
+            zone: dbr.zone || existing?.zone || 'Zona Operativa',
+            organizationId: dbr.organizationId || dbr.organization_id || existing?.organizationId || 'org-medellin-01',
+            collectorName: dbr.collectorName || dbr.collector_name || existing?.collectorName || 'Cobrador Asignado',
+            collectorPhone: existing?.collectorPhone || '3000000000',
+            baseFloatingCapital: existing?.baseFloatingCapital ?? 0,
+            fixedDailyOpex: Number(dbr.operatingExpenseBudget || existing?.fixedDailyOpex || 35000),
+            collectorCommissionRate: existing?.collectorCommissionRate ?? 10,
+            targetRecoveryRate: existing?.targetRecoveryRate ?? 92,
+            activeLoansCount: 0,
+            totalPortfolio: 0,
+            dailyGrossExpected: 0,
+            dailyGrossCollected: existing?.dailyGrossCollected ?? 0,
+            dailyExpenses: existing?.dailyExpenses ?? 0,
+            par1Rate: existing?.par1Rate ?? 0,
+            par7Rate: existing?.par7Rate ?? 0,
+            par30Rate: existing?.par30Rate ?? 0,
+            status: 'activa',
+          });
+        });
 
-        const allRoutes = [...prevRoutes, ...extraRoutes];
+        data.clients.forEach(c => {
+          if (c.routeId && !routeMap.has(c.routeId)) {
+            routeMap.set(c.routeId, {
+              id: c.routeId,
+              code: c.routeId.toUpperCase().slice(0, 12),
+              name: `Ruta ${c.routeId}`,
+              zone: c.neighborhood || 'Zona Operativa',
+              organizationId: c.organizationId || 'org-medellin-01',
+              collectorName: 'Cobrador Asignado',
+              collectorPhone: '3000000000',
+              baseFloatingCapital: 0,
+              fixedDailyOpex: 35000,
+              collectorCommissionRate: 10,
+              targetRecoveryRate: 92,
+              activeLoansCount: 0,
+              totalPortfolio: 0,
+              dailyGrossExpected: 0,
+              dailyGrossCollected: 0,
+              dailyExpenses: 0,
+              par1Rate: 0,
+              par7Rate: 0,
+              par30Rate: 0,
+              status: 'activa',
+            });
+          }
+        });
+
+        const allRoutes = Array.from(routeMap.values());
         return allRoutes.map(r => {
           const rLoans = data.loans.filter(l => l.routeId === r.id && l.status !== 'liquidado' && l.status !== 'liquidated');
           return {
@@ -401,13 +470,43 @@ function MainAppContent() {
   };
 
   const handleClientCreated = (newClient: ClientProfile, newLoan: LoanDetail) => {
-    setClients(prev => [newClient, ...prev]);
-    setLoans(prev => [newLoan, ...prev]);
+    setClients(prev => [newClient, ...prev.filter(c => c.id !== newClient.id)]);
+    setLoans(prev => [newLoan, ...prev.filter(l => l.id !== newLoan.id)]);
+    setRoutes(prev => {
+      if (prev.some(r => r.id === newClient.routeId)) {
+        return prev;
+      }
+      return [
+        ...prev,
+        {
+          id: newClient.routeId,
+          code: newClient.routeId.toUpperCase().slice(0, 12),
+          name: `Ruta ${newClient.neighborhood || newClient.routeId}`,
+          zone: newClient.neighborhood || 'Medellín',
+          organizationId: newClient.organizationId || currentTenantId,
+          collectorName: profile?.fullName || 'Cobrador de Zona',
+          collectorPhone: profile?.phone || '3000000000',
+          baseFloatingCapital: 0,
+          fixedDailyOpex: 35000,
+          collectorCommissionRate: 10,
+          targetRecoveryRate: 92,
+          activeLoansCount: 1,
+          totalPortfolio: newLoan.remainingBalance,
+          dailyGrossExpected: newLoan.installmentAmount,
+          dailyGrossCollected: 0,
+          dailyExpenses: 0,
+          par1Rate: 0,
+          par7Rate: 0,
+          par30Rate: 0,
+          status: 'activa',
+        },
+      ];
+    });
     setShowNewClientModal(false);
   };
 
   const handleLoanCreatedForExistingClient = (newLoan: LoanDetail) => {
-    setLoans(prev => [newLoan, ...prev]);
+    setLoans(prev => [newLoan, ...prev.filter(l => l.id !== newLoan.id)]);
     setShowNewClientModal(false);
   };
 
@@ -568,8 +667,8 @@ function MainAppContent() {
 
       {showNewClientModal && (
         <NewClientLoanModal
-          routes={routes}
-          clients={clients}
+          routes={tenantRoutes}
+          clients={tenantClients}
           onClose={() => setShowNewClientModal(false)}
           onClientCreated={handleClientCreated}
           onLoanCreatedForExistingClient={handleLoanCreatedForExistingClient}
@@ -593,7 +692,7 @@ function MainAppContent() {
             id: profile.assignedRouteId,
             code: profile.assignedRouteId.toUpperCase().slice(0, 12),
             name: `Ruta ${profile.fullName}`,
-            zone: 'Zona Asignada',
+            zone: profile.routeZone || 'Zona Asignada',
             organizationId: profile.organizationId,
             collectorName: profile.fullName,
             collectorPhone: '3000000000',
@@ -641,7 +740,7 @@ function MainAppContent() {
         />
         {showNewClientModal && (
           <NewClientLoanModal
-            routes={routes.some(r => r.id === collectorRoute.id) ? routes : [collectorRoute, ...routes]}
+            routes={[collectorRoute, ...routes.filter(r => r.id !== collectorRoute.id)]}
             clients={collectorClients}
             onClose={() => setShowNewClientModal(false)}
             onClientCreated={handleClientCreated}

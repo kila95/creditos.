@@ -333,29 +333,64 @@ export async function signInWithEmailPassword(
           .maybeSingle();
 
         const meta = data.user.user_metadata || {};
-        const resolvedProfileData = profileData || {
-          id: data.user.id,
-          email: data.user.email || normalizedEmail,
-          full_name: meta.full_name || meta.name || normalizedEmail.split('@')[0],
-          role: meta.role || 'collector',
-          organization_id: meta.organization_id || meta.tenant_id || 'org-medellin-01',
-          organization_name: meta.organization_name || 'Fondo RutaCapital Medellín',
-          created_by: meta.created_by || 'usr-admin-001',
-          assigned_route_id: meta.assigned_route_id || meta.route_id || 'route-1',
-          route_zone: meta.route_zone || meta.assigned_zone || '',
-          phone: meta.phone || '',
-          document_id: meta.document_id || '',
-          is_active: true,
-          created_at: data.user.created_at || new Date().toISOString(),
+        const isMasterEmail =
+          normalizedEmail === 'estebanochoamesa@gmail.com' ||
+          normalizedEmail === 'superadmin@rutacapital.co';
+
+        const rawRole = isMasterEmail
+          ? 'super_admin'
+          : profileData?.role || meta.role || 'collector';
+        const normalizedRole: UserRole =
+          rawRole === 'cobrador' ? 'collector' : (rawRole as UserRole);
+
+        const resolvedProfileData = {
+          id: profileData?.id || data.user.id,
+          email: profileData?.email || data.user.email || normalizedEmail,
+          full_name:
+            profileData?.full_name ||
+            profileData?.name ||
+            meta.full_name ||
+            meta.name ||
+            normalizedEmail.split('@')[0],
+          role: normalizedRole,
+          organization_id:
+            profileData?.organization_id ||
+            profileData?.tenant_id ||
+            meta.organization_id ||
+            meta.tenant_id ||
+            (isMasterEmail ? 'org-global-hq' : 'org-medellin-01'),
+          organization_name:
+            profileData?.organization_name ||
+            meta.organization_name ||
+            (isMasterEmail ? 'RutaCapital Holding Matriz' : 'Fondo RutaCapital Medellín'),
+          created_by: profileData?.created_by || meta.created_by || 'usr-admin-001',
+          assigned_route_id:
+            profileData?.assigned_route_id ||
+            meta.assigned_route_id ||
+            meta.route_id ||
+            'route-1',
+          route_zone: profileData?.route_zone || meta.route_zone || meta.assigned_zone || '',
+          phone: profileData?.phone || meta.phone || '',
+          document_id: profileData?.document_id || meta.document_id || '',
+          partner_equity_pct: profileData?.partner_equity_pct,
+          capital_invested_cop: profileData?.capital_invested_cop,
+          is_active: profileData?.is_active ?? true,
+          created_at:
+            profileData?.created_at || data.user.created_at || new Date().toISOString(),
         };
 
-        if (profileErr && profileErr.code !== 'PGRST205' && profileErr.code !== '42P01') {
+        if (
+          profileErr &&
+          profileErr.code !== 'PGRST205' &&
+          profileErr.code !== '42P01' &&
+          profileErr.code !== '42P17'
+        ) {
           console.warn('⚠️ [Supabase profiles lookup warning]:', profileErr.message);
         }
 
         const isCollector =
           resolvedProfileData.role === 'collector' || resolvedProfileData.role === 'cobrador';
-        if (isCollector && profileData) {
+        if (isCollector && profileData && 'authorized_device_id' in profileData) {
           if (!profileData.authorized_device_id) {
             await supabase
               .from('profiles')
@@ -379,16 +414,11 @@ export async function signInWithEmailPassword(
             email: resolvedProfileData.email,
             fullName: resolvedProfileData.full_name,
             role: resolvedProfileData.role as UserRole,
-            organizationId:
-              resolvedProfileData.organization_id || meta.organization_id || 'org-medellin-01',
-            organizationName:
-              resolvedProfileData.organization_name ||
-              meta.organization_name ||
-              'Fondo RutaCapital',
-            createdBy: resolvedProfileData.created_by || meta.created_by,
-            assignedRouteId:
-              resolvedProfileData.assigned_route_id || meta.assigned_route_id || 'route-1',
-            routeZone: resolvedProfileData.route_zone || meta.route_zone || '',
+            organizationId: resolvedProfileData.organization_id,
+            organizationName: resolvedProfileData.organization_name,
+            createdBy: resolvedProfileData.created_by,
+            assignedRouteId: resolvedProfileData.assigned_route_id,
+            routeZone: resolvedProfileData.route_zone,
             phone: resolvedProfileData.phone,
             partnerEquityPct: resolvedProfileData.partner_equity_pct,
             capitalInvestedCop: resolvedProfileData.capital_invested_cop,
@@ -773,11 +803,12 @@ export async function provisionUserInAuthAndProfiles(params: {
   }
 
   // PASO 3: Sincronización de UUID (Usar el user.id exacto de auth.users para el INSERT en public.profiles)
+  const safeProfileRole = params.role === 'collector' ? 'cobrador' : params.role;
   const fullProfileRow = {
     id: createdAuthUserId,
     email: normalizedEmail,
     full_name: params.fullName.trim(),
-    role: params.role,
+    role: safeProfileRole,
     assigned_route_id: params.assignedRouteId || null,
     route_zone: params.routeZone || null,
     organization_id: params.organizationId,
@@ -792,23 +823,23 @@ export async function provisionUserInAuthAndProfiles(params: {
   let { error: profileError } = await isolatedClient
     .schema('public')
     .from('profiles')
-    .insert([fullProfileRow]);
+    .upsert([fullProfileRow], { onConflict: 'id' });
 
-  // Si un trigger de base de datos ya insertó la fila base con ese UUID, actualizar con upsert
-  if (profileError && profileError.code === '23505') {
-    const upsertRes = await isolatedClient
-      .schema('public')
-      .from('profiles')
-      .upsert([fullProfileRow], { onConflict: 'id' });
-    profileError = upsertRes.error;
-  }
-
-  // Si la tabla en Supabase tiene esquema mínimo (id, role), sincronizar con columnas mínimas
-  if (profileError && profileError.code === 'PGRST204') {
+  // Si la tabla en Supabase tiene esquema mínimo (id, full_name, role), sincronizar con columnas mínimas y rol compatible
+  if (profileError) {
     const retryRes = await isolatedClient
       .schema('public')
       .from('profiles')
-      .upsert([{ id: createdAuthUserId, role: params.role }], { onConflict: 'id' });
+      .upsert(
+        [
+          {
+            id: createdAuthUserId,
+            full_name: params.fullName.trim(),
+            role: safeProfileRole,
+          },
+        ],
+        { onConflict: 'id' }
+      );
     profileError = retryRes.error;
   }
 
@@ -816,6 +847,8 @@ export async function provisionUserInAuthAndProfiles(params: {
     const isSchemaOrPolicyIssue =
       profileError.code === 'PGRST204' ||
       profileError.code === 'PGRST205' ||
+      profileError.code === '23502' ||
+      profileError.code === '23514' ||
       profileError.code === '42P01' ||
       profileError.code === '42P17' ||
       profileError.code === '42703' ||

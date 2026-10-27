@@ -48,9 +48,9 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
 }) => {
   const { profile } = useAuth();
 
-  // Modo de operación: 'existing_client' (vincular a client_id existente) o 'new_client' (registrar cliente y crear préstamo)
+  // Modo de operación: 'new_client' por defecto (a menos que venga un defaultSelectedClientId explícito)
   const [mode, setMode] = useState<'existing_client' | 'new_client'>(
-    defaultSelectedClientId || clients.length > 0 ? 'existing_client' : 'new_client'
+    defaultSelectedClientId ? 'existing_client' : 'new_client'
   );
   const [selectedClientId, setSelectedClientId] = useState<string>(
     defaultSelectedClientId || clients[0]?.id || ''
@@ -63,12 +63,18 @@ export const NewClientLoanModal: React.FC<NewClientLoanModalProps> = ({
   const [phone, setPhone] = useState('');
   const [category, setCategory] = useState('Comercio / Abarrotes');
   const [address, setAddress] = useState('');
-  const [neighborhood, setNeighborhood] = useState('Comuna 13 - San Javier');
+  const [neighborhood, setNeighborhood] = useState(routes[0]?.zone || 'Comuna 13 - San Javier');
   const [routeId, setRouteId] = useState(routes[0]?.id || 'route-1');
   const [isCustomRoute, setIsCustomRoute] = useState(false);
   const [customRouteName, setCustomRouteName] = useState('');
   const [guarantorName, setGuarantorName] = useState('');
   const [guarantorPhone, setGuarantorPhone] = useState('');
+
+  useEffect(() => {
+    if (routes.length > 0 && !routes.some((r) => r.id === routeId)) {
+      setRouteId(routes[0].id);
+    }
+  }, [routes, routeId]);
 
   // =========================================================================
   // 1. CAMPOS NUMÉRICOS LIBRES DEL PRÉSTAMO Y FRECUENCIA DE PAGO

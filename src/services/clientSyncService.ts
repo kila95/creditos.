@@ -466,10 +466,19 @@ export async function fetchClientsAndLoansFromDB(
 export async function createCustomLoanInDB(
   input: CreateCustomLoanInput
 ): Promise<DatabaseOperationResult<LoanDetail>> {
-  // Asegurar que la ruta exista en routes antes de registrar el préstamo
-  const safeRouteId = await ensureRouteExistsInSupabaseAndDB(input.routeId);
+  const safeOrgId = input.organizationId || input.tenantId || 'org-medellin-01';
+  const safeCreatedBy = input.createdBy || 'usr-admin-001';
 
-  const timestampSuffix = Date.now().toString().slice(-6);
+  // Asegurar que la ruta exista en routes antes de registrar el préstamo
+  const safeRouteId = await ensureRouteExistsInSupabaseAndDB(
+    input.routeId,
+    undefined,
+    undefined,
+    safeOrgId,
+    safeCreatedBy
+  );
+
+  const timestampSuffix = `${Date.now().toString().slice(-6)}${Math.floor(10 + Math.random() * 89)}`;
   const loanId = `loan-${timestampSuffix}`;
   const loanCode = `PREST-${safeRouteId.slice(-2).toUpperCase()}-${timestampSuffix.slice(-4)}`;
   const todayStr = new Date().toISOString().split('T')[0];
@@ -495,6 +504,8 @@ export async function createCustomLoanInDB(
     clientName: input.clientName,
     tradeName: input.tradeName || input.clientName,
     routeId: safeRouteId,
+    organizationId: safeOrgId,
+    createdBy: safeCreatedBy,
     principal: safePrincipal,
     interestRate: safeRate,
     totalDebt,
@@ -659,63 +670,15 @@ export async function createCustomLoanInDB(
 export async function ensureRouteExistsInSupabaseAndDB(
   routeId: string,
   zone?: string,
-  collectorName?: string
+  collectorName?: string,
+  organizationId?: string,
+  createdBy?: string
 ): Promise<string> {
   const rawRoute = typeof routeId === 'string' ? routeId.trim() : '';
   const safeRouteId =
     rawRoute && rawRoute !== 'null' && rawRoute !== 'undefined' ? rawRoute : 'route-1';
 
-  // 1. Validar / auto-crear en Supabase si está configurado
-  if (isLiveSupabaseConfigured) {
-    try {
-      const { data: existingRoute, error: checkError } = await supabase
-        .from('routes')
-        .select('id, name')
-        .eq('id', safeRouteId)
-        .maybeSingle();
-
-      if (!checkError && existingRoute?.id) {
-        return String(existingRoute.id);
-      }
-
-      // Si la tabla routes aún no existe en Supabase (PGRST205 / 42P01), saltar directo al backend PostgreSQL
-      if (checkError && (checkError.code === 'PGRST205' || checkError.code === '42P01')) {
-        // Skip Supabase routes upsert when table is not yet created
-      } else {
-        // Si no existe la fila, intentar registrarla en public.routes
-        const routeName = `Ruta ${safeRouteId.replace(/^route-?/i, '').toUpperCase() || 'General'}`;
-        const { error: upsertErr } = await supabase
-          .from('routes')
-          .upsert(
-            {
-              id: safeRouteId,
-              name: routeName,
-              zone: zone || 'Medellín Metropolitana',
-              collector_name: collectorName || 'Cobrador de Ruta',
-              status: 'active',
-              target_daily_collection: 1500000,
-              operating_expense_budget: 80000,
-            },
-            { onConflict: 'id' }
-          );
-
-        if (upsertErr && upsertErr.code !== 'PGRST205' && upsertErr.code !== '42P01') {
-          const { data: fallbackRoute } = await supabase
-            .from('routes')
-            .select('id')
-            .limit(1)
-            .maybeSingle();
-          if (fallbackRoute?.id) {
-            return String(fallbackRoute.id);
-          }
-        }
-      }
-    } catch (sbErr) {
-      console.warn('⚠️ [ensureRouteExistsInSupabaseAndDB] Excepción verificando ruta en Supabase:', sbErr);
-    }
-  }
-
-  // 2. Validar / auto-crear en Cloud SQL (Backend API /api/routes)
+  // 1. Validar / auto-crear en Cloud SQL (Backend API /api/routes)
   try {
     const isBrowserOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
     if (isBrowserOnline) {
@@ -726,6 +689,8 @@ export async function ensureRouteExistsInSupabaseAndDB(
           id: safeRouteId,
           zone: zone || 'Medellín Metropolitana',
           collectorName: collectorName || 'Cobrador de Zona',
+          organizationId: organizationId || 'org-medellin-01',
+          createdBy: createdBy || 'usr-admin-001',
         }),
       }).catch((fetchErr) => {
         console.warn('⚠️ No se pudo contactar endpoint /api/routes:', fetchErr);
@@ -744,18 +709,23 @@ export async function ensureRouteExistsInSupabaseAndDB(
 export async function insertClientAndLoanToDB(
   input: CreateClientRecordInput
 ): Promise<DatabaseOperationResult<{ client: ClientProfile; loan: LoanDetail }>> {
+  const safeOrgId = input.organizationId || input.tenantId || 'org-medellin-01';
+  const safeCreatedBy = input.createdBy || 'usr-admin-001';
+
   // 1. Validar y asegurar que route_id nunca sea nulo ni inválido antes de construir el payload
   const validatedRouteId = await ensureRouteExistsInSupabaseAndDB(
     input.routeId,
     input.neighborhood,
-    'Cobrador de Ruta'
+    'Cobrador de Ruta',
+    safeOrgId,
+    safeCreatedBy
   );
   const safeRouteId =
     validatedRouteId && validatedRouteId !== 'null' && validatedRouteId !== 'undefined'
       ? validatedRouteId
       : 'route-1';
 
-  const timestampSuffix = Date.now().toString().slice(-6);
+  const timestampSuffix = `${Date.now().toString().slice(-6)}${Math.floor(10 + Math.random() * 89)}`;
   const clientId = input.id || `cli-${timestampSuffix}`;
   const loanId = `loan-${timestampSuffix}`;
   const loanCode = `PREST-${safeRouteId.slice(-2).toUpperCase()}-${timestampSuffix.slice(-4)}`;
@@ -780,9 +750,6 @@ export async function insertClientAndLoanToDB(
   const paymentDays = input.paymentDays && input.paymentDays.length > 0
     ? input.paymentDays
     : computeDefaultPaymentDays(modality);
-
-  const safeOrgId = input.organizationId || input.tenantId || 'org-medellin-01';
-  const safeCreatedBy = input.createdBy || 'usr-admin-001';
 
   const createdClient: ClientProfile = {
     id: clientId,

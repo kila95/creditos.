@@ -150,8 +150,8 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'collected' | 'incidents'>(
     'all'
   );
-  // Filtro por días programados (payment_days) para la ruta del cobrador
-  const [onlyScheduledToday, setOnlyScheduledToday] = useState(true);
+  // Filtro por días programados (payment_days) para la ruta del cobrador (desactivado por defecto para mostrar toda la cartera activa de la ruta)
+  const [onlyScheduledToday, setOnlyScheduledToday] = useState(false);
 
   // Modales operativos
   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
@@ -264,7 +264,12 @@ export const CollectorStreetView: React.FC<CollectorStreetViewProps> = ({
   const DAYS_SPANISH = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
   const currentDayName = DAYS_SPANISH[currentWeekDay];
 
+  const todayIsoDate = now.toISOString().split('T')[0];
+
   const isLoanScheduledToday = (l: LoanDetail) => {
+    if (l.disbursedDate === todayIsoDate) {
+      return true; // Siempre mostrar créditos recién creados/desembolsados hoy
+    }
     if (!l.paymentDays || !Array.isArray(l.paymentDays) || l.paymentDays.length === 0) {
       return true; // Si no está especificado, incluir para compatibilidad
     }
