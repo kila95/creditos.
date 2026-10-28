@@ -96,6 +96,8 @@ interface AdminDashboardProps {
   onConfirmReconciliation: (routeId: string, actualCash: number, discrepancy: number, notes: string, sessionRecord?: any) => void;
   onNavigateToTab?: (tab: string) => void;
   onOpenNewClientModal?: () => void;
+  onBulkImportSuccess?: (importedClients: ClientProfile[], importedLoans: LoanDetail[]) => void;
+  onImportSuccess?: (importedClients: ClientProfile[], importedLoans: LoanDetail[]) => void;
 }
 
 type AdminTab =
@@ -132,6 +134,8 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
   onConfirmReconciliation,
   onNavigateToTab,
   onOpenNewClientModal,
+  onBulkImportSuccess,
+  onImportSuccess,
 }) => {
   const { user, profile, role, isSuperAdmin } = useAuth();
   const tenantId = profile?.organizationId || user?.id || 'org-medellin-01';
@@ -1532,11 +1536,13 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
 
         {activeTab === 'importacion_masiva' && (
           <BulkImport
-            onBulkImportSuccess={(importedClients, importedLoans) => {
-              // Notificar al estado global
-              if (onOpenNewClientModal) {
-                // Trigger refresh if callback available
-              }
+            onBulkImportSuccess={(c, l) => {
+              if (onBulkImportSuccess) onBulkImportSuccess(c, l);
+              if (onImportSuccess) onImportSuccess(c, l);
+            }}
+            onImportSuccess={(c, l) => {
+              if (onBulkImportSuccess) onBulkImportSuccess(c, l);
+              if (onImportSuccess) onImportSuccess(c, l);
             }}
           />
         )}

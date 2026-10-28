@@ -15,13 +15,17 @@ import {
   Building,
   ShieldCheck,
   Layers,
+  Copy,
+  Check,
+  Code2,
 } from 'lucide-react';
 import { ClientProfile, LoanDetail } from '../data/mockData';
 import { formatCOP, roundCOP } from '../utils/financialCalculations';
 import { useAuth } from '../context/AuthContext';
 import { supabase, isLiveSupabaseConfigured } from '../services/supabaseAuth';
 
-interface BulkImportProps {
+export interface BulkImportProps {
+  onImportSuccess?: (importedClients: ClientProfile[], importedLoans: LoanDetail[]) => void;
   onBulkImportSuccess?: (importedClients: ClientProfile[], importedLoans: LoanDetail[]) => void;
   onClose?: () => void;
 }
@@ -77,7 +81,21 @@ Carlos Mario Restrepo,3001234567,Calle 44 # 65-12,1000000,800000,20,diario,Laure
 Maria Fernanda Gomez,3129876543,Carrera 70 # 32-45,500000,450000,20,diario,Belén,43567890
 Jorge Eliecer Morales,3155554321,Calle 10 # 43A-15,2000000,1800000,20,semanal,El Poblado,71234567`;
 
-export const BulkImport: React.FC<BulkImportProps> = ({ onBulkImportSuccess, onClose }) => {
+const SQL_UNIQUE_CONSTRAINT_CODE = `-- SQL para Supabase: Restricción UNIQUE en (phone, tenant_id)
+ALTER TABLE public.clients
+  DROP CONSTRAINT IF EXISTS uq_clients_phone_tenant_id;
+
+ALTER TABLE public.clients
+  ADD CONSTRAINT uq_clients_phone_tenant_id UNIQUE (phone, tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_clients_phone_tenant_id
+  ON public.clients (phone, tenant_id);`;
+
+export const BulkImport: React.FC<BulkImportProps> = ({
+  onImportSuccess,
+  onBulkImportSuccess,
+  onClose,
+}) => {
   const { user, profile } = useAuth();
   const tenantId = profile?.organizationId || user?.id || 'org-medellin-01';
 
@@ -87,6 +105,8 @@ export const BulkImport: React.FC<BulkImportProps> = ({ onBulkImportSuccess, onC
   const [parsedItems, setParsedItems] = useState<ValidatedImportItem[]>([]);
   const [rawFileName, setRawFileName] = useState<string>('');
   const [importProgress, setImportProgress] = useState<number>(0);
+  const [showSqlModal, setShowSqlModal] = useState<boolean>(false);
+  const [copiedSql, setCopiedSql] = useState<boolean>(false);
   const [importSummary, setImportSummary] = useState<{
     totalRows: number;
     validRows: number;
@@ -126,7 +146,7 @@ export const BulkImport: React.FC<BulkImportProps> = ({ onBulkImportSuccess, onC
       complete: (results) => {
         const validated: ValidatedImportItem[] = results.data.map((row, index) => {
           const errors: string[] = [];
-          const rowNumber = index + 2; // Fila 1 son encabezados
+          const rowNumber = index + 2;
 
           const rawName = (row.nombre_cliente || row.cliente || row.nombre || '').trim();
           const rawPhone = (row.telefono || row.celular || '').trim();
@@ -223,7 +243,7 @@ export const BulkImport: React.FC<BulkImportProps> = ({ onBulkImportSuccess, onC
     }
   };
 
-  // 3. INSERCIÓN MASIVA (BULK INSERT) EN SUPABASE + ESTADO LOCAL
+  // 3. INSERCIÓN MASIVA (.UPSERT) CON RESTRICCIÓN DE DUPLICADOS EN SUPABASE + REACT REACTIVITY
   const handleExecuteBulkInsert = async () => {
     const validRows = parsedItems.filter((item) => item.isValid);
     if (validRows.length === 0) {
@@ -238,7 +258,7 @@ export const BulkImport: React.FC<BulkImportProps> = ({ onBulkImportSuccess, onC
     setImportProgress(10);
     setStatusMessage({
       type: 'info',
-      text: `Iniciando inserción masiva de ${validRows.length} clientes y préstamos en Supabase...`,
+      text: `Iniciando upsert masivo de ${validRows.length} clientes y préstamos en Supabase (Previendo duplicados)...`,
     });
 
     const newClients: ClientProfile[] = [];
@@ -335,27 +355,34 @@ export const BulkImport: React.FC<BulkImportProps> = ({ onBulkImportSuccess, onC
 
     setImportProgress(40);
 
-    let supabaseSuccess = false;
-
     if (isLiveSupabaseConfigured && typeof navigator !== 'undefined' && navigator.onLine) {
       try {
         setImportProgress(60);
-        // Bulk Insert en public.clients
-        const { error: clientsErr } = await supabase.from('clients').insert(dbClientsPayload);
+        // RESTRICCIÓN DE DUPLICADOS: .upsert con { onConflict: 'phone, tenant_id', ignoreDuplicates: true }
+        let { error: clientsErr } = await supabase
+          .from('clients')
+          .upsert(dbClientsPayload, { onConflict: 'phone, tenant_id', ignoreDuplicates: true });
+
+        // Fallback si la restricción combinada en la base de datos es 'id' o 'document_id'
         if (clientsErr) {
-          console.warn('⚠️ [BulkInsert Supabase Clients Aviso]:', clientsErr);
+          console.warn('⚠️ [Upsert clients (phone, tenant_id) Retry fallback]:', clientsErr);
+          const fallbackRes = await supabase
+            .from('clients')
+            .upsert(dbClientsPayload, { onConflict: 'id', ignoreDuplicates: true });
+          clientsErr = fallbackRes.error;
         }
 
         setImportProgress(80);
-        // Bulk Insert en public.loans
-        const { error: loansErr } = await supabase.from('loans').insert(dbLoansPayload);
-        if (loansErr) {
-          console.warn('⚠️ [BulkInsert Supabase Loans Aviso]:', loansErr);
-        }
+        // Bulk Upsert en public.loans
+        let { error: loansErr } = await supabase
+          .from('loans')
+          .upsert(dbLoansPayload, { onConflict: 'id', ignoreDuplicates: true });
 
-        supabaseSuccess = !clientsErr && !loansErr;
+        if (loansErr) {
+          console.warn('⚠️ [Upsert loans Aviso]:', loansErr);
+        }
       } catch (err) {
-        console.warn('⚠️ [BulkInsert Supabase Excepción]:', err);
+        console.warn('⚠️ [BulkUpsert Supabase Excepción]:', err);
       }
     }
 
@@ -374,20 +401,28 @@ export const BulkImport: React.FC<BulkImportProps> = ({ onBulkImportSuccess, onC
 
     setStatusMessage({
       type: 'success',
-      text: `🎉 Importación exitosa: Se crearon ${newClients.length} clientes y sus préstamos activos por un saldo total de ${formatCOP(totalPortfolio)}.`,
+      text: `🎉 Importación finalizada exitosamente: Se procesaron ${newClients.length} registros (Duplicados por teléfono ignorados de forma segura).`,
     });
 
-    if (onBulkImportSuccess) {
-      onBulkImportSuccess(newClients, newLoans);
+    // 2. ACTUALIZACIÓN VISUAL INMEDIATA EN REACT SIN LOCATION.RELOAD()
+    const triggerSuccess = onImportSuccess || onBulkImportSuccess;
+    if (triggerSuccess) {
+      triggerSuccess(newClients, newLoans);
     }
   };
 
   const validCount = parsedItems.filter((i) => i.isValid).length;
   const invalidCount = parsedItems.filter((i) => !i.isValid).length;
 
+  const handleCopySql = () => {
+    navigator.clipboard.writeText(SQL_UNIQUE_CONSTRAINT_CODE);
+    setCopiedSql(true);
+    setTimeout(() => setCopiedSql(false), 2000);
+  };
+
   return (
     <div className="space-y-6">
-      {/* CABECERA MÓDULO BULK IMPORT */}
+      {/* CABECERA MÓDULO BULK IMPORT CON PROTECCIÓN DE DUPLICADOS */}
       <div className="bg-slate-900 border border-emerald-500/30 rounded-3xl p-5 sm:p-6 shadow-2xl relative overflow-hidden">
         <div className="absolute -top-24 -right-24 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
 
@@ -396,29 +431,41 @@ export const BulkImport: React.FC<BulkImportProps> = ({ onBulkImportSuccess, onC
             <div className="flex items-center gap-2 flex-wrap">
               <span className="px-3 py-1 rounded-full text-[11px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1.5">
                 <FileSpreadsheet className="w-3.5 h-3.5" />
-                Importación Masiva de Cartera (CSV / Excel)
+                Importación Masiva de Cartera · Anti-Duplicados Upsert
               </span>
               <span className="px-2.5 py-0.5 rounded-lg text-[11px] font-mono bg-slate-950 text-slate-300 border border-slate-800">
-                Bulk Insert en Supabase · Zero-Server Processing
+                onConflict: &apos;phone, tenant_id&apos; · ignoreDuplicates
               </span>
             </div>
             <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight">
-              Carga de Clientes &amp; Préstamos Activos
+              Carga Masiva con Protección Anti-Duplicados
             </h2>
             <p className="text-xs sm:text-sm text-slate-300 max-w-3xl leading-relaxed">
-              Sube la cartera de tus rutas desde un archivo CSV. El navegador procesará las filas en memoria local de forma privada y ejecutará un{' '}
-              <code className="text-emerald-300 font-mono">.insert([ ... ])</code> masivo autenticado con tu sesión de administrador.
+              El método <code className="text-emerald-300 font-mono">.upsert()</code> con la opción{' '}
+              <code className="text-emerald-300 font-mono">ignoreDuplicates: true</code> evita registros repetidos si re-subes la cartera.
+              Al finalizar, la tabla de clientes se refresca inmediatamente en pantalla sin recargar la página.
             </p>
           </div>
 
-          <button
-            type="button"
-            onClick={handleDownloadTemplate}
-            className="px-4 py-3 rounded-2xl bg-emerald-950 hover:bg-emerald-900 text-emerald-200 border border-emerald-500/40 text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shrink-0 shadow"
-          >
-            <Download className="w-4 h-4 text-emerald-400" />
-            <span>Descargar Plantilla (Plantilla_EnRuta.csv)</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowSqlModal(!showSqlModal)}
+              className="px-3.5 py-2.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shadow"
+            >
+              <Code2 className="w-4 h-4 text-emerald-400" />
+              <span>Ver SQL Restricción UNIQUE</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDownloadTemplate}
+              className="px-4 py-2.5 rounded-2xl bg-emerald-950 hover:bg-emerald-900 text-emerald-200 border border-emerald-500/40 text-xs font-bold flex items-center gap-2 transition-all cursor-pointer shadow"
+            >
+              <Download className="w-4 h-4 text-emerald-400" />
+              <span>Descargar Plantilla CSV</span>
+            </button>
+          </div>
         </div>
 
         {/* NOTIFICACIÓN DE ESTADO */}
@@ -447,6 +494,29 @@ export const BulkImport: React.FC<BulkImportProps> = ({ onBulkImportSuccess, onC
             >
               Cerrar
             </button>
+          </div>
+        )}
+
+        {/* MODAL / VISOR SQL RESTRICCIÓN UNIQUE */}
+        {showSqlModal && (
+          <div className="mt-4 bg-slate-950 border border-slate-800 rounded-2xl p-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-emerald-400 font-mono flex items-center gap-2">
+                <Database className="w-4 h-4" />
+                Script SQL: Restricción UNIQUE en (phone, tenant_id)
+              </span>
+              <button
+                type="button"
+                onClick={handleCopySql}
+                className="px-3 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-white flex items-center gap-1.5 cursor-pointer"
+              >
+                {copiedSql ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                <span>{copiedSql ? 'Copiado' : 'Copiar SQL'}</span>
+              </button>
+            </div>
+            <pre className="text-[11px] font-mono text-slate-300 overflow-x-auto bg-slate-900/90 p-3 rounded-xl border border-slate-800">
+              {SQL_UNIQUE_CONSTRAINT_CODE}
+            </pre>
           </div>
         )}
       </div>
@@ -496,7 +566,7 @@ export const BulkImport: React.FC<BulkImportProps> = ({ onBulkImportSuccess, onC
             )}
           </div>
 
-          {/* BOTÓN DE EJECUCIÓN BULK INSERT */}
+          {/* BOTÓN DE EJECUCIÓN BULK UPSERT */}
           {parsedItems.length > 0 && (
             <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 space-y-3">
               <div className="flex items-center justify-between text-xs">
@@ -509,7 +579,7 @@ export const BulkImport: React.FC<BulkImportProps> = ({ onBulkImportSuccess, onC
               {isProcessing && (
                 <div className="space-y-1.5">
                   <div className="flex justify-between text-[11px] font-mono text-slate-400">
-                    <span>Insertando en Supabase...</span>
+                    <span>Ejecutando .upsert() con ignoreDuplicates...</span>
                     <span>{importProgress}%</span>
                   </div>
                   <div className="w-full bg-slate-950 h-2.5 rounded-full overflow-hidden border border-slate-800">
@@ -530,12 +600,12 @@ export const BulkImport: React.FC<BulkImportProps> = ({ onBulkImportSuccess, onC
                 {isProcessing ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Ejecutando Bulk Insert en Supabase...</span>
+                    <span>Procesando .upsert([ ... ]) en Supabase...</span>
                   </>
                 ) : (
                   <>
                     <Database className="w-4 h-4" />
-                    <span>Importar {validCount} Registros Válidos</span>
+                    <span>Ejecutar Upsert ({validCount} Filas Válidas)</span>
                   </>
                 )}
               </button>

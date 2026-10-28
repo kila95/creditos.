@@ -536,6 +536,21 @@ function MainAppContent() {
     setShowNewClientModal(false);
   };
 
+  const handleBulkImportSuccess = (importedClients: ClientProfile[], importedLoans: LoanDetail[]) => {
+    setClients(prev => {
+      const existingIds = new Set(prev.map(c => c.id));
+      const existingPhones = new Set(prev.map(c => c.phone.replace(/\D/g, '')));
+      const filtered = importedClients.filter(c => !existingIds.has(c.id) && !existingPhones.has(c.phone.replace(/\D/g, '')));
+      return [...filtered, ...prev];
+    });
+    setLoans(prev => {
+      const existingIds = new Set(prev.map(l => l.id));
+      const filtered = importedLoans.filter(l => !existingIds.has(l.id));
+      return [...filtered, ...prev];
+    });
+    syncDatabaseClients();
+  };
+
   const handleAssignCollectorBase = (newBase: CollectorBase) => {
     setCollectorBases(prev => [newBase, ...prev]);
   };
@@ -688,6 +703,8 @@ function MainAppContent() {
           onReassignClientRoute={handleReassignClientRoute}
           onConfirmReconciliation={handleConfirmReconciliation}
           onOpenNewClientModal={() => setShowNewClientModal(true)}
+          onBulkImportSuccess={handleBulkImportSuccess}
+          onImportSuccess={handleBulkImportSuccess}
         />
       </main>
 

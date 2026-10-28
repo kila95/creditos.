@@ -60,9 +60,9 @@ interface AdminLayoutProps {
   onCollectorCreated?: (collector: CollectorUserRecord) => void;
   onRestructureLoan: (loanId: string) => void;
   onToggleClientBlock: (clientId: string) => void;
-  onReassignClientRoute: (clientId: string, newRouteId: string) => void;
-  onConfirmReconciliation: (routeId: string, actualCash: number, discrepancy: number, notes: string, sessionRecord?: any) => void;
   onOpenNewClientModal?: () => void;
+  onBulkImportSuccess?: (importedClients: ClientProfile[], importedLoans: LoanDetail[]) => void;
+  onImportSuccess?: (importedClients: ClientProfile[], importedLoans: LoanDetail[]) => void;
   logout: () => Promise<void>;
 }
 
@@ -82,6 +82,8 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
   onReassignClientRoute,
   onConfirmReconciliation,
   onOpenNewClientModal,
+  onBulkImportSuccess,
+  onImportSuccess,
   logout,
 }) => {
   const { user, profile, role, isSuperAdmin } = useAuth();
@@ -518,7 +520,16 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
           )}
 
           {activeTab === 'importacion_masiva' && (
-            <BulkImport />
+            <BulkImport
+              onBulkImportSuccess={(c, l) => {
+                if (onBulkImportSuccess) onBulkImportSuccess(c, l);
+                if (onImportSuccess) onImportSuccess(c, l);
+              }}
+              onImportSuccess={(c, l) => {
+                if (onBulkImportSuccess) onBulkImportSuccess(c, l);
+                if (onImportSuccess) onImportSuccess(c, l);
+              }}
+            />
           )}
 
           {activeTab !== 'liquidated_history' &&
@@ -543,6 +554,8 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
               onReassignClientRoute={onReassignClientRoute}
               onConfirmReconciliation={onConfirmReconciliation}
               onOpenNewClientModal={onOpenNewClientModal}
+              onBulkImportSuccess={onBulkImportSuccess}
+              onImportSuccess={onImportSuccess}
             />
           )}
         </main>
