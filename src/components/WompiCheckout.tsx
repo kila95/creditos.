@@ -188,8 +188,8 @@ export const WompiCheckout: React.FC<WompiCheckoutProps> = ({
     setIsProcessing(true);
 
     try {
-      // Referencia única trazable por el webhook: SUB_<tenantId>_<timestamp>
-      const uniqueReference = `SUB_${tenantId}_${Date.now()}`;
+      // Referencia única trazable por el webhook: ${tenant_id}-${Date.now()}
+      const uniqueReference = `${tenantId}-${Date.now()}`;
       const currency: 'COP' = 'COP';
 
       // Obtener firma de integridad SHA-256 generada en el backend

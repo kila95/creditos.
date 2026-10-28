@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   DollarSign,
   TrendingUp,
@@ -27,7 +27,9 @@ import {
   ChevronLeft,
   ChevronRight,
   ShieldCheck,
-  CheckCircle2
+  CheckCircle2,
+  Receipt,
+  CreditCard
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -64,7 +66,12 @@ import { AdminCollectorUsersManager, CollectorUserRecord } from './AdminCollecto
 import { SuperAdminTenantsManager } from './SuperAdminTenantsManager';
 import { NegotiationProposal } from '../utils/aiNegotiator';
 import { useAuth } from '../context/AuthContext';
+import { supabase } from '../lib/supabase';
 import { LiquidatedHistoryView } from './LiquidatedHistoryView';
+import { SubscriptionPaywall } from './SubscriptionPaywall';
+import { HistorialPagos } from './HistorialPagos';
+import { GestionarSuscripcionView } from './GestionarSuscripcionView';
+import { GpsAuditTrackerModule } from './GpsAuditTrackerModule';
 
 interface AdminDashboardProps {
   routes: RouteData[];
@@ -73,6 +80,7 @@ interface AdminDashboardProps {
   expenses: RouteExpenseItem[];
   ledger: LedgerEntry[];
   collectorBases?: CollectorBase[];
+  isSubscriptionActive?: boolean;
   onAssignCollectorBase?: (newBase: CollectorBase) => Promise<void> | void;
   onUpdateCollectorBaseStatus?: (baseId: string, status: 'ACTIVA' | 'DEVUELTA') => Promise<void> | void;
   onCollectorCreated?: (collector: CollectorUserRecord) => void;
@@ -93,7 +101,10 @@ type AdminTab =
   | 'scoring_riesgo'
   | 'cierre_caja'
   | 'simulador_cfo'
-  | 'auditoria';
+  | 'auditoria'
+  | 'auditoria_gps'
+  | 'historial_pagos'
+  | 'suscripcion';
 
 export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
   routes,
@@ -102,6 +113,7 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
   expenses,
   ledger,
   collectorBases = [],
+  isSubscriptionActive: isSubscriptionActiveProp,
   onAssignCollectorBase,
   onUpdateCollectorBaseStatus,
   onCollectorCreated,
@@ -112,12 +124,61 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
   onNavigateToTab,
   onOpenNewClientModal,
 }) => {
-  const { profile, role, isSuperAdmin } = useAuth();
+  const { user, profile, role, isSuperAdmin } = useAuth();
+  const tenantId = profile?.organizationId || user?.id || 'org-medellin-01';
 
-  // Navegación interna por pestañas en el Panel de Control Sidebar
-  const [activeTab, setActiveTab] = useState<AdminTab>('dashboard');
+  // Navegación interna por pestañas en el Panel de Control Sidebar (con soporte para /admin/suscripcion)
+  const [activeTab, setActiveTab] = useState<AdminTab>(() =>
+    typeof window !== 'undefined' && window.location.pathname === '/admin/suscripcion'
+      ? 'suscripcion'
+      : 'dashboard'
+  );
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  const [isSubscriptionActive, setIsSubscriptionActive] = useState<boolean>(
+    isSubscriptionActiveProp ?? true
+  );
+
+  const navigateAdminTab = (tab: AdminTab) => {
+    setActiveTab(tab);
+    setMobileMenuOpen(false);
+    if (typeof window !== 'undefined') {
+      const targetPath = tab === 'suscripcion' ? '/admin/suscripcion' : '/admin';
+      if (window.location.pathname !== targetPath) {
+        window.history.pushState({}, '', targetPath);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (typeof isSubscriptionActiveProp === 'boolean') {
+      setIsSubscriptionActive(isSubscriptionActiveProp);
+      return;
+    }
+    if (isSuperAdmin) {
+      setIsSubscriptionActive(true);
+      return;
+    }
+
+    let mounted = true;
+    supabase
+      .from('tenant_subscriptions')
+      .select('status, trial_end')
+      .eq('tenant_id', tenantId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (mounted && data && data.status) {
+          const isTrialValid =
+            data.status === 'trialing' &&
+            Boolean(data.trial_end && new Date(data.trial_end).getTime() > Date.now());
+          setIsSubscriptionActive(data.status === 'active' || isTrialValid);
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [tenantId, isSubscriptionActiveProp, isSuperAdmin]);
 
   // Modales avanzados
   const [showRiskModal, setShowRiskModal] = useState(false);
@@ -371,6 +432,21 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
   }
 
   // =========================================================================
+  // BLOQUEO CONDICIONAL (PAYWALL WOMPI): Si la suscripción no está activa,
+  // oculta el panel del administrador y renderiza únicamente el botón de pago.
+  // =========================================================================
+  if (!isSubscriptionActive && !isSuperAdmin) {
+    return (
+      <SubscriptionPaywall
+        tenantId={tenantId}
+        customerEmail={profile?.email || user?.email}
+        customerName={profile?.fullName}
+        onSubscriptionActivated={() => setIsSubscriptionActive(true)}
+      />
+    );
+  }
+
+  // =========================================================================
   // ARQUITECTURA DE PANEL DE CONTROL CON MENÚ LATERAL (SIDEBAR + CONTENT)
   // =========================================================================
   return (
@@ -555,6 +631,48 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
             >
               <ShieldAlert className="w-4 h-4 shrink-0" />
               {!sidebarCollapsed && <span>8. Bitácora SHA-256</span>}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('auditoria_gps');
+                setMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'auditoria_gps'
+                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950/50'
+                  : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
+              }`}
+            >
+              <MapPin className="w-4 h-4 shrink-0 text-emerald-400" />
+              {!sidebarCollapsed && <span>Auditoría GPS (Mapa)</span>}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => navigateAdminTab('historial_pagos')}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'historial_pagos'
+                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950/50'
+                  : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
+              }`}
+            >
+              <Receipt className="w-4 h-4 shrink-0" />
+              {!sidebarCollapsed && <span>9. Historial de Pagos</span>}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => navigateAdminTab('suscripcion')}
+              className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+                activeTab === 'suscripcion'
+                  ? 'bg-emerald-600 text-white border-emerald-400 shadow-lg shadow-emerald-950/60'
+                  : 'bg-emerald-950/40 text-emerald-300 border-emerald-500/40 hover:bg-emerald-900/50 hover:text-white'
+              }`}
+            >
+              <CreditCard className="w-4 h-4 shrink-0 text-emerald-400" />
+              {!sidebarCollapsed && <span>Suscripción y Pagos (Wompi)</span>}
             </button>
           </nav>
         </div>
@@ -1321,6 +1439,32 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
             clients={clients}
             routes={routes}
             onOpenNewClientModal={onOpenNewClientModal}
+          />
+        )}
+
+        {/* =====================================================================
+            VISTA: HISTORIAL DE PAGOS Y COMPROBANTES WOMPI (`payment_receipts`)
+           ===================================================================== */}
+        {activeTab === 'historial_pagos' && (
+          <HistorialPagos tenantId={tenantId} />
+        )}
+
+        {activeTab === 'auditoria_gps' && (
+          <GpsAuditTrackerModule
+            routes={routes}
+            clients={clients}
+            loans={loans}
+            ledger={ledger}
+          />
+        )}
+
+        {/* =====================================================================
+            VISTA DEDICADA AL PAGO (/admin/suscripcion): GESTIONAR SUSCRIPCIÓN WOMPI
+           ===================================================================== */}
+        {activeTab === 'suscripcion' && (
+          <GestionarSuscripcionView
+            tenantId={tenantId}
+            onSubscriptionActivated={() => setIsSubscriptionActive(true)}
           />
         )}
       </main>

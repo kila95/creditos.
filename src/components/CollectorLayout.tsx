@@ -12,12 +12,16 @@ import {
   Bike,
   CheckCircle2,
   Clock,
-  Smartphone
+  Smartphone,
+  Printer,
+  WifiOff,
 } from 'lucide-react';
 import { RouteData, ClientProfile, LoanDetail, RouteExpenseItem, LedgerEntry, CollectorBase } from '../data/mockData';
 import { CollectorStreetView } from './CollectorStreetView';
 import { LiquidatedHistoryView } from './LiquidatedHistoryView';
 import { EnRutaLogo } from './EnRutaLogo';
+import { BluetoothPrintManager } from './BluetoothPrintManager';
+import { OfflinePwaManager } from './OfflinePwaManager';
 
 interface CollectorLayoutProps {
   currentRoute: RouteData;
@@ -37,7 +41,7 @@ interface CollectorLayoutProps {
   collectorName: string;
 }
 
-export type CollectorTab = 'route_list' | 'liquidated_history' | 'shift_closing' | 'expenses';
+export type CollectorTab = 'route_list' | 'liquidated_history' | 'shift_closing' | 'expenses' | 'bluetooth_printer' | 'offline_pwa';
 
 export const CollectorLayout: React.FC<CollectorLayoutProps> = ({
   currentRoute,
@@ -62,6 +66,8 @@ export const CollectorLayout: React.FC<CollectorLayoutProps> = ({
   const navItems = [
     { id: 'route_list' as CollectorTab, label: 'Ruta del Día', icon: Wallet, description: 'Lista de cobros y clientes del día' },
     { id: 'liquidated_history' as CollectorTab, label: 'Historial Liquidados', icon: CheckCircle2, description: 'Créditos saldados y viabilidad de renovación' },
+    { id: 'bluetooth_printer' as CollectorTab, label: 'Impresora Bluetooth (ESC/POS)', icon: Printer, description: 'Vincular impresora térmica 58mm e imprimir tirillas' },
+    { id: 'offline_pwa' as CollectorTab, label: 'Modo Offline PWA (IndexedDB)', icon: WifiOff, description: 'Cola local sin señal y auto-sync a Supabase' },
     { id: 'shift_closing' as CollectorTab, label: 'Cierre de Caja y Arqueo', icon: ClipboardCheck, description: 'Entrega de efectivo al Admin' },
   ];
 
@@ -116,6 +122,30 @@ export const CollectorLayout: React.FC<CollectorLayoutProps> = ({
           >
             <CheckCircle2 className="w-3.5 h-3.5" />
             <span>Historial Liquidados</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('bluetooth_printer')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer ${
+              activeTab === 'bluetooth_printer'
+                ? 'bg-emerald-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+            }`}
+          >
+            <Printer className="w-3.5 h-3.5" />
+            <span>Impresora Bluetooth</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('offline_pwa')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-2 transition-all cursor-pointer ${
+              activeTab === 'offline_pwa'
+                ? 'bg-emerald-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+            }`}
+          >
+            <WifiOff className="w-3.5 h-3.5" />
+            <span>Modo Offline PWA</span>
           </button>
         </div>
 
@@ -237,7 +267,25 @@ export const CollectorLayout: React.FC<CollectorLayoutProps> = ({
           />
         )}
 
-        {activeTab !== 'liquidated_history' && (
+        {activeTab === 'bluetooth_printer' && (
+          <BluetoothPrintManager />
+        )}
+
+        {activeTab === 'offline_pwa' && (
+          <OfflinePwaManager
+            tenantId={currentRoute.organizationId || 'org-medellin-01'}
+            routeId={currentRoute.id}
+            clients={clients}
+            loans={loans}
+            onPaymentSyncedToApp={(rec) =>
+              onRegisterPayment(rec.loanId, rec.amount, rec.paymentMethod, rec.notes)
+            }
+          />
+        )}
+
+        {activeTab !== 'liquidated_history' &&
+          activeTab !== 'bluetooth_printer' &&
+          activeTab !== 'offline_pwa' && (
           <CollectorStreetView
             currentRoute={currentRoute}
             clients={clients}

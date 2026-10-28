@@ -19,10 +19,11 @@ import { SuperAdminTenantsManager } from './SuperAdminTenantsManager';
 import { SuperAdminSubscriptionsManager } from './SuperAdminSubscriptionsManager';
 import { SuperAdminWhatsAppCollectionCenter } from './SuperAdminWhatsAppCollectionCenter';
 import { AuditLogView } from './AuditLogView';
+import { GestionarSuscripcionView } from './GestionarSuscripcionView';
 import { INITIAL_AUDIT_LOGS } from '../data/auditLogData';
 import { formatCOP } from '../utils/financialCalculations';
 
-export type SuperAdminTab = 'dashboard' | 'admins' | 'audit' | 'subscriptions' | 'whatsapp';
+export type SuperAdminTab = 'dashboard' | 'admins' | 'audit' | 'subscriptions' | 'whatsapp' | 'suscripcion_wompi';
 
 export const SuperAdminLayout: React.FC = () => {
   const { profile, logout } = useAuth();
@@ -38,6 +39,7 @@ export const SuperAdminLayout: React.FC = () => {
 
   const navItems = [
     { id: 'dashboard' as SuperAdminTab, label: 'Métricas Globales', icon: LayoutDashboard, desc: 'KPIs del SaaS e ingresos MRR' },
+    { id: 'suscripcion_wompi' as SuperAdminTab, label: 'Suscripción / Pagos (Wompi)', icon: CreditCard, desc: 'Gestionar Suscripción con Wompi' },
     { id: 'admins' as SuperAdminTab, label: 'Gestión de Administradores', icon: Users, desc: 'Aprovisionamiento de Fondos y cuentas Admin' },
     { id: 'subscriptions' as SuperAdminTab, label: 'Suscripciones y Cobros', icon: CreditCard, desc: 'Planes y estados de cobro' },
     { id: 'whatsapp' as SuperAdminTab, label: 'Cobranza WhatsApp', icon: MessageSquare, desc: 'Avisos de mora, bloqueo y vencimiento' },
@@ -307,6 +309,9 @@ export const SuperAdminLayout: React.FC = () => {
           <SuperAdminWhatsAppCollectionCenter
             onNavigateToSubscriptions={() => setActiveTab('subscriptions')}
           />
+        )}
+        {activeTab === 'suscripcion_wompi' && (
+          <GestionarSuscripcionView />
         )}
       </main>
     </div>

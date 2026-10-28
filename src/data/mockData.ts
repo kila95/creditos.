@@ -89,6 +89,9 @@ export interface LedgerEntry {
   postBalance: number;
   timestamp: string;
   gpsLocation: string;
+  latitude?: number;
+  longitude?: number;
+  accuracyMeters?: number;
   hash: string;
 }
 

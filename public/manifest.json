@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "EnRuta Microfinanzas & Recaudo Offline",
+  "short_name": "EnRuta OS",
+  "description": "Plataforma de gestión de rutas de microcrédito con soporte Offline IndexedDB, Impresión Bluetooth ESC/POS y Auditoría GPS.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#020617",
+  "theme_color": "#10b981",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

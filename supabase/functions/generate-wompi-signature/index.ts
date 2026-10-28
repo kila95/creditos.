@@ -1,16 +1,20 @@
 // Supabase Edge Function: generate-wompi-signature
+// Backend Blindado: Precio estático quemado en código (14000000 centavos = $140.000 COP)
 // Calcula en el backend la firma criptográfica SHA-256 requerida por el Widget de Wompi:
-// SHA256(referencia + montoEnCentavos + moneda + WOMPI_INTEGRITY_SECRET)
+// SHA256(referencia + 14000000 + COP + WOMPI_INTEGRITY_SECRET)
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// Precio mensual fijo quemado en el servidor: $140.000 COP en centavos
+const FIXED_MONTHLY_AMOUNT_IN_CENTS = 14000000;
+const FIXED_CURRENCY = 'COP';
+
 interface SignatureRequestBody {
-  reference: string;
-  amountInCents: number;
-  currency?: 'COP';
+  tenantId?: string;
+  reference?: string;
   expirationTime?: string;
 }
 
@@ -50,25 +54,32 @@ Deno.serve(async (req: Request) => {
     }
 
     const body: SignatureRequestBody = await req.json();
-    const reference = body?.reference?.trim();
-    const amountInCents = Number(body?.amountInCents);
-    const currency = body?.currency || 'COP';
+    const tenantId = body?.tenantId?.trim();
+    const rawReference = body?.reference?.trim();
     const expirationTime = body?.expirationTime;
 
-    if (!reference || !Number.isInteger(amountInCents) || amountInCents <= 0) {
+    // Garantizar que la referencia contenga el tenant_id del administrador: `${tenant_id}-${timestamp}`
+    const reference =
+      rawReference && (!tenantId || rawReference.startsWith(`${tenantId}-`))
+        ? rawReference
+        : tenantId
+          ? `${tenantId}-${Date.now()}`
+          : '';
+
+    if (!reference || !reference.includes('-')) {
       return new Response(
         JSON.stringify({
-          error: 'Parámetros inválidos: se requiere `reference` y `amountInCents` (entero positivo).',
+          error: 'Parámetros inválidos: se requiere `tenantId` o una `reference` trazable (`${tenant_id}-${timestamp}`).',
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Regla oficial de Wompi para la firma de integridad:
+    // Regla oficial de Wompi con monto estático blindado en servidor (14000000 centavos = $140.000 COP):
     // <Referencia><MontoEnCentavos><Moneda>[<FechaExpiracion>]<SecretoIntegridad>
     const rawStringToSign = expirationTime
-      ? `${reference}${amountInCents}${currency}${expirationTime}${integritySecret}`
-      : `${reference}${amountInCents}${currency}${integritySecret}`;
+      ? `${reference}${FIXED_MONTHLY_AMOUNT_IN_CENTS}${FIXED_CURRENCY}${expirationTime}${integritySecret}`
+      : `${reference}${FIXED_MONTHLY_AMOUNT_IN_CENTS}${FIXED_CURRENCY}${integritySecret}`;
 
     const signature = await computeSha256Hex(rawStringToSign);
 
@@ -76,8 +87,8 @@ Deno.serve(async (req: Request) => {
       JSON.stringify({
         signature,
         reference,
-        amountInCents,
-        currency,
+        amountInCents: FIXED_MONTHLY_AMOUNT_IN_CENTS,
+        currency: FIXED_CURRENCY,
         ...(expirationTime ? { expirationTime } : {}),
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

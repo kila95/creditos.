@@ -43,6 +43,7 @@ import { supabase, isLiveSupabaseConfigured } from './services/supabaseAuth';
 import { roundCOP } from './utils/financialCalculations';
 import { sendAutomaticWhatsAppReceipt } from './utils/whatsappMessaging';
 import { Par30AlertBanner, Par30AlertItem } from './components/Par30AlertBanner';
+import { parseLatLngFromFormattedString, injectPaymentWithGpsToSupabase } from './utils/gpsAuditInjector';
 
 function MainAppContent() {
   const isOnline = useOnlineStatus();
@@ -303,6 +304,9 @@ function MainAppContent() {
     const interestPortion = roundCOP(safeAmount * 0.20);
     const principalPortion = Math.max(0, roundCOP(safeAmount - interestPortion));
 
+    const rawGpsString = notes && notes.includes('GPS:') ? notes.split('GPS:')[1].trim() : '6.2442, -75.5812 (±15m SAT)';
+    const parsedCoords = parseLatLngFromFormattedString(rawGpsString);
+
     const newEntry: LedgerEntry = {
       id: `led-${Date.now()}`,
       receiptNumber: `REC-${Math.floor(100000 + Math.random() * 900000)}`,
@@ -317,11 +321,24 @@ function MainAppContent() {
       preBalance,
       postBalance,
       timestamp: new Date().toISOString(),
-      gpsLocation: notes && notes.includes('GPS:') ? notes.split('GPS:')[1].trim() : '6.2442, -75.5812 (Estimado)',
+      gpsLocation: rawGpsString,
+      latitude: parsedCoords.latitude,
+      longitude: parsedCoords.longitude,
+      accuracyMeters: parsedCoords.accuracyMeters,
       hash: `sha256-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
     };
 
     setLedger(prev => [newEntry, ...prev]);
+
+    const matchedClientForGps = clients.find((c) => c.id === loan.clientId);
+    injectPaymentWithGpsToSupabase({
+      entry: newEntry,
+      latitude: parsedCoords.latitude,
+      longitude: parsedCoords.longitude,
+      accuracyMeters: parsedCoords.accuracyMeters,
+      isLiveSat: parsedCoords.isLiveSat,
+      client: matchedClientForGps,
+    }).catch((err) => console.warn('⚠️ [GPS Audit Injector]:', err));
 
     // 3. Filtro Frontal y Recarga Inmediata: Actualización inmediata en estado local React
     setLoans(prev => prev.map(l => {
@@ -369,6 +386,8 @@ function MainAppContent() {
           post_balance: postBalance,
           timestamp: newEntry.timestamp,
           gps_location: newEntry.gpsLocation,
+          latitude: parsedCoords.latitude,
+          longitude: parsedCoords.longitude,
           hash: newEntry.hash,
         }]).then(({ error: insertErr }) => {
           if (insertErr) {

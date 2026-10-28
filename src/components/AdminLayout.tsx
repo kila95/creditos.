@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   LayoutDashboard,
   Users,
@@ -13,13 +13,20 @@ import {
   X,
   ChevronLeft,
   ChevronRight,
+  Receipt,
+  CreditCard,
 } from 'lucide-react';
 import { RouteData, ClientProfile, LoanDetail, RouteExpenseItem, LedgerEntry, CollectorBase } from '../data/mockData';
 import { useAuth } from '../context/AuthContext';
+import { supabase } from '../lib/supabase';
 import { LiquidatedHistoryView } from './LiquidatedHistoryView';
 import { AdminInvestorDashboard } from './AdminInvestorDashboard';
 import { CollectorUserRecord } from './AdminCollectorUsersManager';
-import { SubscriptionGuard } from './SubscriptionGuard';
+import { SubscriptionPaywall } from './SubscriptionPaywall';
+import { HistorialPagos } from './HistorialPagos';
+import { GestionarSuscripcionView } from './GestionarSuscripcionView';
+import { GpsAuditTrackerModule } from './GpsAuditTrackerModule';
+import { MapPin } from 'lucide-react';
 
 export type AdminLayoutTab =
   | 'dashboard'
@@ -29,7 +36,10 @@ export type AdminLayoutTab =
   | 'scoring_riesgo'
   | 'cierre_caja'
   | 'simulador_cfo'
-  | 'auditoria';
+  | 'auditoria'
+  | 'auditoria_gps'
+  | 'historial_pagos'
+  | 'suscripcion';
 
 interface AdminLayoutProps {
   routes: RouteData[];
@@ -38,6 +48,7 @@ interface AdminLayoutProps {
   expenses: RouteExpenseItem[];
   ledger: LedgerEntry[];
   collectorBases?: CollectorBase[];
+  isSubscriptionActive?: boolean;
   onAssignCollectorBase?: (newBase: CollectorBase) => Promise<void> | void;
   onUpdateCollectorBaseStatus?: (baseId: string, status: 'ACTIVA' | 'DEVUELTA') => Promise<void> | void;
   onCollectorCreated?: (collector: CollectorUserRecord) => void;
@@ -56,6 +67,7 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
   expenses,
   ledger,
   collectorBases = [],
+  isSubscriptionActive: isSubscriptionActiveProp,
   onAssignCollectorBase,
   onUpdateCollectorBaseStatus,
   onCollectorCreated,
@@ -66,15 +78,98 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
   onOpenNewClientModal,
   logout,
 }) => {
-  const { profile, role } = useAuth();
-  const [activeTab, setActiveTab] = useState<AdminLayoutTab>('dashboard');
+  const { user, profile, role, isSuperAdmin } = useAuth();
+  const [activeTab, setActiveTab] = useState<AdminLayoutTab>(() =>
+    typeof window !== 'undefined' && window.location.pathname === '/admin/suscripcion'
+      ? 'suscripcion'
+      : 'dashboard'
+  );
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
+  const [isSubscriptionActive, setIsSubscriptionActive] = useState<boolean>(
+    isSubscriptionActiveProp ?? true
+  );
 
-  const tenantId = profile?.organizationId || 'org-medellin-01';
+  const navigateTab = (tab: AdminLayoutTab) => {
+    setActiveTab(tab);
+    setMobileMenuOpen(false);
+    if (typeof window !== 'undefined') {
+      const targetPath = tab === 'suscripcion' ? '/admin/suscripcion' : '/admin';
+      if (window.location.pathname !== targetPath) {
+        window.history.pushState({}, '', targetPath);
+      }
+    }
+  };
+
+  const tenantId = profile?.organizationId || user?.id || 'org-medellin-01';
+
+  useEffect(() => {
+    if (typeof isSubscriptionActiveProp === 'boolean') {
+      setIsSubscriptionActive(isSubscriptionActiveProp);
+      return;
+    }
+    if (isSuperAdmin) {
+      setIsSubscriptionActive(true);
+      return;
+    }
+
+    let mounted = true;
+    supabase
+      .from('tenant_subscriptions')
+      .select('status, trial_end')
+      .eq('tenant_id', tenantId)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (mounted && data && data.status) {
+          const isTrialValid =
+            data.status === 'trialing' &&
+            Boolean(data.trial_end && new Date(data.trial_end).getTime() > Date.now());
+          setIsSubscriptionActive(data.status === 'active' || isTrialValid);
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, [tenantId, isSubscriptionActiveProp, isSuperAdmin]);
+
+  // Bloqueo Condicional (Paywall): Si la suscripción no está activa, oculta el panel y renderiza solo el botón de pago de Wompi
+  if (!isSubscriptionActive && !isSuperAdmin) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
+        <header className="bg-slate-900 border-b border-slate-800 px-4 sm:px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-emerald-600 flex items-center justify-center text-white shadow-sm font-bold">
+              RC
+            </div>
+            <div>
+              <h2 className="text-white font-bold text-sm tracking-tight">
+                {profile?.fullName || 'Administrador'}
+              </h2>
+              <p className="text-[11px] text-slate-400 font-mono">
+                Tenant: <span className="text-amber-400 font-semibold">{tenantId}</span> · Suscripción Inactiva
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={logout}
+            className="px-3.5 py-2 bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 rounded-xl text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Cerrar Sesión</span>
+          </button>
+        </header>
+        <SubscriptionPaywall
+          tenantId={tenantId}
+          customerEmail={profile?.email || user?.email}
+          customerName={profile?.fullName}
+          onSubscriptionActivated={() => setIsSubscriptionActive(true)}
+        />
+      </div>
+    );
+  }
 
   return (
-    <SubscriptionGuard>
       <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col">
       {/* HEADER SUPERIOR */}
       <header className="bg-slate-900 border-b border-slate-800 px-4 sm:px-6 py-3 flex items-center justify-between sticky top-0 z-40">
@@ -265,6 +360,51 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
                 <ShieldAlert className="w-4 h-4 shrink-0" />
                 <span>8. Bitácora SHA-256</span>
               </button>
+
+              {/* 8.5. Auditoría GPS (Rastreo Satelital) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('auditoria_gps');
+                  setMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                  activeTab === 'auditoria_gps'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
+                }`}
+              >
+                <MapPin className="w-4 h-4 shrink-0 text-emerald-400" />
+                <span>Auditoría GPS (Mapa)</span>
+              </button>
+
+              {/* 9. Historial de Pagos (Facturación Wompi) */}
+              <button
+                type="button"
+                onClick={() => navigateTab('historial_pagos')}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                  activeTab === 'historial_pagos'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
+                }`}
+              >
+                <Receipt className="w-4 h-4 shrink-0" />
+                <span>9. Historial de Pagos</span>
+              </button>
+
+              {/* 10. Suscripción y Pagos (/admin/suscripcion) */}
+              <button
+                type="button"
+                onClick={() => navigateTab('suscripcion')}
+                className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+                  activeTab === 'suscripcion'
+                    ? 'bg-emerald-600 text-white border-emerald-400 shadow-lg'
+                    : 'bg-emerald-950/40 text-emerald-300 border-emerald-500/40 hover:bg-emerald-900/50 hover:text-white'
+                }`}
+              >
+                <CreditCard className="w-4 h-4 shrink-0 text-emerald-400" />
+                <span>Suscripción y Pagos (Wompi)</span>
+              </button>
             </nav>
           </div>
 
@@ -285,7 +425,30 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
             />
           )}
 
-          {activeTab !== 'liquidated_history' && (
+          {activeTab === 'historial_pagos' && (
+            <HistorialPagos tenantId={tenantId} />
+          )}
+
+          {activeTab === 'suscripcion' && (
+            <GestionarSuscripcionView
+              tenantId={tenantId}
+              onSubscriptionActivated={() => setIsSubscriptionActive(true)}
+            />
+          )}
+
+          {activeTab === 'auditoria_gps' && (
+            <GpsAuditTrackerModule
+              routes={routes}
+              clients={clients}
+              loans={loans}
+              ledger={ledger}
+            />
+          )}
+
+          {activeTab !== 'liquidated_history' &&
+            activeTab !== 'historial_pagos' &&
+            activeTab !== 'suscripcion' &&
+            activeTab !== 'auditoria_gps' && (
             <AdminInvestorDashboard
               routes={routes}
               clients={clients}
@@ -306,6 +469,5 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
         </main>
       </div>
     </div>
-    </SubscriptionGuard>
   );
 };

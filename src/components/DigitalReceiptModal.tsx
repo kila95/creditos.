@@ -12,6 +12,7 @@ import {
 import { LedgerEntry, ClientProfile, LoanDetail } from '../data/mockData';
 import { buildDigitalReceiptWhatsAppMessage } from '../utils/whatsappMessaging';
 import { formatCOP } from '../utils/financialCalculations';
+import { BluetoothPrintManager } from './BluetoothPrintManager';
 
 interface DigitalReceiptModalProps {
   entry: LedgerEntry;
@@ -132,8 +133,24 @@ export const DigitalReceiptModal: React.FC<DigitalReceiptModalProps> = ({
           </div>
         </div>
 
-        {/* ACCIONES DE ENVÍO DIRECTO POR WHATSAPP */}
-        <div className="p-4 border-t border-slate-800 bg-slate-950/90 space-y-2">
+        {/* ACCIONES DE IMPRESIÓN TÉRMICA BLUETOOTH Y WHATSAPP */}
+        <div className="p-4 border-t border-slate-800 bg-slate-950/90 space-y-2.5">
+          <BluetoothPrintManager
+            compact={true}
+            receiptData={{
+              organizationName: 'ENRUTA MICROCREDITO',
+              receiptNumber: entry.receiptNumber,
+              clientName: client.name,
+              clientDocument: client.id,
+              routeName: client.routeId,
+              amountPaid: entry.amount,
+              previousBalance: entry.preBalance,
+              newBalance: entry.postBalance,
+              paymentDate: new Date(entry.timestamp).toLocaleString('es-CO'),
+              notes: `Medio: ${entry.paymentMethod.toUpperCase()}`,
+            }}
+          />
+
           <button
             onClick={handleOpenWhatsApp}
             className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white rounded-2xl font-bold text-xs shadow-lg shadow-emerald-900/40 flex items-center justify-center gap-2 transition-all"
