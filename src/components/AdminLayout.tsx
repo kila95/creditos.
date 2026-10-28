@@ -26,7 +26,10 @@ import { SubscriptionPaywall } from './SubscriptionPaywall';
 import { HistorialPagos } from './HistorialPagos';
 import { GestionarSuscripcionView } from './GestionarSuscripcionView';
 import { GpsAuditTrackerModule } from './GpsAuditTrackerModule';
-import { MapPin } from 'lucide-react';
+import { WhatsAppCloudTriggerModule } from './WhatsAppCloudTriggerModule';
+import { OverduePenaltyCronModule } from './OverduePenaltyCronModule';
+import { BulkImport } from './BulkImport';
+import { MapPin, MessageCircle, Clock, FileSpreadsheet } from 'lucide-react';
 
 export type AdminLayoutTab =
   | 'dashboard'
@@ -38,6 +41,9 @@ export type AdminLayoutTab =
   | 'simulador_cfo'
   | 'auditoria'
   | 'auditoria_gps'
+  | 'whatsapp_cloud_api'
+  | 'pg_cron_mora'
+  | 'importacion_masiva'
   | 'historial_pagos'
   | 'suscripcion';
 
@@ -378,6 +384,57 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
                 <span>Auditoría GPS (Mapa)</span>
               </button>
 
+              {/* 8.6. WhatsApp Automático (Meta Cloud API + Triggers) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('whatsapp_cloud_api');
+                  setMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                  activeTab === 'whatsapp_cloud_api'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
+                }`}
+              >
+                <MessageCircle className="w-4 h-4 shrink-0 text-emerald-400" />
+                <span>WhatsApp Cloud (Triggers)</span>
+              </button>
+
+              {/* 8.7. Mora Automática (Postgres pg_cron) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('pg_cron_mora');
+                  setMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                  activeTab === 'pg_cron_mora'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
+                }`}
+              >
+                <Clock className="w-4 h-4 shrink-0 text-emerald-400" />
+                <span>Mora Automática (pg_cron)</span>
+              </button>
+
+              {/* 8.8. Importación Masiva (CSV / Excel) */}
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab('importacion_masiva');
+                  setMobileMenuOpen(false);
+                }}
+                className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                  activeTab === 'importacion_masiva'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
+                }`}
+              >
+                <FileSpreadsheet className="w-4 h-4 shrink-0 text-emerald-400" />
+                <span>Importación Masiva (CSV)</span>
+              </button>
+
               {/* 9. Historial de Pagos (Facturación Wompi) */}
               <button
                 type="button"
@@ -445,10 +502,32 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
             />
           )}
 
+          {activeTab === 'whatsapp_cloud_api' && (
+            <WhatsAppCloudTriggerModule
+              clients={clients}
+              loans={loans}
+              ledger={ledger}
+            />
+          )}
+
+          {activeTab === 'pg_cron_mora' && (
+            <OverduePenaltyCronModule
+              clients={clients}
+              loans={loans}
+            />
+          )}
+
+          {activeTab === 'importacion_masiva' && (
+            <BulkImport />
+          )}
+
           {activeTab !== 'liquidated_history' &&
             activeTab !== 'historial_pagos' &&
             activeTab !== 'suscripcion' &&
-            activeTab !== 'auditoria_gps' && (
+            activeTab !== 'auditoria_gps' &&
+            activeTab !== 'whatsapp_cloud_api' &&
+            activeTab !== 'pg_cron_mora' &&
+            activeTab !== 'importacion_masiva' && (
             <AdminInvestorDashboard
               routes={routes}
               clients={clients}

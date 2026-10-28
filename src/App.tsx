@@ -44,6 +44,7 @@ import { roundCOP } from './utils/financialCalculations';
 import { sendAutomaticWhatsAppReceipt } from './utils/whatsappMessaging';
 import { Par30AlertBanner, Par30AlertItem } from './components/Par30AlertBanner';
 import { parseLatLngFromFormattedString, injectPaymentWithGpsToSupabase } from './utils/gpsAuditInjector';
+import { invokeWhatsAppEdgeFunctionTrigger } from './utils/whatsappCloudTriggerService';
 
 function MainAppContent() {
   const isOnline = useOnlineStatus();
@@ -440,6 +441,12 @@ function MainAppContent() {
 
     const matchedClient = clients.find((c) => c.id === loan.clientId);
     if (matchedClient?.phone) {
+      invokeWhatsAppEdgeFunctionTrigger({
+        entry: newEntry,
+        clientPhone: matchedClient.phone,
+        triggerSource: 'PG_NET_AFTER_INSERT_TRIGGER',
+      }).catch((err) => console.warn('⚠️ [WhatsApp Edge Function Trigger]:', err));
+
       sendAutomaticWhatsAppReceipt({
         phone: matchedClient.phone,
         amount: safeAmount,

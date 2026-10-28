@@ -29,7 +29,10 @@ import {
   ShieldCheck,
   CheckCircle2,
   Receipt,
-  CreditCard
+  CreditCard,
+  MessageCircle,
+  Clock,
+  FileSpreadsheet
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -72,6 +75,9 @@ import { SubscriptionPaywall } from './SubscriptionPaywall';
 import { HistorialPagos } from './HistorialPagos';
 import { GestionarSuscripcionView } from './GestionarSuscripcionView';
 import { GpsAuditTrackerModule } from './GpsAuditTrackerModule';
+import { WhatsAppCloudTriggerModule } from './WhatsAppCloudTriggerModule';
+import { OverduePenaltyCronModule } from './OverduePenaltyCronModule';
+import { BulkImport } from './BulkImport';
 
 interface AdminDashboardProps {
   routes: RouteData[];
@@ -103,6 +109,9 @@ type AdminTab =
   | 'simulador_cfo'
   | 'auditoria'
   | 'auditoria_gps'
+  | 'whatsapp_cloud_api'
+  | 'pg_cron_mora'
+  | 'importacion_masiva'
   | 'historial_pagos'
   | 'suscripcion';
 
@@ -647,6 +656,54 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
             >
               <MapPin className="w-4 h-4 shrink-0 text-emerald-400" />
               {!sidebarCollapsed && <span>Auditoría GPS (Mapa)</span>}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('whatsapp_cloud_api');
+                setMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'whatsapp_cloud_api'
+                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950/50'
+                  : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
+              }`}
+            >
+              <MessageCircle className="w-4 h-4 shrink-0 text-emerald-400" />
+              {!sidebarCollapsed && <span>WhatsApp Cloud (Triggers)</span>}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('pg_cron_mora');
+                setMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'pg_cron_mora'
+                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950/50'
+                  : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
+              }`}
+            >
+              <Clock className="w-4 h-4 shrink-0 text-emerald-400" />
+              {!sidebarCollapsed && <span>Mora Automática (pg_cron)</span>}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('importacion_masiva');
+                setMobileMenuOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'importacion_masiva'
+                  ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950/50'
+                  : 'text-slate-300 hover:bg-slate-800/70 hover:text-white'
+              }`}
+            >
+              <FileSpreadsheet className="w-4 h-4 shrink-0 text-emerald-400" />
+              {!sidebarCollapsed && <span>Importación Masiva (CSV)</span>}
             </button>
 
             <button
@@ -1455,6 +1512,32 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
             clients={clients}
             loans={loans}
             ledger={ledger}
+          />
+        )}
+
+        {activeTab === 'whatsapp_cloud_api' && (
+          <WhatsAppCloudTriggerModule
+            clients={clients}
+            loans={loans}
+            ledger={ledger}
+          />
+        )}
+
+        {activeTab === 'pg_cron_mora' && (
+          <OverduePenaltyCronModule
+            clients={clients}
+            loans={loans}
+          />
+        )}
+
+        {activeTab === 'importacion_masiva' && (
+          <BulkImport
+            onBulkImportSuccess={(importedClients, importedLoans) => {
+              // Notificar al estado global
+              if (onOpenNewClientModal) {
+                // Trigger refresh if callback available
+              }
+            }}
           />
         )}
 
