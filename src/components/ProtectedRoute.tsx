@@ -36,19 +36,27 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({
 
   const [redirectCountdown, setRedirectCountdown] = useState<number | null>(null);
 
-  // 1. Verificación de Rol Activo
+  // 1. Botón de Pánico (Kill Switch): Si la cuenta está desactivada, revocar sesión inmediatamente
+  const isAccountActive = profile?.isActive !== false;
+
+  // 2. Verificación de Rol Activo
   const hasRoleAccess = Boolean(role && allowedRoles.includes(role));
 
-  // 2. Verificación de Tenant ID (Aislamiento Multi-Tenant de Inquilino)
-  // 'super_admin' tiene acceso global cross-tenant.
-  // 'admin' y 'collector' deben coincidir con el tenant_id (organizationId) de la ruta si se especifica.
+  // 3. Verificación de Tenant ID (Aislamiento Multi-Tenant)
   const userTenantId = profile?.organizationId || 'org-medellin-01';
   const hasTenantAccess = 
     role === 'super_admin' || 
     !requiredTenantId || 
     userTenantId === requiredTenantId;
 
-  const isFullyAuthorized = isAuthenticated && hasRoleAccess && hasTenantAccess;
+  const isFullyAuthorized = isAuthenticated && isAccountActive && hasRoleAccess && hasTenantAccess;
+
+  useEffect(() => {
+    if (isAuthenticated && profile?.isActive === false && role !== 'super_admin') {
+      console.warn('🚨 Botón de Pánico / Kill Switch Activado: Cerrando sesión por cuenta desactivada.');
+      logout();
+    }
+  }, [isAuthenticated, profile?.isActive, role, logout]);
 
   // Redirección automática estricta tras intento de violación de acceso
   useEffect(() => {

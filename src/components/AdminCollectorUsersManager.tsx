@@ -15,6 +15,8 @@ import {
   Building2,
   Search,
   Compass,
+  Power,
+  ShieldAlert,
 } from 'lucide-react';
 import { RouteData } from '../data/mockData';
 import {
@@ -327,6 +329,43 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
       setIsLoadingList(false);
     }
   }, [routes, profile?.id, profile?.organizationId, profile?.organizationName]);
+
+  // 1. FUNCIÓN DE ACTUALIZACIÓN EN SUPABASE (BOTÓN DE PÁNICO)
+  const toggleUserStatus = async (userId: string, currentStatus: boolean) => {
+    const newStatus = !currentStatus;
+    try {
+      if (isLiveSupabaseConfigured) {
+        await supabase
+          .from('profiles')
+          .update({ is_active: newStatus })
+          .eq('id', userId);
+      }
+    } catch (err) {
+      console.warn('⚠️ [Botón de Pánico Supabase Update Aviso]:', err);
+    }
+
+    // Actualizar DEMO_USERS local si existe
+    Object.values(DEMO_USERS).forEach((entry) => {
+      if (entry?.profile?.id === userId) {
+        entry.profile.isActive = newStatus;
+      }
+    });
+
+    // Actualización inmediata del estado React sin recargar la página
+    setCollectors((prev) =>
+      prev.map((col) => (col.uid === userId ? { ...col, isActive: newStatus } : col))
+    );
+
+    setSuccessMsg(
+      newStatus
+        ? '✅ Acceso reactivado exitosamente.'
+        : '🚨 BOTÓN DE PÁNICO ACTIVADO: Acceso revocado e inhabilitado en tiempo real.'
+    );
+  };
+
+  const handleToggleCollectorKillSwitch = (col: CollectorUserRecord) => {
+    toggleUserStatus(col.uid, col.isActive);
+  };
 
   useEffect(() => {
     loadCollectors();
@@ -763,8 +802,8 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
                     <tr className="border-b border-slate-800 text-[10px] font-mono text-slate-400 uppercase">
                       <th className="py-2 px-2">Cobrador / Correo</th>
                       <th className="py-2 px-2">Zona de Medellín (route_zone)</th>
-                      <th className="py-2 px-2">Ruta ID</th>
-                      <th className="py-2 px-2 text-right">Acción</th>
+                      <th className="py-2 px-2 text-center">Estado</th>
+                      <th className="py-2 px-2 text-right font-bold text-rose-400">Botón de Pánico</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800/60 text-xs">
@@ -786,18 +825,51 @@ export const AdminCollectorUsersManager: React.FC<AdminCollectorUsersManagerProp
                               <span>{displayZone}</span>
                             </span>
                           </td>
-                          <td className="py-2.5 px-2 font-mono text-[11px] text-slate-300">
-                            {col.assignedRouteId}
+                          <td className="py-2.5 px-2 text-center">
+                            <span
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border ${
+                                col.isActive
+                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                                  : 'bg-rose-500/20 text-rose-300 border-rose-500/40 animate-pulse'
+                              }`}
+                            >
+                              <span
+                                className={`w-1.5 h-1.5 rounded-full ${
+                                  col.isActive ? 'bg-emerald-400' : 'bg-rose-500'
+                                }`}
+                              />
+                              {col.isActive ? 'Activo' : 'Bloqueado'}
+                            </span>
                           </td>
                           <td className="py-2.5 px-2 text-right">
-                            <button
-                              type="button"
-                              onClick={() => handleTestCollectorLogin(col.email)}
-                              className="px-2.5 py-1.5 bg-slate-800 hover:bg-emerald-600 text-slate-200 hover:text-white border border-slate-700 rounded-lg text-[10px] font-bold inline-flex items-center gap-1 transition-all cursor-pointer"
-                            >
-                              <LogIn className="w-3 h-3" />
-                              Ver Ruta
-                            </button>
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => toggleUserStatus(col.uid, col.isActive)}
+                                className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider inline-flex items-center gap-1.5 transition-all cursor-pointer shadow-md ${
+                                  col.isActive
+                                    ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-950/50'
+                                    : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-950/50'
+                                }`}
+                                title={
+                                  col.isActive
+                                    ? 'Botón de Pánico: Revocar acceso e inhabilitar cobrador en tiempo real'
+                                    : 'Reactivar acceso para este cobrador'
+                                }
+                              >
+                                <Power className="w-3.5 h-3.5" />
+                                <span>{col.isActive ? 'Bloquear (Pánico)' : 'Activar Acceso'}</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleTestCollectorLogin(col.email)}
+                                className="px-2.5 py-1.5 bg-slate-800 hover:bg-emerald-600 text-slate-200 hover:text-white border border-slate-700 rounded-lg text-[10px] font-bold inline-flex items-center gap-1 transition-all cursor-pointer"
+                              >
+                                <LogIn className="w-3 h-3" />
+                                Ver Ruta
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       );

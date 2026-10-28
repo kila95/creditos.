@@ -78,6 +78,7 @@ import { GpsAuditTrackerModule } from './GpsAuditTrackerModule';
 import { WhatsAppCloudTriggerModule } from './WhatsAppCloudTriggerModule';
 import { OverduePenaltyCronModule } from './OverduePenaltyCronModule';
 import { BulkImport } from './BulkImport';
+import { DashboardAnalytics } from './DashboardAnalytics';
 
 interface AdminDashboardProps {
   routes: RouteData[];
@@ -765,6 +766,14 @@ export const AdminInvestorDashboard: React.FC<AdminDashboardProps> = ({
            ===================================================================== */}
         {activeTab === 'dashboard' && (
           <div className="space-y-6">
+            <DashboardAnalytics
+              routes={routes}
+              clients={clients}
+              loans={loans}
+              ledger={ledger}
+              tenantId={tenantId}
+            />
+
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-sm">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-800">
                 <div>
